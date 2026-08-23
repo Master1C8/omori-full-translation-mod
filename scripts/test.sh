@@ -82,7 +82,7 @@ grep -Fq 'const MEMORY_CACHE_LIMIT = 50000;' src/translator-runtime.js || {
   exit 1
 }
 
-for REQUIRED in 'google' 'gemini' 'mymemory' 'argos' 'lmstudio' 'translateChunk' 'supportsLanguage' 'splitText'; do
+for REQUIRED in 'google' 'gemini' 'mymemory' 'argos' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
   grep -Fq "$REQUIRED" src/providers.js || {
     echo "Missing provider feature: $REQUIRED" >&2
     exit 1
@@ -96,7 +96,7 @@ for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXEC
   }
 done
 
-for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'game_language_candidates' '_aes256_encrypt_block' '/v1/gemini/status' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/status' '/v1/lmstudio/translate' '/v1/game/strings' 'request_game_executable_change' '/v1/launcher/reselect-executable'; do
+for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'game_language_candidates' '_aes256_encrypt_block' '/v1/gemini/status' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/status' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/game/strings' 'request_game_executable_change' '/v1/launcher/reselect-executable'; do
   grep -Eq "$REQUIRED" src/argos_service.py || {
     echo "Missing Argos bridge feature: $REQUIRED" >&2
     exit 1

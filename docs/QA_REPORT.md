@@ -1,12 +1,13 @@
-# Отчёт проверки OMORI 0.9.14
+# Отчёт проверки OMORI 0.9.15
 
-Дата: 2026-08-21
+Дата: 2026-08-24
 
 ## Автоматически подтверждено
 
-- проходят 42 JavaScript-теста ядра, провайдеров и адаптера OMORI;
-- проходят 27 Python-тестов локального сервиса и манифеста;
-- browser smoke проходит с `passed: true`, без console errors, и подтверждает наличие `Super Bulk Translation · 17 languages` в настоящем Shadow DOM;
+- проходят 47 JavaScript-тестов ядра, провайдеров и адаптера OMORI;
+- проходят 31 Python-тест локального сервиса и манифеста;
+- OpenAI-compatible provider проверен для preset/custom-конфигурации, защищённого хранения Bearer key, получения моделей, перевода, cache identity и обязательного ключа удалённых профилей;
+- browser smoke проходит с `passed: true` и подтверждает в настоящем Shadow DOM наличие OpenAI-compatible AI, профиля OpenCode Go, списка моделей, password-only поля ключа и `Super Bulk Translation · 17 languages`;
 - исходники JavaScript, Swift и shell проходят синтаксическую проверку;
 - адаптер OMORI использует защищённый `translateAdapterText`, а прямой публичный `translateText` отсутствует;
 - DOM- и canvas-синхронизация читает только RAM/IndexedDB и не обращается к сетевому провайдеру;
@@ -44,7 +45,8 @@
 - запуск универсального приложения на Apple Silicon и Intel Mac;
 - ручное и автоматическое применение кэша к репликам, именам говорящих и вариантам ответа внутри разговора;
 - проверка на каждом языке, что системные окна остаются оригинальными, включая `SAVE/LOAD` и видимые `YES/NO` в подтверждении загрузки;
-- массовый перевод полного набора Google, MyMemory, Gemini, Argos и LM Studio;
+- массовый перевод полного набора Google, MyMemory, Gemini, Argos, LM Studio и OpenAI-compatible AI;
+- живое подключение OpenCode Go, OpenRouter и DeepSeek, включая реальный список моделей, квоты и provider-specific ошибки;
 - полный многочасовой проход Super Bulk выбранной моделью LM Studio по всем 17 языкам;
 - переключение `Original / Translation` во время открытого диалога и последовательной смены говорящих;
 - проверка, что во время игры после построения кэша нет сетевых запросов;

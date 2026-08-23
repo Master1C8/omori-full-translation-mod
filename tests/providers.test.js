@@ -8,7 +8,9 @@ const registry = globalThis.VNRevivalTranslationProviders;
 
 test("provider registry exposes a stable extension contract", () => {
   assert.equal(registry.contractVersion, 1);
-  assert.deepEqual(registry.list.map(({ id }) => id), ["google", "gemini", "mymemory", "argos", "lmstudio"]);
+  assert.deepEqual(registry.list.map(({ id }) => id), [
+    "google", "gemini", "mymemory", "argos", "lmstudio", "openai-compatible"
+  ]);
   for (const provider of registry.list) {
     assert.equal(typeof provider.supportsLanguage, "function");
     assert.equal(typeof provider.splitText, "function");
@@ -81,4 +83,27 @@ test("LM Studio delegates translation and selected model to the local helper", a
   assert.equal(registry.byId.lmstudio.modelManager, "lmstudio");
   assert.equal(registry.byId.lmstudio.requiresPrivacy, false);
   assert.equal(registry.byId.lmstudio.concurrency, 1);
+});
+
+test("OpenAI-compatible delegates endpoint profile and model without exposing its API key", async () => {
+  let request = null;
+  const translated = await registry.byId["openai-compatible"].translateChunk({
+    text: "Hello", language: "ru", languageName: "Russian", signal: undefined,
+    openAICompatible: {
+      preset: "opencode-go", baseURL: "https://opencode.ai/zen/go/v1", model: "kimi-k3"
+    },
+    localRequest: async (path, options) => {
+      request = { path, options };
+      return { translatedText: "Привет" };
+    }
+  });
+  assert.equal(translated, "Привет");
+  assert.equal(request.path, "/v1/openai-compatible/translate");
+  assert.deepEqual(request.options.body, {
+    text: "Hello", target: "ru", targetName: "Russian", model: "kimi-k3",
+    preset: "opencode-go", baseURL: "https://opencode.ai/zen/go/v1"
+  });
+  assert.equal(registry.byId["openai-compatible"].credentialManager, "openai-compatible");
+  assert.equal(registry.byId["openai-compatible"].modelManager, "openai-compatible");
+  assert.equal(registry.byId["openai-compatible"].requiresPrivacy, true);
 });

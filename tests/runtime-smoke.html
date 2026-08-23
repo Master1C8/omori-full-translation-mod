@@ -124,6 +124,15 @@
             baseURL: "http://127.0.0.1:1234", promptVersion: "omori-translation-v1"
           }) };
         }
+        if (url.pathname === "/v1/openai-compatible/status") {
+          return { ok: true, json: async () => ({
+            ok: true, available: true, configured: true, requiresKey: true,
+            name: "OpenCode Go", models: ["kimi-k2.5", "glm-5"],
+            baseURL: "https://opencode.ai/zen/go/v1",
+            credentialStorage: "test credential vault",
+            promptVersion: "omori-openai-compatible-v1"
+          }) };
+        }
         return { ok: true, json: async () => ({ ok: true, reselectOnNextLaunch: true }) };
       }
       const source = url.searchParams.get("q") || "";
@@ -167,6 +176,19 @@
         && shadow.querySelector(".lmStudioStatus").textContent.includes("local/qwen")
         && shadow.querySelector(".lmStudioModel").value === "local/qwen"
         && !shadow.querySelector(".lmStudioRefresh").disabled;
+      const openAICompatibleOptionAvailable = Array.from(shadow.querySelector(".provider").options)
+        .some((option) => option.value === "openai-compatible" && option.textContent === "OpenAI-compatible AI");
+      const openAICompatibleKeyIsPasswordOnly = shadow.querySelector(".openAICompatibleKey").type === "password"
+        && !Object.keys(localStorage).some((key) => /openai.*key|api.*key/i.test(key));
+      shadow.querySelector(".provider").value = "openai-compatible";
+      shadow.querySelector(".provider").dispatchEvent(new Event("change"));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const openAICompatibleSetupVisible = !shadow.querySelector(".openAICompatibleBox").hidden
+        && shadow.querySelector(".openAICompatibleStatus").textContent.includes("OpenCode Go")
+        && shadow.querySelector(".openAICompatibleModel").value === "kimi-k2.5"
+        && shadow.querySelector(".openAICompatibleBaseURL").value === "https://opencode.ai/zen/go/v1"
+        && shadow.querySelector(".openAICompatibleBaseURL").disabled
+        && !shadow.querySelector(".openAICompatibleRefresh").disabled;
       shadow.querySelector(".language").value = "ar";
       shadow.querySelector(".language").dispatchEvent(new Event("change"));
       shadow.querySelector(".provider").value = "google";
@@ -267,6 +289,9 @@
         && geminiSetupVisible
         && lmStudioOptionAvailable
         && lmStudioSetupVisible
+        && openAICompatibleOptionAvailable
+        && openAICompatibleKeyIsPasswordOnly
+        && openAICompatibleSetupVisible
         && autoApplyForcedOn
         && obsoleteControlsRemoved
         && superBulkButtonPresent
@@ -274,6 +299,7 @@
         && autosavedSettings.language === "ar"
         && autosavedSettings.provider === "google"
         && autosavedSettings.lmStudioModel === "local/qwen"
+        && autosavedSettings.openAICompatibleModel === "kimi-k2.5"
         && autosavedSettings.autoTranslate === true
         && removedSettingsButtons
         && settingsAlwaysVisible
@@ -303,6 +329,9 @@
         geminiSetupVisible,
         lmStudioOptionAvailable,
         lmStudioSetupVisible,
+        openAICompatibleOptionAvailable,
+        openAICompatibleKeyIsPasswordOnly,
+        openAICompatibleSetupVisible,
         autoApplyForcedOn,
         obsoleteControlsRemoved,
         superBulkButtonPresent,

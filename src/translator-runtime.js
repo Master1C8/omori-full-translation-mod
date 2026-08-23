@@ -26,6 +26,14 @@
   const SITE_NAME = "VN Revival";
   const SITE_URL = "https://vnrevival.fun/";
   const LM_STUDIO_PROMPT_VERSION = "omori-translation-v1";
+  const OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v1";
+  const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
+    "opencode-go": Object.freeze({ name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresKey: true }),
+    openrouter: Object.freeze({ name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", requiresKey: true }),
+    deepseek: Object.freeze({ name: "DeepSeek", baseURL: "https://api.deepseek.com", requiresKey: true }),
+    lmstudio: Object.freeze({ name: "LM Studio", baseURL: "http://127.0.0.1:1234/v1", requiresKey: false }),
+    custom: Object.freeze({ name: "Custom", baseURL: "", requiresKey: false })
+  });
   const SUPER_BULK_LANGUAGES = Object.freeze([
     Object.freeze({ code: "es", name: "Spanish" }),
     Object.freeze({ code: "de", name: "German" }),
@@ -79,6 +87,9 @@
     privacyAccepted: false,
     mode: "translated",
     lmStudioModel: "",
+    openAICompatiblePreset: "opencode-go",
+    openAICompatibleBaseURL: OPENAI_COMPATIBLE_PRESETS["opencode-go"].baseURL,
+    openAICompatibleModel: "",
     collapsed: false,
     x: null,
     y: null
@@ -113,6 +124,8 @@
   let geminiBusy = false;
   let lmStudioStatus = null;
   let lmStudioBusy = false;
+  let openAICompatibleStatus = null;
+  let openAICompatibleBusy = false;
   const applied = new WeakMap();
   const appliedNodes = new Set();
   const originalPresentation = new WeakMap();
@@ -229,6 +242,12 @@
       } catch (_) {}
     }
     const source = parsed || {};
+    const openAICompatiblePreset = Object.prototype.hasOwnProperty.call(
+      OPENAI_COMPATIBLE_PRESETS, source.openAICompatiblePreset
+    ) ? source.openAICompatiblePreset : defaults.openAICompatiblePreset;
+    const presetBaseURL = OPENAI_COMPATIBLE_PRESETS[openAICompatiblePreset].baseURL;
+    const customBaseURL = typeof source.openAICompatibleBaseURL === "string"
+      && source.openAICompatibleBaseURL.length <= 2048 ? source.openAICompatibleBaseURL.trim() : "";
     return {
       language: LANGUAGES.some(([code]) => code === source.language) ? source.language : defaults.language,
       provider: PROVIDERS[source.provider] ? source.provider : defaults.provider,
@@ -239,6 +258,10 @@
       mode: source.mode === "source" ? "source" : defaults.mode,
       lmStudioModel: typeof source.lmStudioModel === "string" && source.lmStudioModel.length <= 512
         ? source.lmStudioModel : defaults.lmStudioModel,
+      openAICompatiblePreset,
+      openAICompatibleBaseURL: openAICompatiblePreset === "custom" ? customBaseURL : presetBaseURL,
+      openAICompatibleModel: typeof source.openAICompatibleModel === "string"
+        && source.openAICompatibleModel.length <= 512 ? source.openAICompatibleModel : defaults.openAICompatibleModel,
       collapsed: false,
       x: Number.isFinite(source.x) ? source.x : null,
       y: Number.isFinite(source.y) ? source.y : null
@@ -254,9 +277,32 @@
     return !!(PROVIDERS[provider] && PROVIDERS[provider].modelManager === "lmstudio");
   }
 
+  function providerUsesOpenAICompatible(provider) {
+    return !!(PROVIDERS[provider] && PROVIDERS[provider].modelManager === "openai-compatible");
+  }
+
+  function openAICompatibleConnection() {
+    const preset = OPENAI_COMPATIBLE_PRESETS[settings.openAICompatiblePreset]
+      ? settings.openAICompatiblePreset : defaults.openAICompatiblePreset;
+    return {
+      preset,
+      baseURL: preset === "custom"
+        ? String(settings.openAICompatibleBaseURL || "").trim()
+        : OPENAI_COMPATIBLE_PRESETS[preset].baseURL,
+      model: String(settings.openAICompatibleModel || "").trim()
+    };
+  }
+
   function providerCacheVariant(provider) {
-    return providerUsesLMStudio(provider) && settings.lmStudioModel
-      ? `${settings.lmStudioModel}\n${LM_STUDIO_PROMPT_VERSION}` : "";
+    if (providerUsesLMStudio(provider) && settings.lmStudioModel) {
+      return `${settings.lmStudioModel}\n${LM_STUDIO_PROMPT_VERSION}`;
+    }
+    if (providerUsesOpenAICompatible(provider)) {
+      const connection = openAICompatibleConnection();
+      return connection.model
+        ? `${connection.preset}\n${connection.baseURL}\n${connection.model}\n${OPENAI_COMPATIBLE_PROMPT_VERSION}` : "";
+    }
+    return "";
   }
 
   function providerCacheScope(provider) {
@@ -615,6 +661,7 @@
         return await selectedProvider.translateChunk({
           text, language, sourceLanguage: SOURCE_LANGUAGE, signal,
           model: providerUsesLMStudio(provider) ? settings.lmStudioModel : "",
+          openAICompatible: providerUsesOpenAICompatible(provider) ? openAICompatibleConnection() : null,
           languageName: (LANGUAGES.find(([code]) => code === language) || [null, language])[1],
           fetch: (input, init) => fetch(input, init),
           localRequest: requestLocalHelper,
@@ -638,6 +685,12 @@
     if (code === "lmstudio_model_missing" || code === "lmstudio_model_unavailable") return "Select an available LM Studio model";
     if (code === "lmstudio_format_invalid") return "LM Studio changed a protected game control code";
     if (code === "lmstudio_busy") return "LM Studio is busy";
+    if (code === "openai_key_missing") return "Add the OpenAI-compatible API key";
+    if (code === "openai_key_invalid") return "The OpenAI-compatible API key was rejected";
+    if (code === "openai_model_missing" || code === "openai_model_unavailable") return "Select an available OpenAI-compatible model";
+    if (code === "openai_format_invalid") return "The provider changed a protected game control code";
+    if (code === "openai_rate_limited") return "The provider rate limit was reached";
+    if (code === "openai_unavailable") return "The OpenAI-compatible provider is unavailable";
     const message = String(error && error.message || "").trim();
     const providerName = PROVIDERS[provider] ? PROVIDERS[provider].label : "Translation service";
     if (/HTTP 429|rate.?limit|too many requests/i.test(message)) return `${providerName} rate limit reached`;
@@ -1202,6 +1255,20 @@
         setStatus("Select an available LM Studio model first");
         return false;
       }
+    } else if (providerUsesOpenAICompatible(settings.provider)) {
+      const status = await refreshOpenAICompatibleStatus();
+      if (!status) {
+        setStatus("Configure the OpenAI-compatible connection first");
+        return false;
+      }
+      if (status.requiresKey && !status.configured) {
+        setStatus(`Add the ${status.name || "provider"} API key first`);
+        return false;
+      }
+      if (!openAICompatibleConnection().model) {
+        setStatus("Enter or select an OpenAI-compatible model first");
+        return false;
+      }
     }
     if (providerRequiresPrivacy(settings.provider) && !settings.privacyAccepted) {
       privacyBox.hidden = false;
@@ -1592,7 +1659,7 @@
         setTimeout(finish, 100);
       });
       if (providerUsesArgos(settings.provider)) {
-        setStatus("Super Bulk needs a service that supports all 17 languages. Choose LM Studio, Gemini, Google, or MyMemory.");
+        setStatus("Super Bulk needs a service that supports all 17 languages. Choose OpenAI-compatible, LM Studio, Gemini, Google, or MyMemory.");
         return;
       }
       const selectedProvider = PROVIDERS[settings.provider];
@@ -1821,7 +1888,7 @@
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
     <style>
-      :host{all:initial!important;display:block!important;position:fixed!important;z-index:9999999!important;left:var(--vr-left,auto)!important;top:var(--vr-top,14px)!important;right:var(--vr-right,14px)!important}*{box-sizing:border-box}.panel{width:306px!important;color:#fff!important;background:rgba(32,19,28,.97)!important;border:1px solid #c69b55!important;border-radius:9px!important;box-shadow:0 5px 24px rgba(0,0,0,0.95)!important;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;overflow:hidden!important;position:relative!important;z-index:9999999!important}.bar{cursor:move;padding:7px 9px;color:#f4d18f;background:#412436;font-weight:700;user-select:none}.row{display:flex;gap:6px;padding:7px}.primary,.secondary,.gear,.danger{border:1px solid #c69b55;border-radius:6px;background:#6b344f;color:#fff;padding:7px 9px;cursor:pointer;font:inherit}.primary{flex:1;font-weight:700}.secondary{background:#442b39}.gear{width:38px}.status{min-height:23px;padding:0 9px 3px;color:#ddd;font-size:12px}.hotkey{padding:0 9px 7px;color:#f4d18f;font-size:11px}.retry{margin:0 8px 7px;width:calc(100% - 16px)}.settings{display:none;padding:0 8px 9px;border-top:1px solid #6e4d56}.settings.open{display:block}.settings label.title{display:block;margin:7px 0 3px}.settings select,.settings input[type=password]{width:100%;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.check{display:flex;gap:7px;align-items:center;margin:8px 0}.hint,.providerHint,.cacheStats,.argosStatus,.geminiStatus,.geminiNotice,.lmStudioStatus,.lmStudioNotice{color:#bdaeb6;font-size:11px;line-height:1.3}.providerHint{margin-top:4px}.argosBox,.geminiBox,.lmStudioBox,.cacheBox{margin-top:8px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.geminiKey,.lmStudioModel{margin-top:6px}.argosActions,.geminiActions,.lmStudioActions,.privacyActions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.argosActions button,.geminiActions button,.lmStudioActions button,.privacyActions button{flex:1;min-width:82px}.primary:disabled,.secondary:disabled,.danger:disabled{opacity:.55;cursor:default}.danger{background:#71313a}.privacy{margin:0 8px 8px;padding:8px;border:1px solid #d19a44;border-radius:6px;background:#38291f;color:#f8e5bf;font-size:12px}.compat{margin:0 8px 7px;padding:6px;border-radius:5px;background:#71431f;color:#ffe6be;font-size:11px}.site{padding:7px 9px;border-top:1px solid #6e4d56;text-align:center;color:#bdaeb6;font-size:11px}.site a,.geminiNotice a{color:#f4d18f;font-weight:700;text-decoration:none}.site a:hover,.geminiNotice a:hover{text-decoration:underline}.hidden{display:none!important}
+      :host{all:initial!important;display:block!important;position:fixed!important;z-index:9999999!important;left:var(--vr-left,auto)!important;top:var(--vr-top,14px)!important;right:var(--vr-right,14px)!important}*{box-sizing:border-box}.panel{width:306px!important;color:#fff!important;background:rgba(32,19,28,.97)!important;border:1px solid #c69b55!important;border-radius:9px!important;box-shadow:0 5px 24px rgba(0,0,0,0.95)!important;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;overflow:hidden!important;position:relative!important;z-index:9999999!important}.bar{cursor:move;padding:7px 9px;color:#f4d18f;background:#412436;font-weight:700;user-select:none}.row{display:flex;gap:6px;padding:7px}.primary,.secondary,.gear,.danger{border:1px solid #c69b55;border-radius:6px;background:#6b344f;color:#fff;padding:7px 9px;cursor:pointer;font:inherit}.primary{flex:1;font-weight:700}.secondary{background:#442b39}.gear{width:38px}.status{min-height:23px;padding:0 9px 3px;color:#ddd;font-size:12px}.hotkey{padding:0 9px 7px;color:#f4d18f;font-size:11px}.retry{margin:0 8px 7px;width:calc(100% - 16px)}.settings{display:none;padding:0 8px 9px;border-top:1px solid #6e4d56}.settings.open{display:block}.settings label.title{display:block;margin:7px 0 3px}.settings select,.settings input{width:100%;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.check{display:flex;gap:7px;align-items:center;margin:8px 0}.hint,.providerHint,.cacheStats,.argosStatus,.geminiStatus,.geminiNotice,.lmStudioStatus,.lmStudioNotice,.openAICompatibleStatus,.openAICompatibleNotice{color:#bdaeb6;font-size:11px;line-height:1.3}.providerHint{margin-top:4px}.argosBox,.geminiBox,.lmStudioBox,.openAICompatibleBox,.cacheBox{margin-top:8px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.geminiKey,.lmStudioModel,.openAICompatiblePreset,.openAICompatibleBaseURL,.openAICompatibleModel,.openAICompatibleKey{margin-top:6px}.argosActions,.geminiActions,.lmStudioActions,.openAICompatibleActions,.privacyActions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.argosActions button,.geminiActions button,.lmStudioActions button,.openAICompatibleActions button,.privacyActions button{flex:1;min-width:82px}.primary:disabled,.secondary:disabled,.danger:disabled{opacity:.55;cursor:default}.danger{background:#71313a}.privacy{margin:0 8px 8px;padding:8px;border:1px solid #d19a44;border-radius:6px;background:#38291f;color:#f8e5bf;font-size:12px}.compat{margin:0 8px 7px;padding:6px;border-radius:5px;background:#71431f;color:#ffe6be;font-size:11px}.site{padding:7px 9px;border-top:1px solid #6e4d56;text-align:center;color:#bdaeb6;font-size:11px}.site a,.geminiNotice a{color:#f4d18f;font-weight:700;text-decoration:none}.site a:hover,.geminiNotice a:hover{text-decoration:underline}.hidden{display:none!important}
       .settings{display:block!important}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.bulkTranslate,.superBulkTranslate,.testPhraseTranslate{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.superBulkTranslate.working::before,.testPhraseTranslate.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}@keyframes vr-spin{to{transform:rotate(360deg)}}
       .site{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap}.siteLabel{white-space:nowrap}.contacts{display:inline-flex;align-items:center;gap:5px}.site .contactIcon{display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;border:1px solid #6e4d56;border-radius:6px;background:#2c1b26;text-decoration:none}.site .contactIcon:hover{border-color:#c69b55;background:#412436;text-decoration:none}.contactIcon svg{display:block;width:15px;height:15px;fill:currentColor}.site .discord{color:#8c9eff}.site .telegram{color:#55bde9}.site .email{color:#9b87f5}
     </style>
@@ -1854,6 +1921,26 @@
           <select class="lmStudioModel" aria-label="LM Studio model" disabled></select>
           <div class="lmStudioActions"><button class="secondary lmStudioRefresh" type="button">Refresh models</button></div>
           <div class="lmStudioNotice">Start the local server in LM Studio Developer settings. Translation text stays on this computer.</div>
+        </div>
+        <div class="openAICompatibleBox" hidden>
+          <div class="openAICompatibleStatus">Configure an OpenAI-compatible provider…</div>
+          <select class="openAICompatiblePreset" aria-label="OpenAI-compatible preset">
+            <option value="opencode-go">OpenCode Go</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="lmstudio">LM Studio</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input class="openAICompatibleBaseURL" type="url" autocomplete="off" spellcheck="false" placeholder="https://provider.example/v1">
+          <input class="openAICompatibleModel" type="text" list="openAICompatibleModels" autocomplete="off" spellcheck="false" placeholder="Model ID">
+          <datalist id="openAICompatibleModels"></datalist>
+          <input class="openAICompatibleKey" type="password" autocomplete="off" spellcheck="false" placeholder="API key (stored securely)">
+          <div class="openAICompatibleActions">
+            <button class="primary openAICompatibleSave" type="button">Save API key</button>
+            <button class="secondary openAICompatibleRefresh" type="button">Refresh models</button>
+            <button class="danger openAICompatibleRemove" type="button" hidden>Remove key</button>
+          </div>
+          <div class="openAICompatibleNotice">Uses OpenAI Chat Completions. Remote text is sent to the selected provider. Custom remote URLs must use HTTPS.</div>
         </div>
         <div class="cacheBox">
           <div class="cacheStats">Calculating cache…</div>
@@ -1926,6 +2013,16 @@
   const lmStudioStatusElement = shadow.querySelector(".lmStudioStatus");
   const lmStudioModelSelect = shadow.querySelector(".lmStudioModel");
   const lmStudioRefreshButton = shadow.querySelector(".lmStudioRefresh");
+  const openAICompatibleBox = shadow.querySelector(".openAICompatibleBox");
+  const openAICompatibleStatusElement = shadow.querySelector(".openAICompatibleStatus");
+  const openAICompatiblePresetSelect = shadow.querySelector(".openAICompatiblePreset");
+  const openAICompatibleBaseURLInput = shadow.querySelector(".openAICompatibleBaseURL");
+  const openAICompatibleModelInput = shadow.querySelector(".openAICompatibleModel");
+  const openAICompatibleModelsList = shadow.querySelector("#openAICompatibleModels");
+  const openAICompatibleKeyInput = shadow.querySelector(".openAICompatibleKey");
+  const openAICompatibleSaveButton = shadow.querySelector(".openAICompatibleSave");
+  const openAICompatibleRefreshButton = shadow.querySelector(".openAICompatibleRefresh");
+  const openAICompatibleRemoveButton = shadow.querySelector(".openAICompatibleRemove");
   const resetButton = shadow.querySelector(".reset");
   const importButton = shadow.querySelector(".importCache");
   const exportButton = shadow.querySelector(".exportCache");
@@ -2038,7 +2135,16 @@
   }
   function providerUsesArgos(provider) { return !!(PROVIDERS[provider] && PROVIDERS[provider].modelManager === "argos"); }
   function providerUsesGemini(provider) { return !!(PROVIDERS[provider] && PROVIDERS[provider].credentialManager === "gemini"); }
-  function providerRequiresPrivacy(provider) { return !!(PROVIDERS[provider] && PROVIDERS[provider].requiresPrivacy); }
+  function openAICompatibleIsLocal() {
+    try {
+      const url = new URL(openAICompatibleConnection().baseURL);
+      return url.protocol === "http:" && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname.toLowerCase());
+    } catch (_) { return false; }
+  }
+  function providerRequiresPrivacy(provider) {
+    if (providerUsesOpenAICompatible(provider) && openAICompatibleIsLocal()) return false;
+    return !!(PROVIDERS[provider] && PROVIDERS[provider].requiresPrivacy);
+  }
   function languagesForProvider(provider) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) return [];
@@ -2057,7 +2163,7 @@
     }
     const fallback = available.some(([code]) => code === defaults.language) ? defaults.language : (available[0] && available[0][0]);
     languageSelect.value = available.some(([code]) => code === previous) ? previous : (fallback || "");
-    languageSelect.disabled = argosBusy || geminiBusy || lmStudioBusy || !available.length;
+    languageSelect.disabled = argosBusy || geminiBusy || lmStudioBusy || openAICompatibleBusy || !available.length;
     return languageSelect.value !== previous;
   }
   function selectedLanguageName() {
@@ -2106,24 +2212,35 @@
     argosBusy = busy;
     argosActionButton.disabled = busy;
     argosRemoveButton.disabled = busy;
-    languageSelect.disabled = busy || geminiBusy || lmStudioBusy || !languageSelect.options.length;
-    providerSelect.disabled = busy || geminiBusy || lmStudioBusy;
+    languageSelect.disabled = busy || geminiBusy || lmStudioBusy || openAICompatibleBusy || !languageSelect.options.length;
+    providerSelect.disabled = busy || geminiBusy || lmStudioBusy || openAICompatibleBusy;
   }
   function setGeminiBusy(busy) {
     geminiBusy = busy;
     geminiKeyInput.disabled = busy || !LOCAL_BRIDGE;
     geminiSaveButton.disabled = busy || !LOCAL_BRIDGE;
     geminiRemoveButton.disabled = busy || !LOCAL_BRIDGE;
-    languageSelect.disabled = busy || argosBusy || lmStudioBusy || !languageSelect.options.length;
-    providerSelect.disabled = busy || argosBusy || lmStudioBusy;
+    languageSelect.disabled = busy || argosBusy || lmStudioBusy || openAICompatibleBusy || !languageSelect.options.length;
+    providerSelect.disabled = busy || argosBusy || lmStudioBusy || openAICompatibleBusy;
   }
   function setLMStudioBusy(busy) {
     lmStudioBusy = busy;
     lmStudioModelSelect.disabled = busy || !lmStudioStatus || !lmStudioStatus.available
       || !Array.isArray(lmStudioStatus.models) || !lmStudioStatus.models.length;
     lmStudioRefreshButton.disabled = busy || !LOCAL_BRIDGE;
-    languageSelect.disabled = busy || argosBusy || geminiBusy || !languageSelect.options.length;
-    providerSelect.disabled = busy || argosBusy || geminiBusy;
+    languageSelect.disabled = busy || argosBusy || geminiBusy || openAICompatibleBusy || !languageSelect.options.length;
+    providerSelect.disabled = busy || argosBusy || geminiBusy || openAICompatibleBusy;
+  }
+  function setOpenAICompatibleBusy(busy) {
+    openAICompatibleBusy = busy;
+    for (const control of [
+      openAICompatiblePresetSelect, openAICompatibleBaseURLInput, openAICompatibleModelInput,
+      openAICompatibleKeyInput, openAICompatibleSaveButton, openAICompatibleRefreshButton,
+      openAICompatibleRemoveButton
+    ]) control.disabled = busy || !LOCAL_BRIDGE;
+    if (!busy && openAICompatiblePresetSelect.value !== "custom") openAICompatibleBaseURLInput.disabled = true;
+    languageSelect.disabled = busy || argosBusy || geminiBusy || lmStudioBusy || !languageSelect.options.length;
+    providerSelect.disabled = busy || argosBusy || geminiBusy || lmStudioBusy;
   }
   function applyLMStudioModel(model, announce) {
     const value = typeof model === "string" ? model : "";
@@ -2184,6 +2301,91 @@
       return null;
     } finally {
       setLMStudioBusy(false);
+    }
+  }
+  function syncOpenAICompatibleInputs() {
+    const connection = openAICompatibleConnection();
+    openAICompatiblePresetSelect.value = connection.preset;
+    openAICompatibleBaseURLInput.value = connection.baseURL;
+    openAICompatibleBaseURLInput.disabled = openAICompatibleBusy || !LOCAL_BRIDGE || connection.preset !== "custom";
+    openAICompatibleModelInput.value = connection.model;
+  }
+  function applyOpenAICompatibleSettings(next, announce) {
+    const preset = OPENAI_COMPATIBLE_PRESETS[next.preset] ? next.preset : defaults.openAICompatiblePreset;
+    const baseURL = preset === "custom"
+      ? String(next.baseURL || "").trim().slice(0, 2048)
+      : OPENAI_COMPATIBLE_PRESETS[preset].baseURL;
+    const model = String(next.model || "").trim().slice(0, 512);
+    const changed = settings.openAICompatiblePreset !== preset
+      || settings.openAICompatibleBaseURL !== baseURL
+      || settings.openAICompatibleModel !== model;
+    if (!changed) return false;
+    abortActiveOperation("OpenAI-compatible connection changed");
+    settings.openAICompatiblePreset = preset;
+    settings.openAICompatibleBaseURL = baseURL;
+    settings.openAICompatibleModel = model;
+    settingsGeneration += 1;
+    invalidateAppliedTranslations();
+    saveSettings();
+    syncOpenAICompatibleInputs();
+    reloadSelectedLanguageCache(false).then((ready) => {
+      if (ready && announce) setStatus(`OpenAI-compatible: ${OPENAI_COMPATIBLE_PRESETS[preset].name}${model ? ` · ${model}` : ""}`);
+    });
+    return true;
+  }
+  async function refreshOpenAICompatibleStatus() {
+    if (!providerUsesOpenAICompatible(providerSelect.value)) {
+      openAICompatibleBox.hidden = true;
+      return openAICompatibleStatus;
+    }
+    openAICompatibleBox.hidden = false;
+    syncOpenAICompatibleInputs();
+    openAICompatibleKeyInput.value = "";
+    if (!LOCAL_BRIDGE) {
+      openAICompatibleStatus = null;
+      openAICompatibleModelsList.replaceChildren();
+      openAICompatibleStatusElement.textContent = `The local translation helper is not running. Restart the game through ${PRODUCT_NAME}.`;
+      setOpenAICompatibleBusy(false);
+      return null;
+    }
+    setOpenAICompatibleBusy(true);
+    try {
+      const connection = openAICompatibleConnection();
+      openAICompatibleStatus = await requestLocalHelper("/v1/openai-compatible/status", {
+        body: { preset: connection.preset, baseURL: connection.baseURL }
+      });
+      const models = Array.isArray(openAICompatibleStatus.models)
+        ? openAICompatibleStatus.models.filter((model) => typeof model === "string" && model)
+        : [];
+      openAICompatibleStatus.models = models;
+      openAICompatibleModelsList.replaceChildren();
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model;
+        openAICompatibleModelsList.appendChild(option);
+      }
+      if (!settings.openAICompatibleModel && models.length) {
+        applyOpenAICompatibleSettings(Object.assign({}, connection, { model: models[0] }), false);
+      }
+      openAICompatibleModelInput.value = settings.openAICompatibleModel;
+      openAICompatibleRemoveButton.hidden = !openAICompatibleStatus.configured;
+      openAICompatibleSaveButton.textContent = openAICompatibleStatus.configured
+        ? "Replace API key"
+        : (openAICompatibleStatus.requiresKey ? "Save API key" : "Save optional key");
+      if (openAICompatibleStatus.available) {
+        openAICompatibleStatusElement.textContent = `Ready · ${openAICompatibleStatus.name} · ${models.length} models`
+          + (openAICompatibleStatus.configured ? ` · key in ${openAICompatibleStatus.credentialStorage}` : "");
+      } else {
+        openAICompatibleStatusElement.textContent = openAICompatibleStatus.message || "Connection could not be verified; enter a model ID manually.";
+      }
+      return openAICompatibleStatus;
+    } catch (error) {
+      openAICompatibleStatus = null;
+      openAICompatibleModelsList.replaceChildren();
+      openAICompatibleStatusElement.textContent = error && error.message ? error.message : "Could not check the OpenAI-compatible provider";
+      return null;
+    } finally {
+      setOpenAICompatibleBusy(false);
     }
   }
   async function refreshGeminiStatus() {
@@ -2277,25 +2479,36 @@
     if (providerUsesArgos(providerSelect.value)) {
       geminiBox.hidden = true;
       lmStudioBox.hidden = true;
+      openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshArgosStatus();
     } else if (providerUsesGemini(providerSelect.value)) {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
       argosBox.hidden = true;
       lmStudioBox.hidden = true;
+      openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshGeminiStatus();
     } else if (providerUsesLMStudio(providerSelect.value)) {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
       argosBox.hidden = true;
       geminiBox.hidden = true;
+      openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshLMStudioStatus();
+    } else if (providerUsesOpenAICompatible(providerSelect.value)) {
+      populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
+      argosBox.hidden = true;
+      geminiBox.hidden = true;
+      lmStudioBox.hidden = true;
+      providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
+      refreshOpenAICompatibleStatus();
     } else {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
       argosBox.hidden = true;
       geminiBox.hidden = true;
       lmStudioBox.hidden = true;
+      openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider ? selectedProvider.hint(languageSelect.options.length) : "";
     }
   }
@@ -2396,6 +2609,76 @@
       setStatus("LM Studio models refreshed");
     } else {
       setStatus("LM Studio is not ready");
+    }
+  });
+  openAICompatiblePresetSelect.addEventListener("change", async () => {
+    const preset = openAICompatiblePresetSelect.value;
+    applyOpenAICompatibleSettings({
+      preset,
+      baseURL: OPENAI_COMPATIBLE_PRESETS[preset] ? OPENAI_COMPATIBLE_PRESETS[preset].baseURL : "",
+      model: ""
+    }, true);
+    await refreshOpenAICompatibleStatus();
+  });
+  openAICompatibleBaseURLInput.addEventListener("change", async () => {
+    applyOpenAICompatibleSettings({
+      preset: "custom", baseURL: openAICompatibleBaseURLInput.value, model: ""
+    }, true);
+    await refreshOpenAICompatibleStatus();
+  });
+  openAICompatibleModelInput.addEventListener("change", () => {
+    const connection = openAICompatibleConnection();
+    applyOpenAICompatibleSettings({
+      preset: connection.preset, baseURL: connection.baseURL, model: openAICompatibleModelInput.value
+    }, true);
+  });
+  openAICompatibleRefreshButton.addEventListener("click", async () => {
+    const connection = openAICompatibleConnection();
+    applyOpenAICompatibleSettings({
+      preset: openAICompatiblePresetSelect.value,
+      baseURL: openAICompatibleBaseURLInput.value,
+      model: openAICompatibleModelInput.value || connection.model
+    }, false);
+    const status = await refreshOpenAICompatibleStatus();
+    setStatus(status && status.available ? "OpenAI-compatible models refreshed" : "Connection could not be verified");
+  });
+  openAICompatibleSaveButton.addEventListener("click", async () => {
+    const apiKey = openAICompatibleKeyInput.value.trim();
+    if (!apiKey) {
+      openAICompatibleStatusElement.textContent = "Enter an API key first.";
+      return;
+    }
+    const connection = openAICompatibleConnection();
+    setOpenAICompatibleBusy(true);
+    try {
+      await requestLocalHelper("/v1/openai-compatible/key", {
+        body: { preset: connection.preset, baseURL: connection.baseURL, apiKey }
+      });
+      openAICompatibleKeyInput.value = "";
+      await refreshOpenAICompatibleStatus();
+      setStatus(`${OPENAI_COMPATIBLE_PRESETS[connection.preset].name} API key saved securely`);
+    } catch (error) {
+      openAICompatibleKeyInput.value = "";
+      openAICompatibleStatusElement.textContent = error && error.message ? error.message : "Could not save the API key";
+      setStatus("OpenAI-compatible setup failed");
+    } finally {
+      setOpenAICompatibleBusy(false);
+    }
+  });
+  openAICompatibleRemoveButton.addEventListener("click", async () => {
+    const connection = openAICompatibleConnection();
+    if (!confirm(`Remove the saved API key for ${OPENAI_COMPATIBLE_PRESETS[connection.preset].name}?`)) return;
+    setOpenAICompatibleBusy(true);
+    try {
+      await requestLocalHelper("/v1/openai-compatible/key/remove", {
+        body: { preset: connection.preset, baseURL: connection.baseURL, accepted: true }
+      });
+      await refreshOpenAICompatibleStatus();
+      setStatus("OpenAI-compatible API key removed");
+    } catch (error) {
+      setStatus(error && error.message ? error.message : "Could not remove the API key");
+    } finally {
+      setOpenAICompatibleBusy(false);
     }
   });
   argosActionButton.addEventListener("click", async () => {

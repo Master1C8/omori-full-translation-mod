@@ -314,6 +314,87 @@ class ArgosServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 argos_service.ArgosBridge(Path(directory), lmstudio_base_url="http://192.168.1.10:1234")
 
+    def test_openai_compatible_presets_and_custom_url_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = argos_service.ArgosBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore()
+            )
+            connection = bridge._openai_connection("opencode-go", "https://ignored.example/v1")
+            self.assertEqual(connection["baseURL"], "https://opencode.ai/zen/go/v1")
+            self.assertTrue(connection["requiresKey"])
+            local = bridge._openai_connection("custom", "http://127.0.0.1:8000/v1/")
+            self.assertEqual(local["baseURL"], "http://127.0.0.1:8000/v1")
+            self.assertTrue(local["offline"])
+            with self.assertRaises(argos_service.BridgeError) as caught:
+                bridge._openai_connection("custom", "http://api.example.com/v1")
+            self.assertEqual(caught.exception.code, "openai_url_insecure")
+
+    def test_openai_compatible_key_and_models_use_secure_bearer_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = FakeCredentialStore()
+            bridge = argos_service.ArgosBridge(
+                Path(directory), openai_credential_store=store
+            )
+            captured = {}
+
+            def fake_open(request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return FakeHTTPResponse({"data": [{"id": "kimi-k3"}, {"id": "glm-5.3"}]})
+
+            with mock.patch.object(argos_service.urllib.request, "urlopen", side_effect=fake_open):
+                status = bridge.set_openai_compatible_key("opencode-go", "", "secret-key-123456")
+            self.assertTrue(status["configured"])
+            self.assertEqual(status["models"], ["kimi-k3", "glm-5.3"])
+            self.assertNotIn("apiKey", status)
+            self.assertEqual(captured["request"].get_header("Authorization"), "Bearer secret-key-123456")
+            self.assertNotIn("secret-key-123456", captured["request"].full_url)
+            self.assertEqual(captured["request"].full_url, "https://opencode.ai/zen/go/v1/models")
+
+    def test_openai_compatible_translation_uses_chat_completions_and_cache_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = FakeCredentialStore("secret-key-123456")
+            bridge = argos_service.ArgosBridge(
+                Path(directory), openai_credential_store=store
+            )
+            captured = {}
+            source = r"Hello \\N[1]! VRCTXSEP1X Welcome."
+            translated = r"Привет, \\N[1]! VRCTXSEP1X Добро пожаловать."
+
+            def fake_open(request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return FakeHTTPResponse({
+                    "choices": [{"message": {"content": json.dumps({"translation": translated})}}]
+                })
+
+            with mock.patch.object(argos_service.urllib.request, "urlopen", side_effect=fake_open):
+                result = bridge.openai_compatible_translate(
+                    "ru", "Russian", source, "kimi-k3", "opencode-go", ""
+                )
+            self.assertEqual(result["translatedText"], translated)
+            self.assertFalse(result["offline"])
+            self.assertEqual(result["promptVersion"], argos_service.OPENAI_COMPATIBLE_PROMPT_VERSION)
+            self.assertEqual(
+                captured["request"].full_url,
+                "https://opencode.ai/zen/go/v1/chat/completions",
+            )
+            request_body = json.loads(captured["request"].data.decode("utf-8"))
+            self.assertEqual(request_body["model"], "kimi-k3")
+            self.assertEqual(request_body["response_format"]["type"], "json_schema")
+            self.assertEqual(captured["request"].get_header("Authorization"), "Bearer secret-key-123456")
+
+    def test_openai_compatible_remote_provider_requires_saved_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = argos_service.ArgosBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore()
+            )
+            with self.assertRaises(argos_service.BridgeError) as caught:
+                bridge.openai_compatible_translate(
+                    "ru", "Russian", "Hello", "kimi-k3", "opencode-go", ""
+                )
+            self.assertEqual(caught.exception.code, "openai_key_missing")
+
 
 if __name__ == "__main__":
     unittest.main()

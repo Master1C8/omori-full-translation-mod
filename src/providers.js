@@ -153,6 +153,44 @@
         }
         return payload.translatedText;
       }
+    },
+    {
+      id: "openai-compatible",
+      label: "OpenAI-compatible AI",
+      concurrency: 1,
+      delay: 100,
+      retries: 3,
+      contextLimit: 6000,
+      requiresPrivacy: true,
+      credentialManager: "openai-compatible",
+      modelManager: "openai-compatible",
+      supportsLanguage(code) {
+        return !!String(code || "");
+      },
+      splitText(text) {
+        return core.splitLongText(text, 6000);
+      },
+      hint() {
+        return "OpenAI-compatible: connect OpenCode Go, OpenRouter, DeepSeek, LM Studio, or a custom Chat Completions endpoint.";
+      },
+      async translateChunk(context) {
+        const connection = context.openAICompatible || {};
+        const payload = await context.localRequest("/v1/openai-compatible/translate", {
+          body: {
+            text: context.text,
+            target: context.language,
+            targetName: context.languageName || context.language,
+            model: connection.model,
+            preset: connection.preset,
+            baseURL: connection.baseURL
+          },
+          signal: context.signal
+        });
+        if (typeof payload.translatedText !== "string" || !payload.translatedText.trim()) {
+          throw new Error("The OpenAI-compatible provider returned an empty translation");
+        }
+        return payload.translatedText;
+      }
     }
   ].map((provider) => Object.freeze(provider));
 

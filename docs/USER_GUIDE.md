@@ -27,8 +27,9 @@ First choose `Translation service`, then choose `Language` in the expanded panel
 - `MyMemory` is a fast online service, but its quality can be poor. The mod lists 249 language codes, but MyMemory does not guarantee machine translation for every pair.
 - `Argos Offline` runs on your computer and does not send game text online. It is slower, its quality is lower, and it supports fewer languages. Internet is needed to install the engine or a language model; translation works offline after installation.
 - `LM Studio Local AI` uses an OpenAI-compatible model served by LM Studio on this computer. Quality and speed depend on the selected model; game text is not sent online.
+- `OpenAI-compatible AI` connects to OpenCode Go, OpenRouter, DeepSeek, LM Studio, or a custom compatible endpoint. Remote endpoints receive the extracted text; a loopback endpoint stays local.
 
-`Bulk Translate All Assets` sends all extracted `.HERO` dialogue strings to Google, Gemini, or MyMemory after explicit confirmation. Normal gameplay uses only the resulting local cache and does not send visible text to a provider. Argos and LM Studio process the bulk set locally.
+`Bulk Translate All Assets` sends all extracted `.HERO` dialogue strings to the selected remote provider after explicit confirmation. Normal gameplay uses only the resulting local cache and does not send visible text to a provider. Argos, LM Studio, and loopback OpenAI-compatible endpoints process the bulk set locally.
 
 ### Using Gemini AI
 
@@ -57,6 +58,16 @@ The first installation may take several minutes. A language model usually needs 
 5. Choose the target language and click `Bulk Translate All Assets`.
 
 The translator does not start or stop LM Studio. Keep the server available until the bulk operation finishes. CORS is not required because the authenticated VN Revival helper communicates with LM Studio locally. Changing the selected model creates a separate cache identity, so translations produced by different local models are not mixed.
+
+### Using OpenAI-compatible AI
+
+1. Select `OpenAI-compatible AI`.
+2. Choose the `OpenCode Go`, `OpenRouter`, `DeepSeek`, `LM Studio`, or `Custom` preset.
+3. For a remote service, paste its API key and click `Save API key`. LM Studio on the local loopback address does not require a key.
+4. Click `Refresh models`, then select or type the exact model ID.
+5. Choose a language and start a bulk operation.
+
+The built-in Base URLs are filled automatically. A custom remote URL must use HTTPS; HTTP is accepted only for `localhost` or another loopback address. Each API key is stored per Base URL in Windows Credential Manager or macOS Keychain. The integration supports the OpenAI Chat Completions format (`/models` and `/chat/completions`); Responses-only or Anthropic-Messages-only models are not supported. Changing the URL or model creates a separate translation cache identity.
 
 ### Creating and using the full cache
 
@@ -128,8 +139,9 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 - `MyMemory` — быстрый онлайн-сервис, но качество может быть низким. Мод показывает 249 языковых кодов, однако MyMemory не гарантирует машинный перевод для каждой пары.
 - `Argos Offline` работает на компьютере и не отправляет игровой текст в интернет. Он медленнее, качество ниже, а языков доступно меньше. Для установки движка или языковой модели нужен интернет; после установки перевод работает офлайн.
 - `LM Studio Local AI` использует OpenAI-совместимую модель, которую LM Studio обслуживает локально на этом компьютере. Качество и скорость зависят от модели; игровой текст в интернет не отправляется.
+- `OpenAI-compatible AI` подключается к OpenCode Go, OpenRouter, DeepSeek, LM Studio или произвольному совместимому endpoint. Удалённый сервис получает извлечённый текст, а loopback-адрес остаётся локальным.
 
-Кнопка `Bulk Translate All Assets` после явного подтверждения отправляет Google, Gemini или MyMemory все извлечённые строки диалогов `.HERO`. Обычный игровой процесс использует только созданный локальный кэш и не отправляет видимый текст провайдеру. Argos обрабатывает массовый набор локально после установки модели.
+Кнопка `Bulk Translate All Assets` после явного подтверждения отправляет выбранному удалённому провайдеру все извлечённые строки диалогов `.HERO`. Обычный игровой процесс использует только созданный локальный кэш и не отправляет видимый текст провайдеру. Argos, LM Studio и OpenAI-compatible endpoint на loopback-адресе обрабатывают массовый набор локально.
 
 ### Использование Gemini AI
 
@@ -139,6 +151,16 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 4. Нажмите `Save API key`.
 
 После сохранения поле очищается. Ключ хранится в Windows Credential Manager или macOS Keychain, а не в настройках игры или кэше переводов. Кнопка `Remove key` удаляет ключ.
+
+### Использование OpenAI-compatible AI
+
+1. Выберите `OpenAI-compatible AI`.
+2. Выберите профиль `OpenCode Go`, `OpenRouter`, `DeepSeek`, `LM Studio` или `Custom`.
+3. Для удалённого сервиса вставьте API-ключ и нажмите `Save API key`. Локальный LM Studio на loopback-адресе не требует ключа.
+4. Нажмите `Refresh models`, затем выберите или введите точный ID модели.
+5. Выберите язык и запустите массовый перевод.
+
+Встроенные Base URL подставляются автоматически. Произвольный удалённый URL обязан использовать HTTPS; HTTP разрешён только для `localhost` и других loopback-адресов. Каждый ключ хранится отдельно по Base URL в Windows Credential Manager или macOS Keychain. Интеграция поддерживает формат OpenAI Chat Completions (`/models` и `/chat/completions`); модели только для Responses API или Anthropic Messages API не поддерживаются. Смена URL или модели создаёт отдельную область кэша перевода.
 
 ### Использование Argos Offline
 
