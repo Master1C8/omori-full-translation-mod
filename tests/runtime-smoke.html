@@ -189,6 +189,11 @@
         && shadow.querySelector(".openAICompatibleBaseURL").value === "https://opencode.ai/zen/go/v1"
         && shadow.querySelector(".openAICompatibleBaseURL").disabled
         && !shadow.querySelector(".openAICompatibleRefresh").disabled;
+      const openCodeReferral = shadow.querySelector(".openCodeGoReferral");
+      openCodeReferral.click();
+      const openCodeReferralPresent = !openCodeReferral.hidden
+        && openCodeReferral.textContent.includes("receive $5 in credits")
+        && window.externalUrls.includes("https://opencode.ai/go?ref=SS6M8DKPP0");
       shadow.querySelector(".language").value = "ar";
       shadow.querySelector(".language").dispatchEvent(new Event("change"));
       shadow.querySelector(".provider").value = "google";
@@ -200,7 +205,7 @@
       const superBulkButtonPresent = shadow.querySelector(".superBulkTranslate")?.textContent
         === "Super Bulk Translation · 17 languages";
       shadow.querySelector(".projectSite").click();
-      const projectSiteOpenedExternally = window.externalUrls[0] === "https://vnrevival.fun/";
+      const projectSiteOpenedExternally = window.externalUrls.includes("https://vnrevival.fun/");
       const removedSettingsButtons = !shadow.querySelector(
         ".cacheActions,.launcherActions,.settingsActions,.save,.clearLanguage,.export,.import,.changeExecutable,.gear"
       );
@@ -292,6 +297,7 @@
         && openAICompatibleOptionAvailable
         && openAICompatibleKeyIsPasswordOnly
         && openAICompatibleSetupVisible
+        && openCodeReferralPresent
         && autoApplyForcedOn
         && obsoleteControlsRemoved
         && superBulkButtonPresent
@@ -332,6 +338,7 @@
         openAICompatibleOptionAvailable,
         openAICompatibleKeyIsPasswordOnly,
         openAICompatibleSetupVisible,
+        openCodeReferralPresent,
         autoApplyForcedOn,
         obsoleteControlsRemoved,
         superBulkButtonPresent,

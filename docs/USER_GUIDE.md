@@ -67,6 +67,8 @@ The translator does not start or stop LM Studio. Keep the server available until
 4. Click `Refresh models`, then select or type the exact model ID.
 5. Choose a language and start a bulk operation.
 
+New OpenCode Go users can sign up through [our referral link](https://opencode.ai/go?ref=SS6M8DKPP0) and receive $5 in credits. The same link appears in the OpenCode Go settings panel and opens in the system browser.
+
 The built-in Base URLs are filled automatically. A custom remote URL must use HTTPS; HTTP is accepted only for `localhost` or another loopback address. Each API key is stored per Base URL in Windows Credential Manager or macOS Keychain. The integration supports the OpenAI Chat Completions format (`/models` and `/chat/completions`); Responses-only or Anthropic-Messages-only models are not supported. Changing the URL or model creates a separate translation cache identity.
 
 ### Creating and using the full cache
@@ -159,6 +161,8 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 3. Для удалённого сервиса вставьте API-ключ и нажмите `Save API key`. Локальный LM Studio на loopback-адресе не требует ключа.
 4. Нажмите `Refresh models`, затем выберите или введите точный ID модели.
 5. Выберите язык и запустите массовый перевод.
+
+Новые пользователи OpenCode Go могут зарегистрироваться по [нашей реферальной ссылке](https://opencode.ai/go?ref=SS6M8DKPP0) и получить $5 на баланс. Эта же ссылка показывается в настройках OpenCode Go и открывается в системном браузере.
 
 Встроенные Base URL подставляются автоматически. Произвольный удалённый URL обязан использовать HTTPS; HTTP разрешён только для `localhost` и других loopback-адресов. Каждый ключ хранится отдельно по Base URL в Windows Credential Manager или macOS Keychain. Интеграция поддерживает формат OpenAI Chat Completions (`/models` и `/chat/completions`); модели только для Responses API или Anthropic Messages API не поддерживаются. Смена URL или модели создаёт отдельную область кэша перевода.
 

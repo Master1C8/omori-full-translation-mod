@@ -140,6 +140,8 @@ test("project website opens through the operating system browser", () => {
   assert.match(runtimeSource, /class="projectSite"/);
   assert.match(runtimeSource, /window\.nw\.Shell\.openExternal\(target\)/);
   assert.match(runtimeSource, /projectSiteLink\.addEventListener\("click"/);
+  assert.match(runtimeSource, /https:\/\/opencode\.ai\/go\?ref=SS6M8DKPP0/);
+  assert.match(runtimeSource, /openCodeGoReferralLink\.addEventListener\("click"/);
   assert.match(runtimeSource, /event\.preventDefault\(\)/);
 });
 

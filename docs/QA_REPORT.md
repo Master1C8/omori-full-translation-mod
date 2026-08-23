@@ -1,4 +1,4 @@
-# Отчёт проверки OMORI 0.9.15
+# Отчёт проверки OMORI 0.9.16
 
 Дата: 2026-08-24
 
@@ -7,6 +7,7 @@
 - проходят 47 JavaScript-тестов ядра, провайдеров и адаптера OMORI;
 - проходят 31 Python-тест локального сервиса и манифеста;
 - OpenAI-compatible provider проверен для preset/custom-конфигурации, защищённого хранения Bearer key, получения моделей, перевода, cache identity и обязательного ключа удалённых профилей;
+- реферальная ссылка OpenCode Go с сообщением о бонусе $5 присутствует только в соответствующем профиле и открывается через системный браузер;
 - browser smoke проходит с `passed: true` и подтверждает в настоящем Shadow DOM наличие OpenAI-compatible AI, профиля OpenCode Go, списка моделей, password-only поля ключа и `Super Bulk Translation · 17 languages`;
 - исходники JavaScript, Swift и shell проходят синтаксическую проверку;
 - адаптер OMORI использует защищённый `translateAdapterText`, а прямой публичный `translateText` отсутствует;
