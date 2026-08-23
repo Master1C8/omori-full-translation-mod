@@ -1,0 +1,33 @@
+#include <windows.h>
+
+1 ICON "__ICON_PATH_C__"
+1 RT_MANIFEST "__MANIFEST_PATH_C__"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION __VERSION_COMMAS__,0
+ PRODUCTVERSION __VERSION_COMMAS__,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "VN Revival\0"
+            VALUE "FileDescription", "__PRODUCT_NAME_C__\0"
+            VALUE "FileVersion", "__VERSION__\0"
+            VALUE "InternalName", "__PRODUCT_NAME_C__\0"
+            VALUE "LegalCopyright", "VN Revival — https://vnrevival.fun/\0"
+            VALUE "OriginalFilename", "__PRODUCT_NAME_C__.exe\0"
+            VALUE "ProductName", "__PRODUCT_NAME_C__\0"
+            VALUE "ProductVersion", "__VERSION__\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

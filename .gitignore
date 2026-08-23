@@ -1,0 +1,14 @@
+.build/
+.cache/
+.venv/
+outputs/
+OMORI Translator.app/
+launcher/READY_TO_SHARE/
+__pycache__/
+*.py[cod]
+*.bak
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
