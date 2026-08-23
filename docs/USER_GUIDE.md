@@ -82,6 +82,8 @@ The bulk operation continues if OMORI is minimized or another application become
 
 The bulk button immediately shows a spinner after it is pressed. While translation is running, every control except panel collapse and `Cancel translation` is disabled. After about 30 seconds, the progress line adds an estimated number of minutes remaining. Import and export buttons are placed below the blue bulk button.
 
+`Live translation log` opens automatically when a new translation is created. Each entry shows the provider and language followed by the English source and translated result. Newest entries appear first. The list is session-only, keeps at most 40 entries to avoid slowing down the game, and can be emptied with `Clear`. Cache hits are not repeated in this log.
+
 ### Super Bulk Translation
 
 The purple `Super Bulk Translation · 17 languages` button translates the extracted assets into this fixed order: Spanish (`es`), German (`de`), Polish (`pl`), Vietnamese (`vi`), Russian (`ru`), Arabic (`ar`), Persian (`fa`), Hebrew (`iw`), Chinese Simplified (`zh-CN`), Chinese Traditional (`zh-TW`), Japanese (`ja`), Korean (`ko`), Hindi (`hi`), Bengali (`bn`), Thai (`th`), Myanmar (`my`), and Georgian (`ka`). Languages are processed one at a time with the currently selected service and, for LM Studio, the currently selected model.
@@ -185,6 +187,8 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 Массовая операция продолжается, если OMORI свёрнута или активно другое приложение. Если завершить её не удалось, строка состояния показывает причину: ручная отмена, смена настроек, проблема сети, лимит или другая ошибка сервиса. Повторный запуск продолжит заполнение отсутствующих записей кэша.
 
 Сразу после нажатия кнопка массового перевода показывает вращающийся индикатор. Во время перевода все элементы управления, кроме сворачивания панели и `Cancel translation`, заблокированы. Примерно через 30 секунд строка прогресса начинает показывать расчётное оставшееся время в минутах. Импорт и экспорт находятся под синей кнопкой.
+
+`Live translation log` автоматически раскрывается при создании нового перевода. Каждая запись показывает сервис и язык, затем исходную английскую строку и готовый результат. Новые записи находятся сверху. Журнал существует только в текущем запуске, хранит не более 40 пар, чтобы не замедлять игру, и очищается кнопкой `Clear`. Готовые попадания из кэша повторно в журнал не добавляются.
 
 ### Super Bulk Translation
 

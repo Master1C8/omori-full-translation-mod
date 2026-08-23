@@ -1,4 +1,4 @@
-# Windows x86_64 CPython 3.11 runtime for the 0.9.16 release.
+# Windows x86_64 CPython 3.11 runtime for the 0.9.17 release.
 argostranslate==1.11.0 --hash=sha256:a89b42d82f40843900338f9ac60d4c82fda590b6898247f5d0c15d46731ca7df
 cffi==2.0.0 --hash=sha256:66f011380d0e49ed280c789fbd08ff0d40968ee7b665575489afa95c98196ab5
 click==8.4.2 --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76

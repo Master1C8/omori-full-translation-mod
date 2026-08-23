@@ -105,6 +105,17 @@ test("bulk controls show immediate activity, lock the panel, and report ETA", ()
   assert.match(runtimeSource, /about \$\{remainingMinutes\} min left/);
 });
 
+test("live translation log shows new source and target pairs without unbounded growth", () => {
+  assert.match(runtimeSource, /<summary>Live translation log<\/summary>/);
+  assert.match(runtimeSource, /appendTranslationLog\(source, translated, language, provider\)/);
+  assert.match(runtimeSource, /sourceLine\.textContent = `EN: \$\{source\}`/);
+  assert.match(runtimeSource, /targetLine\.textContent = `\$\{String\(language \|\| "translation"\)\.toUpperCase\(\)\}: \$\{translation\}`/);
+  assert.match(runtimeSource, /const TRANSLATION_LOG_LIMIT = 40/);
+  assert.match(runtimeSource, /translationLogEntries\.children\.length > TRANSLATION_LOG_LIMIT/);
+  assert.match(runtimeSource, /translationLogBox\.open = true/);
+  assert.match(runtimeSource, /translationLogClearButton\.addEventListener\("click", clearTranslationLog\)/);
+});
+
 test("Super Bulk translates the required 17 languages in a fixed sequential order", () => {
   const languageBlock = runtimeSource.slice(
     runtimeSource.indexOf("const SUPER_BULK_LANGUAGES"),

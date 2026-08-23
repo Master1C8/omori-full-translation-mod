@@ -71,6 +71,7 @@
   const MEMORY_CACHE_LIMIT = 50000;
   const CACHE_IO_BATCH_SIZE = 250;
   const CACHE_IMPORT_ENTRY_LIMIT = 500000;
+  const TRANSLATION_LOG_LIMIT = 40;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -749,6 +750,7 @@
 
     if (translated) {
       await cachePut(key, translated);
+      appendTranslationLog(source, translated, language, provider);
       logActivityToBridge(provider, source, translated, false);
     }
     return { text: translated, cached: false };
@@ -1890,7 +1892,7 @@
   shadow.innerHTML = `
     <style>
       :host{all:initial!important;display:block!important;position:fixed!important;z-index:9999999!important;left:var(--vr-left,auto)!important;top:var(--vr-top,14px)!important;right:var(--vr-right,14px)!important}*{box-sizing:border-box}.panel{width:306px!important;color:#fff!important;background:rgba(32,19,28,.97)!important;border:1px solid #c69b55!important;border-radius:9px!important;box-shadow:0 5px 24px rgba(0,0,0,0.95)!important;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;overflow:hidden!important;position:relative!important;z-index:9999999!important}.bar{cursor:move;padding:7px 9px;color:#f4d18f;background:#412436;font-weight:700;user-select:none}.row{display:flex;gap:6px;padding:7px}.primary,.secondary,.gear,.danger{border:1px solid #c69b55;border-radius:6px;background:#6b344f;color:#fff;padding:7px 9px;cursor:pointer;font:inherit}.primary{flex:1;font-weight:700}.secondary{background:#442b39}.gear{width:38px}.status{min-height:23px;padding:0 9px 3px;color:#ddd;font-size:12px}.hotkey{padding:0 9px 7px;color:#f4d18f;font-size:11px}.retry{margin:0 8px 7px;width:calc(100% - 16px)}.settings{display:none;padding:0 8px 9px;border-top:1px solid #6e4d56}.settings.open{display:block}.settings label.title{display:block;margin:7px 0 3px}.settings select,.settings input{width:100%;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.check{display:flex;gap:7px;align-items:center;margin:8px 0}.hint,.providerHint,.cacheStats,.argosStatus,.geminiStatus,.geminiNotice,.lmStudioStatus,.lmStudioNotice,.openAICompatibleStatus,.openAICompatibleNotice{color:#bdaeb6;font-size:11px;line-height:1.3}.providerHint{margin-top:4px}.argosBox,.geminiBox,.lmStudioBox,.openAICompatibleBox,.cacheBox{margin-top:8px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.geminiKey,.lmStudioModel,.openAICompatiblePreset,.openAICompatibleBaseURL,.openAICompatibleModel,.openAICompatibleKey{margin-top:6px}.argosActions,.geminiActions,.lmStudioActions,.openAICompatibleActions,.privacyActions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.argosActions button,.geminiActions button,.lmStudioActions button,.openAICompatibleActions button,.privacyActions button{flex:1;min-width:82px}.primary:disabled,.secondary:disabled,.danger:disabled{opacity:.55;cursor:default}.danger{background:#71313a}.privacy{margin:0 8px 8px;padding:8px;border:1px solid #d19a44;border-radius:6px;background:#38291f;color:#f8e5bf;font-size:12px}.compat{margin:0 8px 7px;padding:6px;border-radius:5px;background:#71431f;color:#ffe6be;font-size:11px}.site{padding:7px 9px;border-top:1px solid #6e4d56;text-align:center;color:#bdaeb6;font-size:11px}.site a,.geminiNotice a,.openAICompatibleNotice a{color:#f4d18f;font-weight:700;text-decoration:none}.site a:hover,.geminiNotice a:hover,.openAICompatibleNotice a:hover{text-decoration:underline}.hidden{display:none!important}
-      .settings{display:block!important}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.bulkTranslate,.superBulkTranslate,.testPhraseTranslate{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.superBulkTranslate.working::before,.testPhraseTranslate.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}@keyframes vr-spin{to{transform:rotate(360deg)}}
+      .settings{display:block!important;max-height:calc(100vh - 92px);overflow-y:auto}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.bulkTranslate,.superBulkTranslate,.testPhraseTranslate{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.superBulkTranslate.working::before,.testPhraseTranslate.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationLogBox{margin-top:7px;border:1px solid #6e4d56;border-radius:5px;background:#1b1218;color:#ddd;font-size:11px}.translationLogBox summary{padding:6px;cursor:pointer;color:#f4d18f;font-weight:700}.translationLogToolbar{display:flex;align-items:center;justify-content:space-between;gap:5px;padding:0 6px 5px;color:#8f8189}.translationLogClear{padding:3px 6px!important;font-size:10px!important}.translationLogEmpty{padding:4px 6px 7px;color:#8f8189}.translationLogEntries{max-height:170px;overflow:auto}.translationLogEntry{padding:6px;border-top:1px solid #49333f;overflow-wrap:anywhere}.translationLogMeta{margin-bottom:3px;color:#c69b55}.translationLogSource,.translationLogTarget{white-space:pre-wrap}.translationLogSource{color:#aaa}.translationLogArrow{color:#8f8189;padding:2px 0}@keyframes vr-spin{to{transform:rotate(360deg)}}
       .site{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap}.siteLabel{white-space:nowrap}.contacts{display:inline-flex;align-items:center;gap:5px}.site .contactIcon{display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;border:1px solid #6e4d56;border-radius:6px;background:#2c1b26;text-decoration:none}.site .contactIcon:hover{border-color:#c69b55;background:#412436;text-decoration:none}.contactIcon svg{display:block;width:15px;height:15px;fill:currentColor}.site .discord{color:#8c9eff}.site .telegram{color:#55bde9}.site .email{color:#9b87f5}
     </style>
     <div class="panel">
@@ -1955,6 +1957,12 @@
           <div class="row" style="padding:5px 0 0">
             <button class="primary testPhraseTranslate" style="background:#287c68">Test Phrase · All Languages</button>
           </div>
+          <details class="translationLogBox">
+            <summary>Live translation log</summary>
+            <div class="translationLogToolbar"><span>Session only · newest first</span><button class="secondary translationLogClear" type="button">Clear</button></div>
+            <div class="translationLogEmpty">New translations will appear here.</div>
+            <div class="translationLogEntries" aria-live="polite"></div>
+          </details>
           <div class="row" style="padding:7px 0 0;gap:5px">
             <button class="secondary importCache" style="flex:1;padding:5px">Import cache</button>
             <button class="secondary exportCache" style="flex:1;padding:5px">Export cache</button>
@@ -2031,6 +2039,10 @@
   const bulkButton = shadow.querySelector(".bulkTranslate");
   const superBulkButton = shadow.querySelector(".superBulkTranslate");
   const testPhraseButton = shadow.querySelector(".testPhraseTranslate");
+  const translationLogBox = shadow.querySelector(".translationLogBox");
+  const translationLogEntries = shadow.querySelector(".translationLogEntries");
+  const translationLogEmpty = shadow.querySelector(".translationLogEmpty");
+  const translationLogClearButton = shadow.querySelector(".translationLogClear");
   const cacheFileInput = shadow.querySelector(".cacheFile");
   const cacheStatsElement = shadow.querySelector(".cacheStats");
   const privacyBox = shadow.querySelector(".privacy");
@@ -2121,6 +2133,36 @@
   }
 
   function setStatus(text) { statusElement.textContent = text; }
+  function appendTranslationLog(source, translation, language, provider) {
+    if (!translationLogEntries || !source || !translation) return;
+    const providerConfig = PROVIDERS[provider];
+    const languageEntry = LANGUAGES.find(([code]) => code === language);
+    const entry = document.createElement("article");
+    entry.className = "translationLogEntry";
+    const meta = document.createElement("div");
+    meta.className = "translationLogMeta";
+    meta.textContent = `${languageEntry ? languageEntry[1] : language} · ${providerConfig ? providerConfig.label : provider}`;
+    const sourceLine = document.createElement("div");
+    sourceLine.className = "translationLogSource";
+    sourceLine.textContent = `EN: ${source}`;
+    const arrow = document.createElement("div");
+    arrow.className = "translationLogArrow";
+    arrow.textContent = "↓";
+    const targetLine = document.createElement("div");
+    targetLine.className = "translationLogTarget";
+    targetLine.textContent = `${String(language || "translation").toUpperCase()}: ${translation}`;
+    entry.append(meta, sourceLine, arrow, targetLine);
+    translationLogEntries.prepend(entry);
+    while (translationLogEntries.children.length > TRANSLATION_LOG_LIMIT) {
+      translationLogEntries.lastElementChild.remove();
+    }
+    translationLogEmpty.hidden = true;
+    translationLogBox.open = true;
+  }
+  function clearTranslationLog() {
+    translationLogEntries.replaceChildren();
+    translationLogEmpty.hidden = false;
+  }
   function updateModeButton() {
     const translated = settings.mode === "translated";
     modeButton.querySelector(".translationChoice").classList.toggle("active", translated);
@@ -2566,6 +2608,7 @@
   bulkButton.addEventListener("click", bulkTranslateAll);
   superBulkButton.addEventListener("click", superBulkTranslateAll);
   testPhraseButton.addEventListener("click", translateTestPhraseAllLanguages);
+  translationLogClearButton.addEventListener("click", clearTranslationLog);
   cacheFileInput.addEventListener("change", () => {
     if (cacheFileInput.files && cacheFileInput.files[0]) {
       importCache(cacheFileInput.files[0]);

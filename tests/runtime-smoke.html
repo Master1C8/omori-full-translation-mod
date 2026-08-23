@@ -204,6 +204,9 @@
       const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey");
       const superBulkButtonPresent = shadow.querySelector(".superBulkTranslate")?.textContent
         === "Super Bulk Translation · 17 languages";
+      const liveTranslationLogPresent = shadow.querySelector(".translationLogBox")?.textContent
+        .includes("New translations will appear here.")
+        && shadow.querySelector(".translationLogEntries")?.getAttribute("aria-live") === "polite";
       shadow.querySelector(".projectSite").click();
       const projectSiteOpenedExternally = window.externalUrls.includes("https://vnrevival.fun/");
       const removedSettingsButtons = !shadow.querySelector(
@@ -301,6 +304,7 @@
         && autoApplyForcedOn
         && obsoleteControlsRemoved
         && superBulkButtonPresent
+        && liveTranslationLogPresent
         && projectSiteOpenedExternally
         && autosavedSettings.language === "ar"
         && autosavedSettings.provider === "google"
@@ -342,6 +346,7 @@
         autoApplyForcedOn,
         obsoleteControlsRemoved,
         superBulkButtonPresent,
+        liveTranslationLogPresent,
         projectSiteOpenedExternally,
         autosavedSettings,
         removedSettingsButtons,
