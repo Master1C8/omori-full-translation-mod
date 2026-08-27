@@ -113,6 +113,9 @@ grep -Eq 'VNRevivalTranslationCore' src/translation-core.js
 grep -Eq 'VNRevivalTranslationProviders' src/providers.js
 grep -Eq 'VNRevivalGameConfig' "$ROOT/.build/game-config.js"
 grep -Eq 'choose_game_executable' launcher/macos/launch.sh
+grep -Eq 'valid_game_target' launcher/macos/launch.sh
+grep -Fq 'Contents/Resources/app.nw' launcher/macos/launch.sh
+grep -Fq 'not a Steam desktop shortcut' launcher/macos/launch.sh
 grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh
 grep -Fq -- '--credential-id "$GAME_ID"' launcher/macos/launch.sh
 grep -Fq -- '--game-path "$GAME_TARGET"' launcher/macos/launch.sh

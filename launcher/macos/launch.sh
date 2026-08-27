@@ -58,6 +58,31 @@ choose_game_executable() {
     2>/dev/null
 }
 
+normalize_game_target() {
+  local VALUE="$1"
+  while [[ "$VALUE" != "/" && "$VALUE" == */ ]]; do
+    VALUE="${VALUE%/}"
+  done
+  print -r -- "$VALUE"
+}
+
+valid_game_target() {
+  local TARGET=$(normalize_game_target "$1")
+  if [[ -d "$TARGET" && "$TARGET" == *.app ]]; then
+    [[ -d "$TARGET/Contents/Resources/app.nw" && -d "$TARGET/Contents/MacOS" ]] || return 1
+    local BIN_CANDIDATE
+    for BIN_CANDIDATE in "$TARGET/Contents/MacOS"/*; do
+      [[ -f "$BIN_CANDIDATE" && -x "$BIN_CANDIDATE" ]] && return 0
+    done
+    return 1
+  fi
+  if [[ "${TARGET:l}" == *.exe ]]; then
+    [[ -f "$TARGET" ]]
+    return
+  fi
+  [[ -f "$TARGET" && -x "$TARGET" ]]
+}
+
 if [[ "$LAUNCH_STRATEGY" != "electron-cdp" ]]; then
   show_error "This build uses an unsupported game launch strategy."
   exit 1
@@ -75,8 +100,8 @@ GAME_PROCESS_NAME=""
 
 # 1. Check saved path if valid
 if (( ! FORCE_RESELECT )) && [[ -s "$GAME_PATH_FILE" ]]; then
-  SAVED_PATH=$(head -n 1 "$GAME_PATH_FILE")
-  if [[ -e "$SAVED_PATH" ]]; then
+  SAVED_PATH=$(normalize_game_target "$(head -n 1 "$GAME_PATH_FILE")")
+  if valid_game_target "$SAVED_PATH"; then
     GAME_TARGET="$SAVED_PATH"
   fi
 fi
@@ -88,8 +113,9 @@ if [[ -z "$GAME_TARGET" ]]; then
     "$HOME/Library/Application Support/Steam/steamapps/common/$GAME_SHORT_TITLE/$GAME_SHORT_TITLE.app" \
     "$HOME/Library/Application Support/Steam/steamapps/common/$GAME_TITLE" \
     "/Applications/$GAME_TITLE.app"; do
-    if [[ -e "$NATIVE_CANDIDATE" ]]; then
-      GAME_TARGET="$NATIVE_CANDIDATE"
+    NORMALIZED_CANDIDATE=$(normalize_game_target "$NATIVE_CANDIDATE")
+    if valid_game_target "$NORMALIZED_CANDIDATE"; then
+      GAME_TARGET="$NORMALIZED_CANDIDATE"
       break
     fi
   done
@@ -103,19 +129,26 @@ fi
 # 4. Prompt user if still not found
 if (( FORCE_RESELECT )) || [[ -z "$GAME_TARGET" ]]; then
   GAME_TARGET=$(choose_game_executable || true)
-  if [[ -z "$GAME_TARGET" || ! -e "$GAME_TARGET" ]]; then
-    show_error "The executable for $GAME_TITLE was not selected."
+  GAME_TARGET=$(normalize_game_target "$GAME_TARGET")
+  if [[ -z "$GAME_TARGET" ]] || ! valid_game_target "$GAME_TARGET"; then
+    show_error "The selected file is not the real $GAME_TITLE application. Select the game app containing Contents/Resources/app.nw, not a Steam desktop shortcut."
     exit 1
   fi
-  mkdir -p "$GAME_PATH_DIR"
-  print -r -- "$GAME_TARGET" > "$GAME_PATH_FILE"
 fi
+
+# Persist the validated canonical target, including an automatically recovered Steam path.
+mkdir -p "$GAME_PATH_DIR"
+print -r -- "$GAME_TARGET" > "$GAME_PATH_FILE"
 
 # Determine launch mode and executable
 NATIVE_BINARY=""
 if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
+  if [[ ! -d "$GAME_TARGET/Contents/Resources/app.nw" ]]; then
+    show_error "The selected application is a shortcut, not the real $GAME_TITLE game."
+    exit 1
+  fi
   for BIN_CANDIDATE in "$GAME_TARGET/Contents/MacOS"/*; do
-    if [[ -x "$BIN_CANDIDATE" ]]; then
+    if [[ -f "$BIN_CANDIDATE" && -x "$BIN_CANDIDATE" ]]; then
       NATIVE_BINARY="$BIN_CANDIDATE"
       GAME_PROCESS_NAME="${BIN_CANDIDATE:t}"
       break

@@ -11,6 +11,8 @@
 
 Always start the game through OMORI Translator. The panel cannot appear if OMORI was started normally.
 
+If macOS asks you to locate the game, select the real `OMORI.app` inside the Steam library, not the small `OMORI.app` shortcut on the Desktop. The real app contains `Contents/Resources/app.nw`. Version 0.9.18 and newer reject a saved Steam shortcut and automatically recover the installed Steam copy when possible.
+
 ### Main controls
 
 - The `Translation / Original` toggle switches between the saved translation and the original English text.
@@ -126,6 +128,8 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 4. Дождитесь появления панели переводчика в правом верхнем углу игры.
 
 Всегда запускайте игру через OMORI Translator. При обычном запуске OMORI панель появиться не сможет.
+
+Если macOS просит найти игру, выберите настоящую `OMORI.app` внутри библиотеки Steam, а не маленький ярлык `OMORI.app` на рабочем столе. В настоящем приложении есть `Contents/Resources/app.nw`. Версия 0.9.18 и новее отбрасывает сохранённый Steam-ярлык и при возможности автоматически восстанавливает путь к установленной копии.
 
 ### Основное управление
 

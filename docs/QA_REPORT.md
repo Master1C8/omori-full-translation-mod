@@ -1,4 +1,4 @@
-# Отчёт проверки OMORI 0.9.17
+# Отчёт проверки OMORI 0.9.18
 
 Дата: 2026-08-24
 
@@ -9,6 +9,7 @@
 - OpenAI-compatible provider проверен для preset/custom-конфигурации, защищённого хранения Bearer key, получения моделей, перевода, cache identity и обязательного ключа удалённых профилей;
 - реферальная ссылка OpenCode Go с сообщением о бонусе $5 присутствует только в соответствующем профиле и открывается через системный браузер;
 - живой журнал показывает новые пары `English → Translation`, раскрывается автоматически, использует только `textContent`, не повторяет кэш-попадания и ограничен 40 DOM-записями текущей сессии;
+- macOS-лаунчер нормализует сохранённый путь, отклоняет Steam desktop shortcut без `Contents/Resources/app.nw`, восстанавливает настоящую Steam-копию и сохраняет исправленный путь;
 - browser smoke проходит с `passed: true` и подтверждает в настоящем Shadow DOM наличие OpenAI-compatible AI, профиля OpenCode Go, списка моделей, password-only поля ключа и `Super Bulk Translation · 17 languages`;
 - исходники JavaScript, Swift и shell проходят синтаксическую проверку;
 - адаптер OMORI использует защищённый `translateAdapterText`, а прямой публичный `translateText` отсутствует;
