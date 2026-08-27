@@ -29,6 +29,7 @@ node --check src/languages.js
 node --check src/providers.js
 node --check "src/games/$GAME_ID/adapter.js"
 node --check src/translator-runtime.js
+node --check launcher/macos/steam-compat.js
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
 mkdir -p "$ROOT/.build"
 python3 scripts/generate-game-config.py "$GAME_MANIFEST" "$ROOT/.build/game-config.js"
@@ -119,6 +120,15 @@ grep -Fq 'not a Steam desktop shortcut' launcher/macos/launch.sh
 grep -Fq 'NWJS Runtime.app' launcher/macos/launch.sh
 grep -Fq 'hw.optional.arm64' launcher/macos/launch.sh
 grep -Fq 'vnrevival-omori-runtime.' launcher/macos/launch.sh
+grep -Fq 'capture_steam_argument' launcher/macos/launch.sh
+grep -Fq 'VNREVIVAL_STEAM_ARGUMENT="$STEAM_ARGUMENT"' launcher/macos/launch.sh
+grep -Fq 'inject_js_start' launcher/macos/launch.sh
+grep -Fq 'getAchievementNames: () => []' launcher/macos/steam-compat.js
+grep -Fq 'gameWindow.restore()' launcher/macos/steam-compat.js
+if grep -Eq 'console\.|writeFile|appendFile' launcher/macos/steam-compat.js; then
+  echo "Apple Silicon compatibility must not log or persist the Steam argument" >&2
+  exit 1
+fi
 grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
 grep -Fq 'kill "$ARGOS_PID"' launcher/macos/launch.sh
 grep -Fq "UNEXPECTED_CONTENTS=" scripts/verify.sh

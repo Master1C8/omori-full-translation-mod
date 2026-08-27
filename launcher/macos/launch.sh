@@ -36,6 +36,8 @@ RESELECT_MARKER="$ARGOS_DATA_DIR/.reselect-game-executable"
 ARGOS_PID=""
 GAME_PID=""
 RUNTIME_SESSION_DIR=""
+APPLE_SILICON_COMPAT=0
+STEAM_ARGUMENT=""
 
 cleanup() {
   if [[ -n "$ARGOS_PID" ]] && kill -0 "$ARGOS_PID" >/dev/null 2>&1; then
@@ -68,6 +70,31 @@ normalize_game_target() {
     VALUE="${VALUE%/}"
   done
   print -r -- "$VALUE"
+}
+
+capture_steam_argument() {
+  local PID COMMAND TOKEN
+  /usr/bin/open -g "steam://run/$STEAM_APP_ID" >/dev/null 2>&1 || return 1
+  for _ in {1..120}; do
+    for PID in $(/usr/bin/pgrep -x nwjs 2>/dev/null); do
+      COMMAND=$(/bin/ps -p "$PID" -o command= 2>/dev/null || true)
+      [[ "$COMMAND" == "$GAME_TARGET/Contents/MacOS/"* ]] || continue
+      for TOKEN in ${(z)COMMAND}; do
+        if [[ ${#TOKEN} == 34 && "$TOKEN" =~ '^--[[:alnum:]]{32}$' ]]; then
+          STEAM_ARGUMENT="$TOKEN"
+          /bin/kill "$PID" >/dev/null 2>&1 || true
+          for _ in {1..20}; do
+            /bin/kill -0 "$PID" >/dev/null 2>&1 || return 0
+            sleep 0.05
+          done
+          /bin/kill -9 "$PID" >/dev/null 2>&1 || true
+          return 0
+        fi
+      done
+    done
+    sleep 0.1
+  done
+  return 1
 }
 
 valid_game_target() {
@@ -181,7 +208,30 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
       show_error "Could not copy the compatible Apple Silicon game runtime."
       exit 1
     }
-    /bin/ln -s "$GAME_TARGET/Contents/Resources/app.nw" "$RUNTIME_APP/Contents/Resources/app.nw" || {
+    GAME_PACKAGE="$GAME_TARGET/Contents/Resources/app.nw"
+    COMPAT_PACKAGE="$RUNTIME_SESSION_DIR/app.nw"
+    /bin/mkdir -p "$COMPAT_PACKAGE"
+    for PACKAGE_ITEM in "$GAME_PACKAGE"/*(DN); do
+      [[ "${PACKAGE_ITEM:t}" == "package.json" ]] && continue
+      /bin/ln -s "$PACKAGE_ITEM" "$COMPAT_PACKAGE/${PACKAGE_ITEM:t}" || {
+        show_error "Could not prepare the compatible OMORI game files."
+        exit 1
+      }
+    done
+    /bin/cp "$GAME_PACKAGE/package.json" "$COMPAT_PACKAGE/package.json" || {
+      show_error "Could not prepare the compatible OMORI package."
+      exit 1
+    }
+    /bin/cp "$RESOURCE_DIR/steam-compat.js" "$COMPAT_PACKAGE/steam-compat.js" || {
+      show_error "The Apple Silicon compatibility file is missing. Reinstall the translator."
+      exit 1
+    }
+    /usr/bin/plutil -replace inject_js_start -string steam-compat.js "$COMPAT_PACKAGE/package.json" >/dev/null 2>&1 || \
+      /usr/bin/plutil -insert inject_js_start -string steam-compat.js "$COMPAT_PACKAGE/package.json" >/dev/null 2>&1 || {
+        show_error "Could not enable Apple Silicon compatibility for OMORI."
+        exit 1
+      }
+    /bin/ln -s "$COMPAT_PACKAGE" "$RUNTIME_APP/Contents/Resources/app.nw" || {
       show_error "Could not connect the compatible runtime to the OMORI game files."
       exit 1
     }
@@ -193,6 +243,7 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
     NATIVE_APP_ARGUMENT=""
     NATIVE_USER_DATA_DIR="$HOME/Library/Application Support/$GAME_SHORT_TITLE"
     GAME_PROCESS_NAME="nwjs"
+    APPLE_SILICON_COMPAT=1
   else
     NATIVE_APP_ARGUMENT="$GAME_TARGET/Contents/Resources/app.nw"
   fi
@@ -224,6 +275,13 @@ fi
 if game_main_running; then
   show_error "$GAME_TITLE is already running. Close the game and open $PRODUCT_NAME again."
   exit 1
+fi
+
+if (( APPLE_SILICON_COMPAT )); then
+  if ! capture_steam_argument; then
+    show_error "Steam did not provide the OMORI startup authorization. Make sure Steam is open and you own the game, then try again."
+    exit 1
+  fi
 fi
 
 PORT=9317
@@ -283,7 +341,13 @@ if [[ "$GAME_KIND" == "native_app" ]]; then
   NATIVE_LAUNCH_ARGS=("--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT")
   [[ -n "$NATIVE_APP_ARGUMENT" ]] && NATIVE_LAUNCH_ARGS=("$NATIVE_APP_ARGUMENT" "${NATIVE_LAUNCH_ARGS[@]}")
   [[ -n "$NATIVE_USER_DATA_DIR" ]] && NATIVE_LAUNCH_ARGS=("--user-data-dir=$NATIVE_USER_DATA_DIR" "${NATIVE_LAUNCH_ARGS[@]}")
-  "$NATIVE_BINARY" "${NATIVE_LAUNCH_ARGS[@]}" >/dev/null 2>&1 &
+  if (( APPLE_SILICON_COMPAT )); then
+    VNREVIVAL_STEAM_ARGUMENT="$STEAM_ARGUMENT" SteamAppId="$STEAM_APP_ID" SteamGameId="$STEAM_APP_ID" \
+      "$NATIVE_BINARY" "${NATIVE_LAUNCH_ARGS[@]}" >/dev/null 2>&1 &
+    STEAM_ARGUMENT=""
+  else
+    "$NATIVE_BINARY" "${NATIVE_LAUNCH_ARGS[@]}" >/dev/null 2>&1 &
+  fi
   GAME_PID=$!
 elif [[ "$GAME_KIND" == "native_bin" ]]; then
   "$NATIVE_BINARY" "--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT" >/dev/null 2>&1 &

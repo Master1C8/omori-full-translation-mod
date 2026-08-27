@@ -22,6 +22,7 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 [[ -x "$APP/Contents/Resources/argos_service.py" ]]
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
+[[ -s "$APP/Contents/Resources/steam-compat.js" ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
 [[ -x "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs" ]]
 [[ -s "$ZIP" ]]
@@ -40,6 +41,7 @@ if grep -Eqi '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$UNEXPECTED
   exit 1
 fi
 grep -Fq '/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs' <<< "$CONTENTS"
+grep -Fq '/Contents/Resources/steam-compat.js' <<< "$CONTENTS"
 RUNTIME_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs")
 grep -Eq '(^| )arm64( |$)' <<< "$RUNTIME_ARCHS"
 
