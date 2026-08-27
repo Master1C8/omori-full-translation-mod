@@ -144,6 +144,11 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /const gameText = "\\\\mar" \+ translated/);
   assert.match(runtimeSource, /Existing cached languages will be skipped/);
   assert.match(runtimeSource, /activeOperation = "test-phrase"/);
+  assert.match(runtimeSource, /async function requestTestPhraseChunk/);
+  assert.match(runtimeSource, /deferRateLimits: true/);
+  assert.match(runtimeSource, /rate limited, retry in \$\{seconds\}s/);
+  assert.match(runtimeSource, /const concurrency = 1/);
+  assert.match(runtimeSource, /Math\.max\(TEST_PHRASE_GOOGLE_DELAY, providerConfig\.delay\)/);
   assert.match(runtimeSource, /Test phrase ready in \$\{targets\.length\} languages/);
 });
 

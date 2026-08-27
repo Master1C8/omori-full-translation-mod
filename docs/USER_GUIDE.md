@@ -94,6 +94,8 @@ The purple `Super Bulk Translation · 17 languages` button translates the extrac
 
 Confirm the operation, keep the provider available, and expect a full run to take hours. The button becomes `Cancel Super Bulk`; cancelling keeps all completed cache entries. Press it again later to resume from missing entries. Online providers use the same bulk-upload consent as the normal bulk operation. Argos is unavailable for Super Bulk because its model catalogue does not cover all 17 languages.
 
+`Test Phrase · All Languages` translates only `Hi, OMORI! Cliff-faced as usual…` into every language available through the selected service. It keeps running when you switch applications and processes languages one at a time. Google requests are paced; a temporary `HTTP 429` starts a visible retry countdown instead of creating a failed result. Cancelling keeps completed languages, and the next run skips them.
+
 Cached translations are always applied automatically as new dialogue appears. There is no separate apply button or auto-apply setting, and normal gameplay does not send text over the network.
 
 OMORI canvas hooks display cached translations only in dialogue text, speaker names, and dialogue choices. They never start background provider requests. `Original` also applies to newly drawn dialogue text.
@@ -204,7 +206,7 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 
 Подтвердите запуск и не отключайте сервис до окончания работы. Полный проход может занять много часов. Во время работы кнопка превращается в `Cancel Super Bulk`; отмена сохраняет все готовые записи, а повторный запуск продолжает с отсутствующих. Для онлайн-сервисов действует то же согласие на массовую отправку, что и для обычного bulk-перевода. Argos недоступен в этом режиме, потому что его каталог моделей не покрывает все 17 языков.
 
-Кнопка `Test Phrase · All Languages` переводит только реплику `Hi, OMORI! Cliff-faced as usual…` во все языки, доступные выбранному сервису. Управляющие коды OMORI не отправляются провайдеру, готовые языки пропускаются, а повторное нажатие продолжает отсутствующие. После завершения оставайтесь на этой реплике и переключайте язык для ручной проверки Canvas.
+Кнопка `Test Phrase · All Languages` переводит только реплику `Hi, OMORI! Cliff-faced as usual…` во все языки, доступные выбранному сервису. Управляющие коды OMORI не отправляются провайдеру, готовые языки пропускаются, а повторное нажатие продолжает отсутствующие. Тест продолжает работу при переключении в другое приложение и обрабатывает языки по одному. Для Google запросы выполняются с паузой, а временный `HTTP 429` запускает видимый обратный отсчёт и повтор того же языка вместо `failed`. После завершения оставайтесь на этой реплике и переключайте язык для ручной проверки Canvas.
 
 Готовые переводы из кэша всегда применяются автоматически при появлении новых реплик. Отдельной кнопки применения и настройки автоприменения нет; обычный игровой процесс не отправляет текст в сеть.
 

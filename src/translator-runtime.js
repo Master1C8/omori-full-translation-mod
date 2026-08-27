@@ -72,6 +72,9 @@
   const CACHE_IO_BATCH_SIZE = 250;
   const CACHE_IMPORT_ENTRY_LIMIT = 500000;
   const TRANSLATION_LOG_LIMIT = 40;
+  const TEST_PHRASE_GOOGLE_DELAY = 750;
+  const TEST_PHRASE_RATE_LIMIT_DELAY = 15000;
+  const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -653,9 +656,16 @@
     } catch (_) {}
   }
 
-  async function requestChunk(provider, text, language, signal) {
+  function isTranslationRateLimited(error) {
+    const code = String(error && error.code || "");
+    const message = String(error && error.message || "");
+    return code === "openai_rate_limited" || /HTTP 429|rate.?limit|too many requests/i.test(message);
+  }
+
+  async function requestChunk(provider, text, language, signal, options) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) throw new Error("Unknown translation service");
+    const requestOptions = options || {};
     let lastError = null;
     const retries = Math.max(1, Number(selectedProvider.retries) || 1);
     for (let attempt = 0; attempt < retries; attempt += 1) {
@@ -672,6 +682,7 @@
       } catch (error) {
         if (error && error.name === "AbortError") throw error;
         lastError = error;
+        if (requestOptions.deferRateLimits && isTranslationRateLimited(error)) break;
         if (attempt + 1 < retries) await sleep(350 * Math.pow(2, attempt), signal);
       }
     }
@@ -700,6 +711,31 @@
     if (/HTTP 5\d\d/i.test(message)) return `${providerName} is temporarily unavailable`;
     if (/failed to fetch|networkerror|network request failed|internet|offline/i.test(message)) return "Network connection failed";
     return message || `${providerName} failed`;
+  }
+
+  async function waitForRateLimitRetry(delay, signal, onWait) {
+    const deadline = Date.now() + delay;
+    while (!signal.aborted) {
+      const remaining = Math.max(0, deadline - Date.now());
+      if (!remaining) return;
+      if (typeof onWait === "function") onWait(Math.max(1, Math.ceil(remaining / 1000)));
+      await sleep(Math.min(1000, remaining), signal);
+    }
+  }
+
+  async function requestTestPhraseChunk(provider, text, language, signal, onRateLimitWait) {
+    let retryDelay = TEST_PHRASE_RATE_LIMIT_DELAY;
+    while (!signal.aborted) {
+      try {
+        return await requestChunk(provider, text, language, signal, { deferRateLimits: true });
+      } catch (error) {
+        if (error && error.name === "AbortError") throw error;
+        if (!isTranslationRateLimited(error)) throw error;
+        await waitForRateLimitRetry(retryDelay, signal, onRateLimitWait);
+        retryDelay = Math.min(retryDelay * 2, TEST_PHRASE_RATE_LIMIT_MAX_DELAY);
+      }
+    }
+    throw new DOMException("Aborted", "AbortError");
   }
 
   async function translateText(source, language, provider, signal, allowNetwork) {
@@ -1819,7 +1855,16 @@
             if (existing) {
               cached += 1;
             } else {
-              const translated = String(await requestChunk(provider, LANGUAGE_TEST_PHRASE_VISIBLE, language, signal) || "").trim();
+              const translated = String(await requestTestPhraseChunk(
+                provider,
+                LANGUAGE_TEST_PHRASE_VISIBLE,
+                language,
+                signal,
+                (seconds) => setStatus(
+                  `Test phrase: ${done}/${targets.length} · ${name} · rate limited, retry in ${seconds}s · `
+                  + `${created} new · ${cached} cached · ${failed} failed`
+                )
+              ) || "").trim();
               if (!translated || translated.toLowerCase().includes("undefined")) {
                 throw new Error("Translation service returned an empty or invalid test phrase");
               }
@@ -1828,7 +1873,10 @@
               const gameText = "\\mar" + translated.replace(/\r\n?/g, "\n").replace(/\n+/g, "<br>");
               await cachePut(key, gameText);
               created += 1;
-              await sleep(providerConfig.delay, signal);
+              const testDelay = provider === "google"
+                ? Math.max(TEST_PHRASE_GOOGLE_DELAY, providerConfig.delay)
+                : providerConfig.delay;
+              await sleep(testDelay, signal);
             }
           } catch (error) {
             if (error && error.name === "AbortError") return;
@@ -1841,7 +1889,9 @@
         }
       }
 
-      const concurrency = Math.min(Number(providerConfig.concurrency) || 1, 3);
+      // Reliability matters more than speed here: 249 concurrent probe calls
+      // trigger public-service burst limits and turn transient 429s into noise.
+      const concurrency = 1;
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
       if (signal.aborted) {
         setStatus(`Test phrase stopped at ${done}/${targets.length}: ${activeAbortReason || "cancelled by user"}`);
@@ -2941,7 +2991,7 @@
     if (document.hidden) {
       clearTimeout(scanTimer);
       scanTimer = 0;
-      if (activeOperation !== "bulk" && activeOperation !== "super-bulk") {
+      if (activeOperation !== "bulk" && activeOperation !== "super-bulk" && activeOperation !== "test-phrase") {
         abortActiveOperation("game window was hidden");
       }
       return;
