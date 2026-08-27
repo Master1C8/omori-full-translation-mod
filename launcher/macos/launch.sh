@@ -35,6 +35,7 @@ ARGOS_LOG="$ARGOS_DATA_DIR/argos-service.log"
 RESELECT_MARKER="$ARGOS_DATA_DIR/.reselect-game-executable"
 ARGOS_PID=""
 GAME_PID=""
+RUNTIME_SESSION_DIR=""
 
 cleanup() {
   if [[ -n "$ARGOS_PID" ]] && kill -0 "$ARGOS_PID" >/dev/null 2>&1; then
@@ -42,6 +43,9 @@ cleanup() {
   fi
   if [[ -n "$GAME_PID" ]] && kill -0 "$GAME_PID" >/dev/null 2>&1; then
     kill "$GAME_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RUNTIME_SESSION_DIR" && "$RUNTIME_SESSION_DIR" == "${TMPDIR%/}/vnrevival-omori-runtime."* ]]; then
+    /bin/rm -rf -- "$RUNTIME_SESSION_DIR"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -142,6 +146,8 @@ print -r -- "$GAME_TARGET" > "$GAME_PATH_FILE"
 
 # Determine launch mode and executable
 NATIVE_BINARY=""
+NATIVE_APP_ARGUMENT=""
+NATIVE_USER_DATA_DIR=""
 if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
   if [[ ! -d "$GAME_TARGET/Contents/Resources/app.nw" ]]; then
     show_error "The selected application is a shortcut, not the real $GAME_TITLE game."
@@ -159,6 +165,37 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
     exit 1
   fi
   GAME_KIND="native_app"
+
+  # OMORI ships an Intel-only NW.js/Chromium 65 runtime. Its stack sampler
+  # crashes under Rosetta on current Apple Silicon macOS releases. Run the
+  # untouched game package through the bundled native ARM64 NW.js instead.
+  BUNDLED_NWJS_APP="$RESOURCE_DIR/NWJS Runtime.app"
+  APPLE_SILICON_AVAILABLE=$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null || print 0)
+  if [[ "$APPLE_SILICON_AVAILABLE" == "1" && -x "$BUNDLED_NWJS_APP/Contents/MacOS/nwjs" ]]; then
+    RUNTIME_SESSION_DIR=$(/usr/bin/mktemp -d "${TMPDIR%/}/vnrevival-omori-runtime.XXXXXX") || {
+      show_error "Could not prepare the compatible Apple Silicon game runtime."
+      exit 1
+    }
+    RUNTIME_APP="$RUNTIME_SESSION_DIR/NWJS Runtime.app"
+    /bin/cp -cR "$BUNDLED_NWJS_APP" "$RUNTIME_APP" || {
+      show_error "Could not copy the compatible Apple Silicon game runtime."
+      exit 1
+    }
+    /bin/ln -s "$GAME_TARGET/Contents/Resources/app.nw" "$RUNTIME_APP/Contents/Resources/app.nw" || {
+      show_error "Could not connect the compatible runtime to the OMORI game files."
+      exit 1
+    }
+    /usr/bin/codesign --force --deep --sign - "$RUNTIME_APP" >/dev/null 2>&1 || {
+      show_error "Could not authorize the compatible Apple Silicon game runtime."
+      exit 1
+    }
+    NATIVE_BINARY="$RUNTIME_APP/Contents/MacOS/nwjs"
+    NATIVE_APP_ARGUMENT=""
+    NATIVE_USER_DATA_DIR="$HOME/Library/Application Support/$GAME_SHORT_TITLE"
+    GAME_PROCESS_NAME="nwjs"
+  else
+    NATIVE_APP_ARGUMENT="$GAME_TARGET/Contents/Resources/app.nw"
+  fi
 elif [[ "${GAME_TARGET:l}" == *.exe ]]; then
   GAME_KIND="crossover"
   GAME_PROCESS_NAME="${GAME_TARGET:t}"
@@ -234,14 +271,19 @@ if [[ -n "$ARGOS_PORT" && -x "$PYTHON" ]]; then
   if /usr/bin/nc -z 127.0.0.1 "$ARGOS_PORT" >/dev/null 2>&1; then
     ARGOS_URL="http://127.0.0.1:$ARGOS_PORT"
   else
-    cleanup
+    if [[ -n "$ARGOS_PID" ]] && kill -0 "$ARGOS_PID" >/dev/null 2>&1; then
+      kill "$ARGOS_PID" >/dev/null 2>&1 || true
+    fi
     ARGOS_PID=""
     ARGOS_TOKEN=""
   fi
 fi
 
 if [[ "$GAME_KIND" == "native_app" ]]; then
-  "$NATIVE_BINARY" "$GAME_TARGET/Contents/Resources/app.nw" "--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT" >/dev/null 2>&1 &
+  NATIVE_LAUNCH_ARGS=("--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT")
+  [[ -n "$NATIVE_APP_ARGUMENT" ]] && NATIVE_LAUNCH_ARGS=("$NATIVE_APP_ARGUMENT" "${NATIVE_LAUNCH_ARGS[@]}")
+  [[ -n "$NATIVE_USER_DATA_DIR" ]] && NATIVE_LAUNCH_ARGS=("--user-data-dir=$NATIVE_USER_DATA_DIR" "${NATIVE_LAUNCH_ARGS[@]}")
+  "$NATIVE_BINARY" "${NATIVE_LAUNCH_ARGS[@]}" >/dev/null 2>&1 &
   GAME_PID=$!
 elif [[ "$GAME_KIND" == "native_bin" ]]; then
   "$NATIVE_BINARY" "--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT" >/dev/null 2>&1 &

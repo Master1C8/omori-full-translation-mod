@@ -39,6 +39,7 @@ MAC_NOTARY_PROFILE="${VNREVIVAL_MAC_NOTARY_PROFILE:-}"
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
 
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/test.sh"
+"$ROOT/scripts/prepare-nwjs-macos.sh"
 rm -rf "$BUILD_DIR/macos"
 mkdir -p "$BUILD_DIR/checksums" "$READY_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -80,6 +81,7 @@ cp "$BUILD_DIR/VNRevivalTranslatorController" "$APP/Contents/Resources/"
 cp "$BUILD_DIR/translator.bundle.js" "$APP/Contents/Resources/"
 cp "$GAME_MANIFEST" "$APP/Contents/Resources/game.json"
 cp "$ROOT/src/argos_service.py" "$APP/Contents/Resources/"
+/bin/cp -cR "$BUILD_DIR/nwjs-macos-arm64-${VNREVIVAL_NWJS_VERSION:-0.115.0}/NWJS Runtime.app" "$APP/Contents/Resources/NWJS Runtime.app"
 cp "$ROOT/$ICON_ICNS" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/README.md" "$APP/Contents/Resources/README.md"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
@@ -104,6 +106,9 @@ rm -f "$MAC_ZIP" "$MAC_CHECKSUM"
 
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/build-windows.sh" "$BUILD_DIR/translator.bundle.js"
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/verify.sh"
+/bin/rm -rf -- "$ROOT/$PRODUCT_NAME.app"
+/bin/cp -cR "$APP" "$ROOT/$PRODUCT_NAME.app"
+/usr/bin/codesign --verify --deep --strict "$ROOT/$PRODUCT_NAME.app"
 for ITEM in "$READY_DIR"/*(DN); do
   case "${ITEM:t}" in
     "$ARCHIVE_PREFIX-macOS-$VERSION.zip"|"$ARCHIVE_PREFIX-Windows-$VERSION.zip") ;;

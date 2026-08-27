@@ -38,7 +38,7 @@ python3 scripts/render-template.py launcher/windows/launcher.c "$ROOT/.build/win
   WINDOWS_EXECUTABLE "$WINDOWS_EXECUTABLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS" \
   GAME_ID "$GAME_ID" STEAM_APP_ID "$STEAM_APP_ID" DEBUG_TARGET_TITLE "$DEBUG_TARGET_TITLE" DEBUG_TARGET_URL "$DEBUG_TARGET_URL"
 PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m unittest discover -s tests -p 'test_*.py'
-zsh -n launcher/macos/launch.sh scripts/build.sh scripts/build-windows.sh scripts/test.sh scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh
+zsh -n launcher/macos/launch.sh scripts/build.sh scripts/build-windows.sh scripts/test.sh scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh scripts/prepare-nwjs-macos.sh
 
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -municode -mwindows \
@@ -116,6 +116,13 @@ grep -Eq 'choose_game_executable' launcher/macos/launch.sh
 grep -Eq 'valid_game_target' launcher/macos/launch.sh
 grep -Fq 'Contents/Resources/app.nw' launcher/macos/launch.sh
 grep -Fq 'not a Steam desktop shortcut' launcher/macos/launch.sh
+grep -Fq 'NWJS Runtime.app' launcher/macos/launch.sh
+grep -Fq 'hw.optional.arm64' launcher/macos/launch.sh
+grep -Fq 'vnrevival-omori-runtime.' launcher/macos/launch.sh
+grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
+grep -Fq 'kill "$ARGOS_PID"' launcher/macos/launch.sh
+grep -Fq "UNEXPECTED_CONTENTS=" scripts/verify.sh
+grep -Fq '"$ROOT/$PRODUCT_NAME.app"' scripts/build.sh
 grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh
 grep -Fq -- '--credential-id "$GAME_ID"' launcher/macos/launch.sh
 grep -Fq -- '--game-path "$GAME_TARGET"' launcher/macos/launch.sh

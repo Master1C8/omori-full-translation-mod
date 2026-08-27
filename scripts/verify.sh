@@ -23,6 +23,7 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
+[[ -x "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs" ]]
 [[ -s "$ZIP" ]]
 [[ -s "$WINDOWS_ZIP" ]]
 /usr/bin/codesign --verify --deep --strict "$APP"
@@ -33,10 +34,14 @@ grep -Eq '(^| )x86_64( |$)' <<< "$CONTROLLER_ARCHS"
 (cd "$READY" && shasum -a 256 -c "$WINDOWS_CHECKSUM")
 
 CONTENTS=$(unzip -Z1 "$ZIP")
-if grep -Ei '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$CONTENTS"; then
+UNEXPECTED_CONTENTS=$(grep -Fv '/Contents/Resources/NWJS Runtime.app/' <<< "$CONTENTS" || true)
+if grep -Eqi '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$UNEXPECTED_CONTENTS"; then
   echo "Archive contains game or user files" >&2
   exit 1
 fi
+grep -Fq '/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs' <<< "$CONTENTS"
+RUNTIME_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs")
+grep -Eq '(^| )arm64( |$)' <<< "$RUNTIME_ARCHS"
 
 WINDOWS_CONTENTS=$(unzip -Z1 "$WINDOWS_ZIP")
 grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
