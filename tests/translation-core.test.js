@@ -114,6 +114,30 @@ test("builds and parses MyMemory requests", () => {
   assert.throws(() => core.parseMyMemoryResponse({ responseStatus: 403, responseDetails: "limit" }));
 });
 
+test("persists bounded rate-limit backoff state across restarts", () => {
+  const now = 1_000_000;
+  const initial = 15 * 60 * 1000;
+  const maximum = 60 * 60 * 1000;
+  const first = core.createRateLimitState(initial, now, initial, maximum);
+  assert.deepEqual(first, { until: now + initial, nextDelay: 30 * 60 * 1000 });
+  assert.deepEqual(
+    core.parseRateLimitState(JSON.stringify(first), null, now + initial, initial, maximum),
+    first
+  );
+  const second = core.createRateLimitState(first.nextDelay, now + initial, initial, maximum);
+  assert.deepEqual(second, { until: now + 45 * 60 * 1000, nextDelay: maximum });
+  const capped = core.createRateLimitState(second.nextDelay, second.until, initial, maximum);
+  assert.equal(capped.nextDelay, maximum);
+  assert.deepEqual(
+    core.parseRateLimitState(null, now + initial, now, initial, maximum),
+    { until: now + initial, nextDelay: 30 * 60 * 1000 }
+  );
+  assert.deepEqual(
+    core.parseRateLimitState("broken", now - 1, now, initial, maximum),
+    { until: 0, nextDelay: initial }
+  );
+});
+
 test("cache separates providers and languages while retaining legacy Google keys", () => {
   const googleRu = core.makeCacheKey("Hello", "ru", "google");
   const googleDe = core.makeCacheKey("Hello", "de", "google");

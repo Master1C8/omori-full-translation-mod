@@ -77,7 +77,8 @@
   const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY = 60 * 60 * 1000;
-  const GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
+  const GOOGLE_RATE_LIMIT_STATE_KEY = `${game.storageNamespace}.google-rate-limit-state.v2`;
+  const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -726,15 +727,34 @@
     }
   }
 
+  function googleRateLimitState() {
+    return core.parseRateLimitState(
+      localStorage.getItem(GOOGLE_RATE_LIMIT_STATE_KEY),
+      localStorage.getItem(LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY),
+      Date.now(),
+      TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY,
+      TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY
+    );
+  }
+
+  function clearGoogleRateLimit() {
+    localStorage.removeItem(GOOGLE_RATE_LIMIT_STATE_KEY);
+    localStorage.removeItem(LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY);
+  }
+
   function googleRateLimitRemaining() {
-    const deadline = Number(localStorage.getItem(GOOGLE_RATE_LIMIT_UNTIL_KEY)) || 0;
-    const remaining = Math.max(0, deadline - Date.now());
-    if (!remaining && deadline) localStorage.removeItem(GOOGLE_RATE_LIMIT_UNTIL_KEY);
-    return remaining;
+    return Math.max(0, googleRateLimitState().until - Date.now());
   }
 
   function rememberGoogleRateLimit(delay) {
-    localStorage.setItem(GOOGLE_RATE_LIMIT_UNTIL_KEY, String(Date.now() + delay));
+    const state = core.createRateLimitState(
+      delay,
+      Date.now(),
+      TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY,
+      TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY
+    );
+    localStorage.setItem(GOOGLE_RATE_LIMIT_STATE_KEY, JSON.stringify(state));
+    localStorage.removeItem(LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY);
   }
 
   function formatRetryCountdown(seconds) {
@@ -746,7 +766,7 @@
 
   async function requestTestPhraseChunk(provider, text, language, signal, onRateLimitWait) {
     const isGoogle = provider === "google";
-    let retryDelay = isGoogle ? TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY : TEST_PHRASE_RATE_LIMIT_DELAY;
+    let retryDelay = isGoogle ? googleRateLimitState().nextDelay : TEST_PHRASE_RATE_LIMIT_DELAY;
     const maximumRetryDelay = isGoogle
       ? TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY
       : TEST_PHRASE_RATE_LIMIT_MAX_DELAY;
@@ -757,14 +777,17 @@
       }
       try {
         const translated = await requestChunk(provider, text, language, signal, { deferRateLimits: true });
-        if (isGoogle) localStorage.removeItem(GOOGLE_RATE_LIMIT_UNTIL_KEY);
+        if (isGoogle) clearGoogleRateLimit();
         return translated;
       } catch (error) {
         if (error && error.name === "AbortError") throw error;
         if (!isTranslationRateLimited(error)) throw error;
-        if (isGoogle) rememberGoogleRateLimit(retryDelay);
+        if (isGoogle) {
+          retryDelay = googleRateLimitState().nextDelay;
+          rememberGoogleRateLimit(retryDelay);
+        }
         await waitForRateLimitRetry(retryDelay, signal, onRateLimitWait);
-        retryDelay = Math.min(retryDelay * 2, maximumRetryDelay);
+        if (!isGoogle) retryDelay = Math.min(retryDelay * 2, maximumRetryDelay);
       }
     }
     throw new DOMException("Aborted", "AbortError");

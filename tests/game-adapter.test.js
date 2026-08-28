@@ -148,6 +148,11 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /async function requestTestPhraseChunk/);
   assert.match(runtimeSource, /deferRateLimits: true/);
   assert.match(runtimeSource, /googleRateLimitRemaining/);
+  assert.match(runtimeSource, /GOOGLE_RATE_LIMIT_STATE_KEY/);
+  assert.match(runtimeSource, /LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY/);
+  assert.match(runtimeSource, /core\.parseRateLimitState/);
+  assert.match(runtimeSource, /core\.createRateLimitState/);
+  assert.match(runtimeSource, /retryDelay = googleRateLimitState\(\)\.nextDelay/);
   assert.match(runtimeSource, /rememberGoogleRateLimit/);
   assert.match(runtimeSource, /Google processes one language every 5 seconds/);
   assert.match(runtimeSource, /temporarily blocked requests/);

@@ -284,6 +284,46 @@
     return translated;
   }
 
+  function normalizeRateLimitDelay(value, initialDelay, maximumDelay) {
+    const initial = Math.max(1, Number(initialDelay) || 1);
+    const maximum = Math.max(initial, Number(maximumDelay) || initial);
+    const delay = Number(value);
+    return Number.isFinite(delay) ? Math.min(maximum, Math.max(initial, delay)) : initial;
+  }
+
+  function parseRateLimitState(value, legacyDeadline, now, initialDelay, maximumDelay) {
+    const currentTime = Number(now) || Date.now();
+    const initial = normalizeRateLimitDelay(initialDelay, initialDelay, maximumDelay);
+    const maximum = Math.max(initial, Number(maximumDelay) || initial);
+    try {
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      if (parsed && typeof parsed === "object") {
+        const until = Number(parsed.until);
+        if (Number.isFinite(until) && until > 0) {
+          return {
+            until,
+            nextDelay: normalizeRateLimitDelay(parsed.nextDelay, initial, maximum)
+          };
+        }
+      }
+    } catch (_) {}
+    const legacyUntil = Number(legacyDeadline);
+    if (Number.isFinite(legacyUntil) && legacyUntil > currentTime) {
+      return { until: legacyUntil, nextDelay: Math.min(initial * 2, maximum) };
+    }
+    return { until: 0, nextDelay: initial };
+  }
+
+  function createRateLimitState(delay, now, initialDelay, maximumDelay) {
+    const currentTime = Number(now) || Date.now();
+    const currentDelay = normalizeRateLimitDelay(delay, initialDelay, maximumDelay);
+    const maximum = Math.max(currentDelay, Number(maximumDelay) || currentDelay);
+    return {
+      until: currentTime + currentDelay,
+      nextDelay: Math.min(currentDelay * 2, maximum)
+    };
+  }
+
   function buildContextSource(parts) {
     const values = Array.isArray(parts) ? parts.map((part) => normalizeText(part)) : [];
     return values.map((part, index) => index
@@ -372,6 +412,8 @@
     parseGoogleResponse,
     buildMyMemoryUrl,
     parseMyMemoryResponse,
+    parseRateLimitState,
+    createRateLimitState,
     buildContextSource,
     parseContextTranslation,
     makeCacheKey,
