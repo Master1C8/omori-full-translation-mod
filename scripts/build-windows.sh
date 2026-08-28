@@ -102,6 +102,7 @@ print -r -- "$RUNTIME_BYTES" > "$SITE_PACKAGES/.vnrevival-runtime-bytes"
 
 cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
 cp "$ROOT/src/argos_service.py" "$RESOURCE_DIR/argos_service.py"
+cp -R "$ROOT/src/bergamot-web" "$RESOURCE_DIR/bergamot-web"
 cp "$GAME_MANIFEST" "$RESOURCE_DIR/game.json"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" \
   PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS"
@@ -156,5 +157,6 @@ grep -Fqx "$DIST_NAME/resources/python/python.exe" "$BUILD_ROOT/archive-contents
 grep -Fqx "$DIST_NAME/resources/argos_service.py" "$BUILD_ROOT/archive-contents.txt"
 grep -Fqx "$DIST_NAME/resources/translator.bundle.js" "$BUILD_ROOT/archive-contents.txt"
 grep -Fqx "$DIST_NAME/resources/game.json" "$BUILD_ROOT/archive-contents.txt"
+grep -Fqx "$DIST_NAME/resources/bergamot-web/worker/bergamot-translator-worker.wasm" "$BUILD_ROOT/archive-contents.txt"
 
 echo "Built $ZIP_PATH"

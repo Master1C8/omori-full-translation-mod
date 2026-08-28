@@ -77,6 +77,90 @@ test("normalizes OMORI HTML and runtime line breaks to the same fuzzy source", (
   assert.equal(core.stripOmoriPrefixes("\\n<RED SMILE>"), "");
 });
 
+test("lexes OMORI controls and metadata without consuming dialogue text", () => {
+  const source = '<WordWrap>\\marHi, OMORI!\\!<br>Use \\N[1] and \\n<RED SMILE>.\\aub [TRASH] VRCTXSEP1X';
+  assert.deepEqual(core.protectedMarkupTokens(source), [
+    "<WordWrap>", "\\mar", "\\!", "<br>", "\\N[1]", "\\n<RED SMILE>", "\\aub", "[TRASH]", "VRCTXSEP1X"
+  ]);
+  assert.equal(core.tokenizeProtectedMarkup("\\aubHmph!")[1].value, "Hmph!");
+  assert.deepEqual(
+    core.protectedMarkupTokens('A \\"FOR SALE\\" sign.\\sxbf\\spxh\\shaw\\itemget\\LECLEAR\\OOOO'),
+    ['\\"', '\\"', "\\sxbf", "\\spxh", "\\shaw", "\\itemget", "\\LECLEAR", "\\OOOO"]
+  );
+});
+
+test("masks and restores protected OMORI markup exactly", () => {
+  const source = "Hmph...\\! You kids are pretty strong.\\!<br>Now.\\jaw [TRASH]";
+  const plan = core.createProtectedTranslationPlan(source, "TEST");
+  assert.equal(plan.tokens.length, 5);
+  const translated = plan.masked
+    .replace("Hmph...", "Хмм...")
+    .replace("You kids are pretty strong.", "Вы, дети, очень сильны.")
+    .replace("Now.", "Сейчас.");
+  assert.equal(plan.restore(translated), "Хмм...\\! Вы, дети, очень сильны.\\!<br>Сейчас.\\jaw [TRASH]");
+  assert.equal(plan.restore(translated.replace(plan.markers[1], "")), null);
+  assert.equal(core.protectedMarkupMatches(source, "Хмм...\\! Дети.\\!<br>Сейчас.\\jaw [TRASH]"), true);
+  assert.equal(core.protectedMarkupMatches(source, "Хмм...\\！ Дети.<br>Сейчас. [мусор]"), false);
+});
+
+test("falls back to translating text segments when a model damages mask markers", async () => {
+  const source = "Hmph!\\! Took you long enough!\\aub";
+  const calls = [];
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    if (text.includes("ZXQOMORI")) return text.replace(/ZXQOMORI\w+/g, "");
+    if (text === "Hmph!") return "Хмм!";
+    if (text === "Took you long enough!") return "Долго же вы!";
+    return text;
+  }, "FALLBACK");
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.text, "Хмм!\\! Долго же вы!\\aub");
+  assert.deepEqual(core.protectedMarkupTokens(result.text), ["\\!", "\\aub"]);
+  assert.equal(calls.length, 3);
+});
+
+test("repairs provider whitespace around rigid controls without moving formatting codes", () => {
+  const source = "Fine...\\! Next<br>Line\\her";
+  const plan = core.createProtectedTranslationPlan(source, "LAYOUT");
+  const providerText = `Ладно... ${plan.markers[0]} Дальше${plan.markers[1]} Строка ${plan.markers[2]}`;
+  assert.equal(plan.restore(providerText), "Ладно...\\! Дальше<br>Строка\\her");
+  assert.equal(core.protectedMarkupLayoutMatches(source, "Ладно... \\! Дальше<br> Строка \\her"), false);
+
+  const colored = "BASIL's \\c[4]PHOTO ALBUM\\c[0].";
+  const colorPlan = core.createProtectedTranslationPlan(colored, "COLOR");
+  assert.equal(
+    colorPlan.restore(`${colorPlan.markers[0]}ФОТОАЛЬБОМ БЭЗИЛА${colorPlan.markers[1]}.`),
+    "\\c[4]ФОТОАЛЬБОМ БЭЗИЛА\\c[0]."
+  );
+});
+
+test("uses segment fallback when punctuation moves past a terminal command", async () => {
+  const source = "All done.\\her";
+  const result = await core.translateProtectedText(source, async (text) => {
+    if (text.includes("ZXQOMORI")) return text.replace(/(ZXQOMORI\w+)/, "$1.").replace("All done.", "Готово");
+    if (text === "All done.") return "Всё готово.";
+    return text;
+  }, "TERMINAL");
+  assert.equal(result.usedFallback, true);
+  assert.equal(result.text, "Всё готово.\\her");
+});
+
+test("preserves escaped quotes as markup instead of letting providers rewrite them", () => {
+  const source = 'A \\"FOR SALE\\" sign.';
+  const plan = core.createProtectedTranslationPlan(source, "QUOTES");
+  assert.equal(
+    plan.restore(`Табличка ${plan.markers[0]}ПРОДАЕТСЯ${plan.markers[1]}.`),
+    'Табличка \\"ПРОДАЕТСЯ\\".'
+  );
+});
+
+test("rejects markup invented by a provider even when the source has no controls", async () => {
+  await assert.rejects(
+    core.translateProtectedText("An old smelly sock", async () => "Старый носок [TRASH]"),
+    (error) => error && error.code === "markup_format_invalid"
+  );
+});
+
 test("splits long Google text on Unicode-safe boundaries", () => {
   const text = "A long sentence with an emoji 😀. ".repeat(300);
   const chunks = core.splitLongText(text, 3500);

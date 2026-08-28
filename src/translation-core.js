@@ -19,6 +19,13 @@
   const CJK_LANGUAGES = new Set(["ja", "ko", "yue", "zh-CN", "zh-TW"]);
   const CONTEXT_MARKER_PREFIX = "VRCTXSEP";
   const CONTEXT_MARKER_SUFFIX = "X";
+  const PROTECTED_MARKUP_VERSION = "omori-markup-v2";
+  const PROTECTED_MARKER_PREFIX = "ZXQOMORI";
+  const OMORI_BARE_COMMANDS = [
+    "itemget", "leclear", "sxbf", "spxh", "shaw", "oooo",
+    "red-glasses lady", "old hobo", "kel-mom",
+    "omori", "ren", "kel", "aub", "her", "bas", "mar", "smm", "cap", "ms", "plu", "kim", "van", "po"
+  ].sort((left, right) => right.length - left.length);
   let graphemeSegmenter;
 
   function isRtlLanguage(language) {
@@ -141,6 +148,224 @@
     if (/^[A-Za-z0-9_.-]+\.(png|jpe?g|gif|webp|svg|js|css|json|ogg|m4a|mp3|rpgmvp|rpgmvo)$/i.test(text)) return false;
     if (/^[A-F0-9]{8,}$/i.test(text)) return false;
     return true;
+  }
+
+  function protectedTokenAt(text, offset) {
+    const rest = text.slice(offset);
+    let match = rest.match(/^VRCTXSEP\d+X/);
+    if (match) return match[0];
+
+    if (rest[0] === "\\") {
+      for (const command of OMORI_BARE_COMMANDS) {
+        if (rest.slice(1, command.length + 1).toLowerCase() === command) {
+          return rest.slice(0, command.length + 1);
+        }
+      }
+      match = rest.match(/^\\[A-Za-z][A-Za-z0-9_-]*(?:\[[^\]\r\n]*\]|<[^<>\r\n]*>)/);
+      if (match) return match[0];
+      match = rest.match(/^\\(?:[A-Za-z]{1,3}|[^A-Za-z0-9\r\n])/);
+      if (match) return match[0];
+    }
+
+    match = rest.match(/^<[^<>\r\n]{1,240}>/);
+    if (match) return match[0];
+    match = rest.match(/^\[[^\]\r\n]{1,240}\]/);
+    return match ? match[0] : "";
+  }
+
+  function tokenizeProtectedMarkup(value) {
+    const text = String(value == null ? "" : value);
+    const segments = [];
+    let textStart = 0;
+    let offset = 0;
+    while (offset < text.length) {
+      const token = protectedTokenAt(text, offset);
+      if (!token) {
+        offset += 1;
+        continue;
+      }
+      if (offset > textStart) segments.push({ type: "text", value: text.slice(textStart, offset) });
+      segments.push({ type: "token", value: token });
+      offset += token.length;
+      textStart = offset;
+    }
+    if (textStart < text.length) segments.push({ type: "text", value: text.slice(textStart) });
+    return segments;
+  }
+
+  function protectedMarkupTokens(value) {
+    return tokenizeProtectedMarkup(value)
+      .filter((segment) => segment.type === "token")
+      .map((segment) => segment.value);
+  }
+
+  function protectedMarkupMatches(source, translation) {
+    const sourceTokens = protectedMarkupTokens(source);
+    const translatedTokens = protectedMarkupTokens(translation);
+    return sourceTokens.length === translatedTokens.length
+      && sourceTokens.every((token, index) => token === translatedTokens[index]);
+  }
+
+  function protectedMarkupParts(value) {
+    const tokens = [];
+    const textParts = [""];
+    for (const segment of tokenizeProtectedMarkup(value)) {
+      if (segment.type === "token") {
+        tokens.push(segment.value);
+        textParts.push("");
+      } else {
+        textParts[textParts.length - 1] += segment.value;
+      }
+    }
+    return { tokens, textParts };
+  }
+
+  function isWhitespaceRigidToken(token) {
+    return /^<br\s*\/?\s*>$/i.test(token)
+      || /^\\[.!|^{}$\\]$/.test(token);
+  }
+
+  function leadingWhitespace(value) {
+    return (String(value || "").match(/^\s*/) || [""])[0];
+  }
+
+  function trailingWhitespace(value) {
+    return (String(value || "").match(/\s*$/) || [""])[0];
+  }
+
+  function replaceLeadingWhitespace(value, whitespace) {
+    return String(value || "").replace(/^\s*/, whitespace);
+  }
+
+  function replaceTrailingWhitespace(value, whitespace) {
+    return String(value || "").replace(/\s*$/, whitespace);
+  }
+
+  function protectedMarkupLayoutMatches(source, translation) {
+    if (!protectedMarkupMatches(source, translation)) return false;
+    const sourceParts = protectedMarkupParts(source);
+    const targetParts = protectedMarkupParts(translation);
+    for (let index = 0; index < sourceParts.tokens.length; index += 1) {
+      const token = sourceParts.tokens[index];
+      const sourceHasTextBefore = sourceParts.textParts.slice(0, index + 1).some((part) => part.trim());
+      const targetHasTextBefore = targetParts.textParts.slice(0, index + 1).some((part) => part.trim());
+      const sourceHasTextAfter = sourceParts.textParts.slice(index + 1).some((part) => part.trim());
+      const targetHasTextAfter = targetParts.textParts.slice(index + 1).some((part) => part.trim());
+      if (!sourceHasTextBefore && targetHasTextBefore) return false;
+      if (!sourceHasTextAfter && targetHasTextAfter) return false;
+      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
+        if (trailingWhitespace(sourceParts.textParts[index]) !== trailingWhitespace(targetParts.textParts[index])) return false;
+      }
+      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
+        if (leadingWhitespace(sourceParts.textParts[index + 1]) !== leadingWhitespace(targetParts.textParts[index + 1])) return false;
+      }
+    }
+    return true;
+  }
+
+  function repairProtectedMarkupLayout(source, translation) {
+    if (!protectedMarkupMatches(source, translation)) return null;
+    const sourceParts = protectedMarkupParts(source);
+    const targetParts = protectedMarkupParts(translation);
+    for (let index = 0; index < sourceParts.tokens.length; index += 1) {
+      const token = sourceParts.tokens[index];
+      const sourceHasTextBefore = sourceParts.textParts.slice(0, index + 1).some((part) => part.trim());
+      const targetHasTextBefore = targetParts.textParts.slice(0, index + 1).some((part) => part.trim());
+      const sourceHasTextAfter = sourceParts.textParts.slice(index + 1).some((part) => part.trim());
+      const targetHasTextAfter = targetParts.textParts.slice(index + 1).some((part) => part.trim());
+      if (!sourceHasTextBefore && targetHasTextBefore) return null;
+      if (!sourceHasTextAfter && targetHasTextAfter) return null;
+      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
+        targetParts.textParts[index] = replaceTrailingWhitespace(
+          targetParts.textParts[index], trailingWhitespace(sourceParts.textParts[index])
+        );
+      }
+      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
+        targetParts.textParts[index + 1] = replaceLeadingWhitespace(
+          targetParts.textParts[index + 1], leadingWhitespace(sourceParts.textParts[index + 1])
+        );
+      }
+    }
+    let repaired = targetParts.textParts[0];
+    for (let index = 0; index < targetParts.tokens.length; index += 1) {
+      repaired += targetParts.tokens[index] + targetParts.textParts[index + 1];
+    }
+    return protectedMarkupLayoutMatches(source, repaired) ? repaired : null;
+  }
+
+  function createProtectedTranslationPlan(value, nonce) {
+    const source = String(value == null ? "" : value);
+    const segments = tokenizeProtectedMarkup(source);
+    const tokens = segments.filter((segment) => segment.type === "token").map((segment) => segment.value);
+    let markerNonce = String(nonce || fingerprint(source)).replace(/[^A-Za-z0-9]/g, "").slice(0, 24) || "0";
+    while (source.toUpperCase().includes(`${PROTECTED_MARKER_PREFIX}${markerNonce}`.toUpperCase())) {
+      markerNonce += "X";
+    }
+    const markers = tokens.map((_, index) => `${PROTECTED_MARKER_PREFIX}${markerNonce}T${index}QXZ`);
+    let tokenIndex = 0;
+    const masked = segments.map((segment) => segment.type === "token"
+      ? markers[tokenIndex++]
+      : segment.value).join("");
+
+    function restore(valueToRestore) {
+      let restored = String(valueToRestore == null ? "" : valueToRestore);
+      let searchOffset = 0;
+      for (let index = 0; index < markers.length; index += 1) {
+        const marker = markers[index];
+        const found = restored.indexOf(marker, searchOffset);
+        if (found < 0 || restored.indexOf(marker, found + marker.length) >= 0) return null;
+        searchOffset = found + marker.length;
+      }
+      if ((restored.toUpperCase().match(new RegExp(PROTECTED_MARKER_PREFIX, "g")) || []).length !== markers.length) return null;
+      for (let index = 0; index < markers.length; index += 1) {
+        restored = restored.replace(markers[index], tokens[index]);
+      }
+      return repairProtectedMarkupLayout(source, restored);
+    }
+
+    return { source, segments, tokens, markers, masked, restore };
+  }
+
+  function protectedMarkupError() {
+    const error = new Error("Translation changed protected OMORI markup");
+    error.code = "markup_format_invalid";
+    return error;
+  }
+
+  async function translateProtectedText(value, translatePlain, nonce) {
+    if (typeof translatePlain !== "function") throw new TypeError("translatePlain must be a function");
+    const plan = createProtectedTranslationPlan(value, nonce);
+    if (!plan.tokens.length) {
+      const translated = String(await translatePlain(plan.source) || "").trim();
+      if (!translated || !protectedMarkupLayoutMatches(plan.source, translated)) throw protectedMarkupError();
+      return { text: translated, usedFallback: false };
+    }
+
+    const optimistic = String(await translatePlain(plan.masked) || "").trim();
+    const restored = plan.restore(optimistic);
+    if (restored) return { text: restored, usedFallback: false };
+
+    const parts = [];
+    for (const segment of plan.segments) {
+      if (segment.type === "token") {
+        parts.push(segment.value);
+        continue;
+      }
+      const leading = (segment.value.match(/^\s*/) || [""])[0];
+      const trailing = (segment.value.match(/\s*$/) || [""])[0];
+      const bodyEnd = Math.max(leading.length, segment.value.length - trailing.length);
+      const body = segment.value.slice(leading.length, bodyEnd);
+      if (!hasEnglishText(body)) {
+        parts.push(segment.value);
+        continue;
+      }
+      const translated = String(await translatePlain(body) || "").trim();
+      if (!translated) throw protectedMarkupError();
+      parts.push(leading + translated + trailing);
+    }
+    const fallback = parts.join("");
+    if (!protectedMarkupLayoutMatches(plan.source, fallback)) throw protectedMarkupError();
+    return { text: fallback, usedFallback: true };
   }
 
   function fingerprint(value) {
@@ -401,8 +626,16 @@
     htmlLanguageCode,
     providerLanguageCode,
     providerSupportsLanguage,
+    PROTECTED_MARKUP_VERSION,
     normalizeText,
     hasEnglishText,
+    tokenizeProtectedMarkup,
+    protectedMarkupTokens,
+    protectedMarkupMatches,
+    protectedMarkupLayoutMatches,
+    repairProtectedMarkupLayout,
+    createProtectedTranslationPlan,
+    translateProtectedText,
     fingerprint,
     splitGraphemes,
     splitLongText,

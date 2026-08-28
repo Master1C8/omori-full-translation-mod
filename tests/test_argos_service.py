@@ -3,7 +3,10 @@ import tempfile
 import unittest
 import io
 import json
+import shutil
+import tarfile
 import urllib.error
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -77,17 +80,45 @@ class ArgosServiceTests(unittest.TestCase):
             executable.write_bytes(b"MZ")
             language_dir = root / "www" / "languages" / "en"
             language_dir.mkdir(parents=True)
-            (language_dir / "dialogue.HERO").write_bytes(b"encrypted")
+            asset = language_dir / "dialogue.HERO"
+            asset.write_bytes(b"encrypted")
             bridge = argos_service.ArgosBridge(root / "data", game_path=executable)
-            with mock.patch.object(argos_service, "extract_strings_from_hero", return_value=["Hello", "123"]):
+            extractor = mock.Mock(return_value=["Hello", "123"])
+            with mock.patch.object(argos_service, "extract_strings_from_hero", extractor):
                 result = bridge.get_game_strings("omori")
             self.assertEqual(result["strings"], ["Hello"])
             self.assertEqual(result["assetFiles"], 1)
             self.assertEqual(result["failedFiles"], 0)
+            self.assertEqual(result["assetCache"], "rebuilt")
+            with mock.patch.object(argos_service, "extract_strings_from_hero", side_effect=AssertionError("cache miss")):
+                cached = bridge.get_game_strings("omori")
+            self.assertEqual(cached["strings"], ["Hello"])
+            self.assertEqual(cached["assetCache"], "hit")
+            self.assertEqual(extractor.call_count, 1)
+
+            asset.write_bytes(b"changed encrypted asset")
             with mock.patch.object(argos_service, "extract_strings_from_hero", side_effect=ValueError("bad")):
                 with self.assertRaises(argos_service.BridgeError) as caught:
                     bridge.get_game_strings("omori")
             self.assertEqual(caught.exception.code, "game_asset_decode_failed")
+
+    def test_bulk_asset_index_recovers_from_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "OMORI.exe"
+            executable.write_bytes(b"MZ")
+            language_dir = root / "www" / "languages" / "en"
+            language_dir.mkdir(parents=True)
+            (language_dir / "dialogue.HERO").write_bytes(b"encrypted")
+            bridge = argos_service.ArgosBridge(root / "data", game_path=executable)
+            with mock.patch.object(argos_service, "extract_strings_from_hero", return_value=["First"]):
+                bridge.get_game_strings("omori")
+            bridge.asset_index_path.write_text("{broken", encoding="utf-8")
+            with mock.patch.object(argos_service, "extract_strings_from_hero", return_value=["Recovered"]) as extractor:
+                result = bridge.get_game_strings("omori")
+            self.assertEqual(result["strings"], ["Recovered"])
+            self.assertEqual(result["assetCache"], "rebuilt")
+            extractor.assert_called_once()
 
     def test_builtin_sentence_detector_keeps_punctuation(self):
         detector = argos_service.BasicSentenceDetector("en")
@@ -119,12 +150,189 @@ class ArgosServiceTests(unittest.TestCase):
             self.assertIn("zh-TW", status["supportedLanguages"])
             self.assertNotIn("ab", status["supportedLanguages"])
 
+    def test_bergamot_model_install_verifies_archive_and_builds_local_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / "payload"
+            payload.mkdir()
+            (payload / "model.intgemm.alphas.bin").write_bytes(b"model")
+            (payload / "vocab.enes.spm").write_bytes(b"vocab")
+            (payload / "lex.s2t.bin").write_bytes(b"lex")
+            archive = root / "model.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.add(payload, arcname="enes.student.tiny")
+            expected_hash = argos_service.sha256_file(archive)
+            bridge = argos_service.ArgosBridge(root / "data")
+
+            def fake_download(_links, destination, _maximum):
+                shutil.copy2(archive, destination)
+                return destination
+
+            with mock.patch.dict(argos_service.BERGAMOT_MODELS, {
+                "es": ("https://models.example/en-es.tar.gz", expected_hash)
+            }, clear=True), mock.patch.object(bridge, "_download_https", side_effect=fake_download):
+                status = bridge.install_bergamot_model("es")
+                self.assertTrue(status["offlineReady"])
+                self.assertGreater(status["modelBytes"], 0)
+                registry = bridge.bergamot_registry()
+                self.assertEqual(registry["models"][0]["from"], "en")
+                self.assertEqual(registry["models"][0]["to"], "es")
+                model_path = bridge.bergamot_model_file("es", "model")
+                self.assertEqual(model_path.read_bytes(), b"model")
+
+    def test_model_archives_reject_parent_directory_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "unsafe.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                member = tarfile.TarInfo("../escape.bin")
+                member.size = 3
+                bundle.addfile(member, io.BytesIO(b"bad"))
+            with self.assertRaises(argos_service.BridgeError) as caught:
+                argos_service.safe_extract_tar(archive, root / "extract")
+            self.assertEqual(caught.exception.code, "model_archive_invalid")
+            self.assertFalse((root / "escape.bin").exists())
+
+    def test_ctranslate2_opus_translates_with_persistent_int8_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "opus.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("opus/decoder.yml", "models:\n  - model.npz\nvocabs:\n  - source.spm\n  - target.spm\n")
+                bundle.writestr("opus/model.npz", b"marian")
+                bundle.writestr("opus/source.spm", b"source")
+                bundle.writestr("opus/target.spm", b"target")
+            bridge = argos_service.ArgosBridge(root / "data")
+
+            class FakeTranslator:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                def translate_batch(self, batches, beam_size):
+                    self.batches = batches
+                    self.beam_size = beam_size
+                    return [mock.Mock(hypotheses=[["Привет"]])]
+
+            class FakeSentencePieceProcessor:
+                def __init__(self, model_file):
+                    self.model_file = model_file
+
+                def encode(self, text, out_type):
+                    self.assert_out_type = out_type
+                    return text.split()
+
+                def decode(self, tokens):
+                    return " ".join(tokens)
+
+            class FakeConverter:
+                def __init__(self, model_root):
+                    self.model_root = model_root
+
+                def convert(self, destination, quantization):
+                    self.quantization = quantization
+                    output = Path(destination)
+                    output.mkdir(parents=True)
+                    (output / "model.bin").write_bytes(b"int8")
+                    (output / "config.json").write_text("{}", encoding="utf-8")
+
+            def fake_download(_links, destination, _maximum):
+                shutil.copy2(archive, destination)
+                return destination
+
+            bridge._ctranslate2_module = mock.Mock(Translator=FakeTranslator, __version__="4.8.1")
+            bridge._sentencepiece_module = mock.Mock(SentencePieceProcessor=FakeSentencePieceProcessor)
+            bridge._opus_converter_class = FakeConverter
+            with mock.patch.object(bridge, "_opus_model_url", return_value="https://models.example/opus.zip"), \
+                    mock.patch.object(bridge, "_download_https", side_effect=fake_download):
+                status = bridge.install_ctranslate2_model("ru")
+            self.assertTrue(status["offlineReady"])
+            metadata = json.loads((bridge.ctranslate2_models_dir / "ru" / "vnrevival-model.json").read_text())
+            self.assertEqual(metadata["quantization"], "int8")
+            result = bridge.ctranslate2_translate("ru", "Hello there")
+            self.assertEqual(result["translatedText"], "Привет")
+            self.assertTrue(result["offline"])
+
     def test_rejects_unknown_languages_before_translation(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = argos_service.ArgosBridge(Path(directory))
             with self.assertRaises(argos_service.BridgeError) as caught:
                 bridge.translate("xx-unknown", "Hello")
             self.assertEqual(caught.exception.code, "unsupported_language")
+
+    def test_argos_batch_flattens_sentences_and_restores_item_order_without_changing_beam(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = argos_service.ArgosBridge(Path(directory))
+            captured = {}
+
+            class FakeTokenizer:
+                @staticmethod
+                def encode(text):
+                    return [text]
+
+                @staticmethod
+                def decode(tokens):
+                    return " ".join(tokens)
+
+            class FakeTranslator:
+                def translate_batch(self, batches, **kwargs):
+                    captured["batches"] = batches
+                    captured["kwargs"] = kwargs
+                    return [
+                        mock.Mock(hypotheses=[[
+                            token.upper() for token in batch
+                        ]])
+                        for batch in batches
+                    ]
+
+            package = mock.Mock(
+                tokenizer=FakeTokenizer(), target_prefix="", package_path=Path(directory)
+            )
+            package_translation = mock.Mock(
+                pkg=package,
+                sentencizer=mock.Mock(
+                    split_sentences=lambda text: argos_service.BasicSentenceDetector("en").sentences(text)
+                ),
+                translator=FakeTranslator(),
+            )
+            wrapped_translation = type("WrappedTranslation", (), {
+                "underlying": package_translation
+            })()
+            bridge._translate_module = mock.Mock(
+                get_translation_from_codes=mock.Mock(return_value=wrapped_translation)
+            )
+            bridge._installed_package = mock.Mock(return_value=object())
+            fake_settings = mock.Mock(batch_size=64, beam_size=4)
+            with mock.patch.object(
+                argos_service.importlib, "import_module", return_value=fake_settings
+            ):
+                result = bridge.translate_batch(
+                    "ru", ["Hello. Next!", "Second line.\nLast one!"]
+                )
+
+            self.assertEqual(result["translations"], [
+                "HELLO. NEXT!", "SECOND LINE.\nLAST ONE!"
+            ])
+            self.assertEqual(captured["batches"], [
+                ["Hello."], ["Next!"], ["Second line."], ["Last one!"]
+            ])
+            self.assertEqual(captured["kwargs"]["beam_size"], 4)
+            self.assertEqual(captured["kwargs"]["num_hypotheses"], 1)
+            self.assertEqual(captured["kwargs"]["max_batch_size"], 64)
+
+            with self.assertRaises(argos_service.BridgeError) as caught:
+                bridge.translate_batch("ru", ["text"] * (argos_service.ARGOS_BATCH_MAX_ITEMS + 1))
+            self.assertEqual(caught.exception.code, "invalid_batch")
+
+    def test_argos_cpu_settings_use_measured_conservative_cap(self):
+        self.assertEqual(argos_service.adaptive_argos_cpu_settings(1), {
+            "interThreads": 1, "intraThreads": 1, "batchSize": 32,
+        })
+        self.assertEqual(argos_service.adaptive_argos_cpu_settings(4), {
+            "interThreads": 1, "intraThreads": 4, "batchSize": 32,
+        })
+        self.assertEqual(argos_service.adaptive_argos_cpu_settings(10), {
+            "interThreads": 1, "intraThreads": 4, "batchSize": 32,
+        })
 
     def test_directory_size_counts_regular_files(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -394,6 +602,72 @@ class ArgosServiceTests(unittest.TestCase):
                     "ru", "Russian", "Hello", "kimi-k3", "opencode-go", ""
                 )
             self.assertEqual(caught.exception.code, "openai_key_missing")
+
+    def test_translation_history_persists_and_reads_newest_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = argos_service.ArgosBridge(Path(directory))
+            bridge.log_translation("google", "ru", "Hello", "Привет")
+            bridge.log_translation("argos", "de", "Bye", "Tschüss", cached=True)
+            self.assertFalse(bridge.log_translation("argos", "de", "Bye", "Tschüss", cached=True))
+
+            history = bridge.read_translation_log(1)
+            self.assertTrue(history["ok"])
+            self.assertEqual(history["limit"], 1)
+            self.assertEqual(len(history["entries"]), 1)
+            self.assertEqual(history["entries"][0]["provider"], "argos")
+            self.assertEqual(history["entries"][0]["language"], "de")
+            self.assertEqual(history["entries"][0]["source"], "Bye")
+            self.assertEqual(history["entries"][0]["translation"], "Tschüss")
+            self.assertTrue(history["entries"][0]["cached"])
+
+            lines = bridge.translation_log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[0])["source"], "Hello")
+
+            reloaded = argos_service.ArgosBridge(Path(directory))
+            self.assertFalse(reloaded.log_translation("google", "ru", "Hello", "Привет", cached=True))
+            self.assertEqual(len(reloaded.translation_log.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_update_check_validates_manifest_and_reports_network_failure(self):
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return argos_service.UPDATE_MANIFEST_URL
+
+            def read(self, _limit):
+                return self.payload
+
+        manifest = json.dumps({
+            "schemaVersion": 1,
+            "product": "omori-translator",
+            "version": "0.9.33",
+            "cacheCompatibility": "rebuild",
+            "cacheSchema": 4,
+            "changes": ["Placeholder improvement", "Placeholder bug fix"],
+        }).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = argos_service.ArgosBridge(Path(directory))
+            with mock.patch.object(argos_service.urllib.request, "urlopen", return_value=FakeResponse(manifest)):
+                result = bridge.check_for_updates()
+            self.assertEqual(result["latestVersion"], "0.9.33")
+            self.assertEqual(result["cacheCompatibility"], "rebuild")
+            self.assertEqual(result["cacheSchema"], 4)
+            self.assertEqual(result["changes"], ["Placeholder improvement", "Placeholder bug fix"])
+
+            failure = urllib.error.URLError("offline")
+            with mock.patch.object(argos_service.urllib.request, "urlopen", side_effect=failure):
+                with self.assertRaises(argos_service.BridgeError) as caught:
+                    bridge.check_for_updates()
+            self.assertEqual(caught.exception.code, "update_check_failed")
+            self.assertEqual(str(caught.exception), "Could not check for updates")
 
 
 if __name__ == "__main__":

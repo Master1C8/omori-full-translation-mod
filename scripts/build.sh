@@ -81,11 +81,13 @@ cp "$BUILD_DIR/VNRevivalTranslatorController" "$APP/Contents/Resources/"
 cp "$BUILD_DIR/translator.bundle.js" "$APP/Contents/Resources/"
 cp "$GAME_MANIFEST" "$APP/Contents/Resources/game.json"
 cp "$ROOT/src/argos_service.py" "$APP/Contents/Resources/"
+cp -R "$ROOT/src/bergamot-web" "$APP/Contents/Resources/bergamot-web"
 cp "$ROOT/launcher/macos/steam-compat.js" "$APP/Contents/Resources/"
 /bin/cp -cR "$BUILD_DIR/nwjs-macos-arm64-${VNREVIVAL_NWJS_VERSION:-0.115.0}/NWJS Runtime.app" "$APP/Contents/Resources/NWJS Runtime.app"
 cp "$ROOT/$ICON_ICNS" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/README.md" "$APP/Contents/Resources/README.md"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 chmod +x "$APP/Contents/MacOS/$PRODUCT_NAME" "$APP/Contents/Resources/VNRevivalTranslatorController" "$APP/Contents/Resources/argos_service.py"
 
 if [[ "$MAC_SIGN_IDENTITY" == "-" ]]; then
@@ -110,12 +112,6 @@ VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/verify.sh"
 /bin/rm -rf -- "$ROOT/$PRODUCT_NAME.app"
 /bin/cp -cR "$APP" "$ROOT/$PRODUCT_NAME.app"
 /usr/bin/codesign --verify --deep --strict "$ROOT/$PRODUCT_NAME.app"
-for ITEM in "$READY_DIR"/*(DN); do
-  case "${ITEM:t}" in
-    "$ARCHIVE_PREFIX-macOS-$VERSION.zip"|"$ARCHIVE_PREFIX-Windows-$VERSION.zip") ;;
-    *) rm -rf -- "$ITEM" ;;
-  esac
-done
-READY_FILE_COUNT=$(find "$READY_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')
-[[ "$READY_FILE_COUNT" == "2" ]]
+[[ -s "$MAC_ZIP" ]]
+[[ -s "$READY_DIR/$ARCHIVE_PREFIX-Windows-$VERSION.zip" ]]
 echo "Built the two current release archives"

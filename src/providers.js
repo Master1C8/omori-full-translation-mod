@@ -8,8 +8,8 @@
     {
       id: "google",
       label: "Google Translate",
-      concurrency: 3,
-      delay: 70,
+      concurrency: 1,
+      delay: 5000,
       retries: 3,
       contextLimit: 3200,
       requiresPrivacy: true,
@@ -96,6 +96,7 @@
       id: "argos",
       label: "Argos Offline",
       concurrency: 1,
+      batchSize: 1,
       delay: 0,
       retries: 1,
       contextLimit: 3200,
@@ -116,6 +117,57 @@
         });
         if (typeof payload.translatedText !== "string" || !payload.translatedText.trim()) {
           throw new Error("Argos returned an empty translation");
+        }
+        return payload.translatedText;
+      }
+    },
+    {
+      id: "bergamot",
+      label: "Bergamot Offline",
+      concurrency: 1,
+      delay: 0,
+      retries: 1,
+      contextLimit: 3200,
+      requiresPrivacy: false,
+      modelManager: "bergamot",
+      supportsLanguage(code, context) {
+        return core.providerSupportsLanguage("argos", code, context && context.localLanguages);
+      },
+      splitText(text) {
+        return [text];
+      },
+      hint() {
+        return "Bergamot: Firefox-compatible WASM translation runs entirely on this computer. Tiny models are fast but support a limited set of languages.";
+      },
+      async translateChunk(context) {
+        if (typeof context.bergamotTranslate !== "function") throw new Error("The Bergamot WASM engine is unavailable");
+        return context.bergamotTranslate(context.text, context.language, context.signal);
+      }
+    },
+    {
+      id: "ctranslate2-opus",
+      label: "CTranslate2 + OPUS-MT",
+      concurrency: 1,
+      delay: 0,
+      retries: 1,
+      contextLimit: 3200,
+      requiresPrivacy: false,
+      modelManager: "ctranslate2-opus",
+      supportsLanguage(code, context) {
+        return core.providerSupportsLanguage("argos", code, context && context.localLanguages);
+      },
+      splitText(text) {
+        return core.splitLongText(text, 800);
+      },
+      hint() {
+        return "CTranslate2 + OPUS-MT: optimized INT8 neural translation runs locally. Models are larger and conversion during the first install can take several minutes.";
+      },
+      async translateChunk(context) {
+        const payload = await context.localRequest("/v1/ctranslate2/translate", {
+          body: { text: context.text, target: context.language }, signal: context.signal
+        });
+        if (typeof payload.translatedText !== "string" || !payload.translatedText.trim()) {
+          throw new Error("CTranslate2 returned an empty translation");
         }
         return payload.translatedText;
       }

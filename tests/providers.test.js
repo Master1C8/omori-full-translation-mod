@@ -9,7 +9,7 @@ const registry = globalThis.VNRevivalTranslationProviders;
 test("provider registry exposes a stable extension contract", () => {
   assert.equal(registry.contractVersion, 1);
   assert.deepEqual(registry.list.map(({ id }) => id), [
-    "google", "gemini", "mymemory", "argos", "lmstudio", "openai-compatible"
+    "google", "gemini", "mymemory", "argos", "bergamot", "ctranslate2-opus", "lmstudio", "openai-compatible"
   ]);
   for (const provider of registry.list) {
     assert.equal(typeof provider.supportsLanguage, "function");
@@ -17,6 +17,35 @@ test("provider registry exposes a stable extension contract", () => {
     assert.equal(typeof provider.translateChunk, "function");
     assert.ok(provider.concurrency > 0);
   }
+});
+
+test("Bergamot and CTranslate2 OPUS providers stay behind local engine contracts", async () => {
+  let bergamotCall = null;
+  const bergamot = await registry.byId.bergamot.translateChunk({
+    text: "Hello", language: "es", signal: undefined,
+    bergamotTranslate: async (...args) => {
+      bergamotCall = args;
+      return "Hola";
+    }
+  });
+  assert.equal(bergamot, "Hola");
+  assert.deepEqual(bergamotCall, ["Hello", "es", undefined]);
+  assert.equal(registry.byId.bergamot.modelManager, "bergamot");
+  assert.equal(registry.byId.bergamot.requiresPrivacy, false);
+
+  let ctranslate2Call = null;
+  const opus = await registry.byId["ctranslate2-opus"].translateChunk({
+    text: "Hello", language: "ru", signal: undefined,
+    localRequest: async (path, options) => {
+      ctranslate2Call = { path, options };
+      return { translatedText: "Привет" };
+    }
+  });
+  assert.equal(opus, "Привет");
+  assert.equal(ctranslate2Call.path, "/v1/ctranslate2/translate");
+  assert.deepEqual(ctranslate2Call.options.body, { text: "Hello", target: "ru" });
+  assert.equal(registry.byId["ctranslate2-opus"].modelManager, "ctranslate2-opus");
+  assert.equal(registry.byId["ctranslate2-opus"].requiresPrivacy, false);
 });
 
 test("online providers own URL construction and response parsing", async () => {
@@ -31,6 +60,8 @@ test("online providers own URL construction and response parsing", async () => {
   });
   assert.equal(translated, "Привет");
   assert.equal(new URL(requestedURL).searchParams.get("tl"), "ru");
+  assert.equal(registry.byId.google.concurrency, 1);
+  assert.equal(registry.byId.google.delay, 5000);
 });
 
 test("offline provider delegates translation to the authenticated local helper", async () => {
@@ -45,6 +76,24 @@ test("offline provider delegates translation to the authenticated local helper",
   assert.equal(translated, "Привет");
   assert.equal(request.path, "/v1/translate");
   assert.deepEqual(request.options.body, { text: "Hello", target: "ru" });
+});
+
+test("Argos keeps the measured faster single-item path with unchanged order", async () => {
+  const calls = [];
+  const localRequest = async (path, options) => {
+    calls.push({ path, body: options.body });
+    return { translatedText: `RU:${options.body.text}` };
+  };
+  const values = await Promise.all(["one", "two", "three"].map((text) => (
+    registry.byId.argos.translateChunk({ text, language: "ru", signal: undefined, localRequest })
+  )));
+  assert.deepEqual(values, ["RU:one", "RU:two", "RU:three"]);
+  assert.deepEqual(calls, ["one", "two", "three"].map((text) => ({
+    path: "/v1/translate",
+    body: { text, target: "ru" }
+  })));
+  assert.equal(registry.byId.argos.concurrency, 1);
+  assert.equal(registry.byId.argos.batchSize, 1);
 });
 
 test("Gemini delegates contextual translation without exposing its API key", async () => {
