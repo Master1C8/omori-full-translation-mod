@@ -72,9 +72,12 @@
   const CACHE_IO_BATCH_SIZE = 250;
   const CACHE_IMPORT_ENTRY_LIMIT = 500000;
   const TRANSLATION_LOG_LIMIT = 40;
-  const TEST_PHRASE_GOOGLE_DELAY = 750;
+  const TEST_PHRASE_GOOGLE_DELAY = 5000;
   const TEST_PHRASE_RATE_LIMIT_DELAY = 15000;
   const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
+  const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
+  const TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY = 60 * 60 * 1000;
+  const GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -723,16 +726,45 @@
     }
   }
 
+  function googleRateLimitRemaining() {
+    const deadline = Number(localStorage.getItem(GOOGLE_RATE_LIMIT_UNTIL_KEY)) || 0;
+    const remaining = Math.max(0, deadline - Date.now());
+    if (!remaining && deadline) localStorage.removeItem(GOOGLE_RATE_LIMIT_UNTIL_KEY);
+    return remaining;
+  }
+
+  function rememberGoogleRateLimit(delay) {
+    localStorage.setItem(GOOGLE_RATE_LIMIT_UNTIL_KEY, String(Date.now() + delay));
+  }
+
+  function formatRetryCountdown(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  }
+
   async function requestTestPhraseChunk(provider, text, language, signal, onRateLimitWait) {
-    let retryDelay = TEST_PHRASE_RATE_LIMIT_DELAY;
+    const isGoogle = provider === "google";
+    let retryDelay = isGoogle ? TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY : TEST_PHRASE_RATE_LIMIT_DELAY;
+    const maximumRetryDelay = isGoogle
+      ? TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY
+      : TEST_PHRASE_RATE_LIMIT_MAX_DELAY;
     while (!signal.aborted) {
+      if (isGoogle) {
+        const remaining = googleRateLimitRemaining();
+        if (remaining) await waitForRateLimitRetry(remaining, signal, onRateLimitWait);
+      }
       try {
-        return await requestChunk(provider, text, language, signal, { deferRateLimits: true });
+        const translated = await requestChunk(provider, text, language, signal, { deferRateLimits: true });
+        if (isGoogle) localStorage.removeItem(GOOGLE_RATE_LIMIT_UNTIL_KEY);
+        return translated;
       } catch (error) {
         if (error && error.name === "AbortError") throw error;
         if (!isTranslationRateLimited(error)) throw error;
+        if (isGoogle) rememberGoogleRateLimit(retryDelay);
         await waitForRateLimitRetry(retryDelay, signal, onRateLimitWait);
-        retryDelay = Math.min(retryDelay * 2, TEST_PHRASE_RATE_LIMIT_MAX_DELAY);
+        retryDelay = Math.min(retryDelay * 2, maximumRetryDelay);
       }
     }
     throw new DOMException("Aborted", "AbortError");
@@ -1813,7 +1845,12 @@
     bulkPreparing = true;
     setTestPhraseButtonWorking("Starting…");
     try {
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => { if (!settled) { settled = true; resolve(); } };
+        requestAnimationFrame(finish);
+        setTimeout(finish, 100);
+      });
       if (!(await ensureBulkProviderReady())) return;
       const provider = settings.provider;
       const providerConfig = PROVIDERS[provider];
@@ -1824,6 +1861,7 @@
       if (!confirm(
         `Translate the current OMORI test phrase into ${targets.length} languages using ${providerConfig.label}? `
         + "Existing cached languages will be skipped."
+        + (provider === "google" ? " Google processes one language every 5 seconds and may pause after a temporary block." : "")
       )) {
         setStatus("Test phrase translation cancelled before start");
         return;
@@ -1861,7 +1899,8 @@
                 language,
                 signal,
                 (seconds) => setStatus(
-                  `Test phrase: ${done}/${targets.length} · ${name} · rate limited, retry in ${seconds}s · `
+                  `Test phrase: ${done}/${targets.length} · ${name} · ${providerConfig.label} temporarily blocked requests, `
+                  + `retry in ${formatRetryCountdown(seconds)} · `
                   + `${created} new · ${cached} cached · ${failed} failed`
                 )
               ) || "").trim();

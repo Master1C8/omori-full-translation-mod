@@ -139,6 +139,7 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /const LANGUAGE_TEST_PHRASE_SOURCE = "<WordWrap>\\\\marHi, OMORI!/);
   assert.match(runtimeSource, /class="primary testPhraseTranslate"/);
   assert.match(runtimeSource, /async function translateTestPhraseAllLanguages\(\)/);
+  assert.match(runtimeSource, /requestAnimationFrame\(finish\);\s*setTimeout\(finish, 100\)/);
   assert.match(runtimeSource, /const targets = languagesForProvider\(provider\)/);
   assert.match(runtimeSource, /makeTranslationCacheKey\(LANGUAGE_TEST_PHRASE_SOURCE, language, provider\)/);
   assert.match(runtimeSource, /const gameText = "\\\\mar" \+ translated/);
@@ -146,7 +147,11 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /activeOperation = "test-phrase"/);
   assert.match(runtimeSource, /async function requestTestPhraseChunk/);
   assert.match(runtimeSource, /deferRateLimits: true/);
-  assert.match(runtimeSource, /rate limited, retry in \$\{seconds\}s/);
+  assert.match(runtimeSource, /googleRateLimitRemaining/);
+  assert.match(runtimeSource, /rememberGoogleRateLimit/);
+  assert.match(runtimeSource, /Google processes one language every 5 seconds/);
+  assert.match(runtimeSource, /temporarily blocked requests/);
+  assert.match(runtimeSource, /formatRetryCountdown\(seconds\)/);
   assert.match(runtimeSource, /const concurrency = 1/);
   assert.match(runtimeSource, /Math\.max\(TEST_PHRASE_GOOGLE_DELAY, providerConfig\.delay\)/);
   assert.match(runtimeSource, /Test phrase ready in \$\{targets\.length\} languages/);
