@@ -96,6 +96,8 @@ Confirm the operation, keep the provider available, and expect a full run to tak
 
 `Test Phrase · All Languages` translates only `Hi, OMORI! Cliff-faced as usual…` into every language available through the selected service. It keeps running when you switch applications and processes languages one at a time. The free Google endpoint accepts one target language per request, so Google mode sends one request every 5 seconds and a full unrestricted run takes about 20 minutes. A temporary `HTTP 429` stops all Google requests for 15 minutes, preserves that cooldown across restarts, and retries the same language instead of creating a failed result. Repeated limits increase the cooldown up to one hour. Cancelling keeps completed languages, and the next run skips them.
 
+Do not use a successful large cached translation as proof that Google currently accepts new requests. A language such as Russian may already have thousands of cached entries, while the all-language test still needs one fresh request for every missing language. The status line reports `new`, `cached`, and `failed` separately. A visible retry countdown with `0 failed` means the test is safely waiting; do not repeatedly restart it, because the Google cooldown is intentionally preserved. To continue immediately, select another provider; its results use a separate cache identity.
+
 Cached translations are always applied automatically as new dialogue appears. There is no separate apply button or auto-apply setting, and normal gameplay does not send text over the network.
 
 OMORI canvas hooks display cached translations only in dialogue text, speaker names, and dialogue choices. They never start background provider requests. `Original` also applies to newly drawn dialogue text.
@@ -119,6 +121,8 @@ Close OMORI normally. The translator and its local helper should exit automatica
 If an old panel appears after rebuilding the mod, close OMORI completely, extract the newly built ZIP into a fresh folder, and run the translator from that folder. Rebuilding does not update a panel that is already injected into a running game.
 
 If the panel does not appear, make sure OMORI was closed before launch and that you started it through OMORI Translator.
+
+If `Test Phrase · All Languages` shows a Google retry countdown, leave it running or cancel it and return later. Version 0.9.22 and newer retry the same language after the cooldown instead of recording a false failure. A result produced by an older build is not evidence that the current build is broken; close OMORI fully and start the application from the current ZIP before retesting.
 
 ---
 
@@ -208,6 +212,8 @@ If the panel does not appear, make sure OMORI was closed before launch and that 
 
 Кнопка `Test Phrase · All Languages` переводит только реплику `Hi, OMORI! Cliff-faced as usual…` во все языки, доступные выбранному сервису. Управляющие коды OMORI не отправляются провайдеру, готовые языки пропускаются, а повторное нажатие продолжает отсутствующие. Тест продолжает работу при переключении в другое приложение и обрабатывает языки по одному. Бесплатный Google endpoint принимает один целевой язык за запрос, поэтому Google-режим делает запрос раз в 5 секунд, а полный проход без ограничений занимает около 20 минут. При `HTTP 429` Google-запросы полностью прекращаются на 15 минут, срок паузы сохраняется между запусками, затем повторяется тот же язык. Повторные ограничения увеличивают паузу вплоть до часа. После завершения оставайтесь на этой реплике и переключайте язык для ручной проверки Canvas.
 
+Успешный большой перевод из кэша не означает, что Google прямо сейчас принимает новые запросы. Например, для русского языка в кэше уже могут находиться тысячи строк, тогда как тесту всё равно нужен отдельный свежий запрос для каждого отсутствующего языка. Строка состояния отдельно показывает `new`, `cached` и `failed`. Обратный отсчёт при `0 failed` означает безопасное ожидание, а не поломку. Не нужно многократно перезапускать тест: срок Google-паузы специально сохраняется. Если продолжить необходимо сразу, выберите другой сервис; его результаты будут храниться в отдельной области кэша.
+
 Готовые переводы из кэша всегда применяются автоматически при появлении новых реплик. Отдельной кнопки применения и настройки автоприменения нет; обычный игровой процесс не отправляет текст в сеть.
 
 После смены языка дождитесь сообщения `Ready: … cache loaded`. Мод перерисует уже открытую реплику — включая завершённую страницу, ожидающую нажатия — и варианты ответа, поэтому перезапуск игры не требуется.
@@ -237,3 +243,5 @@ Canvas-хуки OMORI показывают готовый перевод тол�
 Если после пересборки показывается старая панель, полностью закройте OMORI, распакуйте новый ZIP в отдельную папку и запустите переводчик из неё. Пересборка не обновляет панель, уже внедрённую в работающую игру.
 
 Если панель не появилась, убедитесь, что OMORI была закрыта перед запуском и что игра запущена через OMORI Translator.
+
+Если `Test Phrase · All Languages` показывает обратный отсчёт Google, оставьте тест работать либо отмените его и вернитесь позднее. Начиная с версии 0.9.22 после паузы повторяется тот же язык, ложный `failed` не записывается. Перед повторной проверкой полностью закройте OMORI и запустите приложение из актуального ZIP: пересборка не заменяет код, уже внедрённый в работающее окно игры.
