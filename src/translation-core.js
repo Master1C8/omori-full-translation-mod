@@ -616,6 +616,15 @@
     return parts[0] === "v4" ? (parts[4] || "") : "";
   }
 
+  function cacheKeySource(key) {
+    const parts = String(key || "").split("\n");
+    if (parts[0] === "v1") return parts.slice(3).join("\n");
+    if (parts[0] === "v2") return parts.slice(3).join("\n");
+    if (parts[0] === "v3") return parts.slice(4).join("\n");
+    if (parts[0] === "v4") return parts.slice(5).join("\n");
+    return "";
+  }
+
   return {
     GOOGLE_MAX_CHARS,
     MYMEMORY_MAX_BYTES,
@@ -654,6 +663,7 @@
     cacheKeyProvider,
     cacheKeyGame,
     cacheKeyVariant,
+    cacheKeySource,
     stripOmoriPrefixes
   };
 });

@@ -258,5 +258,6 @@ test("v4 cache keys isolate local model and prompt variants", () => {
   assert.equal(core.cacheKeyGame(qwen), "omori");
   assert.equal(core.cacheKeyProvider(qwen), "lmstudio");
   assert.equal(core.cacheKeyLanguage(qwen), "ru");
+  assert.equal(core.cacheKeySource(qwen), "Hello");
   assert.equal(core.cacheKeyVariant(qwen), core.fingerprint("qwen\nprompt-v1"));
 });

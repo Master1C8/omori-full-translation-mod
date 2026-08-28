@@ -100,7 +100,7 @@ test("every provider path protects OMORI markup and rejects unsafe cached output
   assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, cached\)/);
   assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(text, hit\)/);
   assert.match(runtimeSource, /core\.PROTECTED_MARKUP_VERSION/);
-  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 3\)/);
+  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 4\)/);
   assert.match(runtimeSource, /event\.oldVersion < 3/);
 });
 
@@ -119,11 +119,13 @@ test("expanded panel shows all settings with one collapse control and a mode tog
   assert.match(runtimeSource, /aria-label="Dialogue display"/);
   assert.match(runtimeSource, /class="modeChoice translationChoice">Translation/);
   assert.match(runtimeSource, /class="modeChoice originalChoice">Original/);
-  assert.match(runtimeSource, /class="scopeChoice storyTranslationScope active" aria-current="true"/);
-  assert.match(runtimeSource, /class="scopeChoice fullTranslationScope disabled" aria-disabled="true"/);
+  assert.match(runtimeSource, /class="scopeChoice storyTranslationScope active" type="button" aria-pressed="true"/);
+  assert.match(runtimeSource, /class="scopeChoice fullTranslationScope" type="button" aria-pressed="false"/);
   assert.match(runtimeSource, /Stable · dialogue windows/);
-  assert.match(runtimeSource, /Full interface translation is not enabled yet\./);
-  assert.doesNotMatch(runtimeSource, /fullTranslationScope\.addEventListener/);
+  assert.match(runtimeSource, /Experimental · menus \+ dialogue/);
+  assert.match(runtimeSource, /translationScope: source\.translationScope === "full" \? "full" : defaults\.translationScope/);
+  assert.match(runtimeSource, /fullTranslationScopeButton\.addEventListener\("click", \(\) => setTranslationScope\("full"\)\)/);
+  assert.match(runtimeSource, /getTranslationScope: \(\) => settings\.translationScope/);
   assert.doesNotMatch(runtimeSource, /<button class="gear"/);
   assert.equal((runtimeSource.match(/class="collapseToggle"/g) || []).length, 1);
 });
@@ -138,7 +140,10 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /setBulkButtonWorking\("Starting…"\)/);
   assert.match(runtimeSource, /bulkButton\.classList\.add\("working"\)/);
   assert.match(runtimeSource, /\.bulkTranslate\.working::before/);
+  assert.match(runtimeSource, /\.bulkCancel\.working::before/);
+  assert.match(runtimeSource, /Interrupt translation \(progress will be saved\)/);
   assert.match(runtimeSource, /setBulkUiBusy\(true\)/);
+  assert.match(runtimeSource, /const bulkCancelButton = shadow\.querySelector\("\.bulkCancel"\)/);
   assert.match(runtimeSource, /activeOperation === "test-phrase" \? testPhraseButton : bulkButton/);
   assert.match(runtimeSource, /host\.classList\.toggle\("bulkBusyHost", busy\)/);
   assert.match(runtimeSource, /row\.classList\.toggle\("activeBulkAction", busy && row\.contains\(cancelButton\)\)/);
@@ -146,18 +151,20 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /:host\(\.bulkBusyHost\)\{left:0!important;top:0!important;right:0!important;width:100vw!important;height:100vh!important\}/);
   assert.match(runtimeSource, /\.panel\.bulkBusy>\*\{display:none!important\}/);
   assert.match(runtimeSource, /\.panel\.bulkBusy \.cacheBox>\.translationLogBox\{display:flex!important;flex:1 1 auto!important/);
-  assert.match(runtimeSource, /\.panel\.bulkBusy \.cacheBox>\.bulkActionRow\.activeBulkAction\{display:flex!important/);
+  assert.match(runtimeSource, /\.panel\.bulkBusy>\.bulkCancelBar\{display:flex!important;flex:0 0 auto!important/);
+  assert.match(runtimeSource, /bulkCancelButton\.addEventListener\("click"/);
+  assert.match(runtimeSource, /bulkCancelButton\.style\.background = cancelButton\.style\.background/);
   assert.match(runtimeSource, /function countTranslationWords\(value\)/);
   assert.match(runtimeSource, /core\.tokenizeProtectedMarkup\(String\(value \|\| ""\)\)/);
   assert.match(runtimeSource, /function createTranslationEtaTracker\(\)/);
   assert.match(runtimeSource, /points\.length > 12 \|\| activeTime - points\[0\]\.time > 90000/);
   assert.match(runtimeSource, /lastEstimate \* 0\.65/);
-  assert.match(runtimeSource, /function translationProgressText\(completedWords, totalWords, remainingMs, waitSeconds\)/);
+  assert.match(runtimeSource, /function translationProgressText\(completedWords, totalWords, remainingMs, waitSeconds, provider\)/);
   assert.match(runtimeSource, /`Words: \$\{completed\.toLocaleString\("en-US"\)\}\/\$\{total\.toLocaleString\("en-US"\)\}`/);
-  assert.match(runtimeSource, /Waiting: \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}/);
+  assert.match(runtimeSource, /Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}/);
   assert.match(runtimeSource, /Time left: about \$\{Math\.ceil\(remainingMs \/ 60000\)\} min/);
   assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, translated, language, provider, false\)/);
-  assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, provider, true\)/);
+  assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, existingImported \? "Imported translation" : provider, true\)/);
 });
 
 test("ETA throughput uses only fresh translations from the current operation", () => {
@@ -191,6 +198,8 @@ test("live translation log shows new source and target pairs without unbounded g
   assert.match(runtimeSource, /translationLogEntries\.children\.length > TRANSLATION_LOG_LIMIT/);
   assert.match(runtimeSource, /translationLogBox\.open = true/);
   assert.match(runtimeSource, /translationLogClearButton\.addEventListener\("click", clearTranslationLog\)/);
+  assert.match(runtimeSource, /activeOperation = "bulk";[\s\S]{0,300}setBulkUiBusy\(true\);\s*clearTranslationLog\(\)/);
+  assert.match(runtimeSource, /activeOperation = "test-phrase";[\s\S]{0,300}setBulkUiBusy\(true\);\s*clearTranslationLog\(\)/);
 });
 
 test("translation history persists locally and can be viewed or saved", () => {
@@ -207,6 +216,23 @@ test("translation history persists locally and can be viewed or saved", () => {
   assert.match(runtimeSource, /Saved history remains on disk/);
   assert.match(runtimeSource, /sourceLine\.textContent/);
   assert.doesNotMatch(runtimeSource, /translationLogEntries\.innerHTML/);
+});
+
+test("shared translation files are inspected, confirmed, and stored as a reversible overlay", () => {
+  assert.match(runtimeSource, /const TRANSLATION_PACK_STORE_NAME = "translationPackEntries"/);
+  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 4\)/);
+  assert.match(runtimeSource, /createObjectStore\(TRANSLATION_PACK_STORE_NAME, \{ keyPath: "key" \}\)/);
+  assert.match(runtimeSource, /async function inspectTranslationFile\(file\)/);
+  assert.match(runtimeSource, /core\.cacheKeyLanguage\(entry\[0\]\)/);
+  assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, translation\)/);
+  assert.match(runtimeSource, /class="packModal" role="dialog" aria-modal="true"/);
+  assert.match(runtimeSource, />Cancel<\/button><button class="primary packConfirm" type="button">Import<\/button>/);
+  assert.match(runtimeSource, /The imported translation will be shown before your own provider cache/);
+  assert.match(runtimeSource, /const importedTranslation = await importedPackGet\(source, language\)/);
+  assert.match(runtimeSource, /const imported = importedPackMemoryGet\(text, settings\.language\)/);
+  assert.match(runtimeSource, /async function deleteTranslationPackEntries\(packId\)/);
+  assert.match(runtimeSource, />Load translation file<\/button>/);
+  assert.match(runtimeSource, />Remove imported<\/button>/);
 });
 
 test("startup update check reports availability, cache impact, and failure", () => {
@@ -263,7 +289,7 @@ test("Bulk pauses and retries the current request when a provider rate-limits", 
   assert.match(runtimeSource, /done, completedWords, totalWords, newlyTranslated, failed, rateLimitSeconds: seconds/);
   assert.match(runtimeSource, /providerConfig\.batchSize \|\| 3/);
   assert.match(runtimeSource, /etaTracker\.pause\(\);\s*setStatus\(translationProgressText\(\s*completedWords, totalWords, etaTracker\.current\(\), rateLimitSeconds/);
-  assert.match(runtimeSource, /return `\$\{wordProgress\} · Waiting: \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}`/);
+  assert.match(runtimeSource, /return `\$\{wordProgress\} · Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}`/);
 });
 
 test("Argos test phrase installs every missing model before translating", () => {
@@ -276,14 +302,15 @@ test("Argos test phrase installs every missing model before translating", () => 
   assert.match(runtimeSource, /models installed/);
 });
 
-test("managed offline UI supports Argos, Bergamot, and CTranslate2 OPUS", () => {
-  assert.match(runtimeSource, /name: "Bergamot", statusPath: "\/v1\/bergamot\/status"/);
+test("managed offline UI supports Argos and CTranslate2 OPUS without Bergamot", () => {
   assert.match(runtimeSource, /name: "CTranslate2 \+ OPUS-MT", statusPath: "\/v1\/ctranslate2\/status"/);
-  assert.match(runtimeSource, /async function translateWithBergamot/);
-  assert.match(runtimeSource, /bergamot-translator-worker\.wasm/);
+  assert.doesNotMatch(runtimeSource, /bergamot/i);
   assert.match(runtimeSource, /Download and convert model/);
   assert.match(runtimeSource, /engine\.modelInstallPath/);
   assert.match(runtimeSource, /engine\.modelUninstallPath/);
+  assert.match(runtimeSource, /\.argosAction\.working::before/);
+  assert.match(runtimeSource, /setArgosBusy\(true, argosActionButton\)/);
+  assert.match(runtimeSource, /setArgosBusy\(true, argosRemoveButton\)/);
 });
 
 test("project website opens through the operating system browser", () => {

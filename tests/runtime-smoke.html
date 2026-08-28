@@ -46,9 +46,11 @@
       cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
       cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA later paragraph appears after scrolling.", "ترجمة");
       window.smokeCache = cache;
-      const transaction = () => {
+      const packCache = new Map();
+      window.smokePackCache = packCache;
+      const transaction = (storeName) => {
         let complete = null;
-        const value = { objectStore: () => store };
+        const value = { objectStore: () => storeName === "translationPackEntries" ? packStore : store };
         Object.defineProperty(value, "oncomplete", {
           configurable: true,
           get() { return complete; },
@@ -83,6 +85,38 @@
         count: () => request(cache.size),
         getAllKeys: (range, limit) => request(range ? [] : Array.from(cache.keys()).sort().slice(0, limit)),
         getAll: (range, limit) => request(range ? [] : Array.from(cache.keys()).sort().slice(0, limit).map((key) => cache.get(key)))
+      };
+      function packCursor(records) {
+        const cursorRequest = { result: null, error: null };
+        let index = 0;
+        let success = null;
+        const advance = () => {
+          const record = records[index];
+          cursorRequest.result = record ? {
+            key: record.key,
+            value: record,
+            delete() { packCache.delete(record.key); },
+            continue() { index += 1; setTimeout(advance, 0); }
+          } : null;
+          if (success) success();
+        };
+        Object.defineProperty(cursorRequest, "onsuccess", {
+          configurable: true,
+          get() { return success; },
+          set(callback) { success = callback; if (callback) setTimeout(advance, 0); }
+        });
+        return cursorRequest;
+      }
+      const packStore = {
+        get: (key) => request(packCache.get(key)),
+        put: (record) => { packCache.set(record.key, record); return request(undefined); },
+        clear: () => { packCache.clear(); return request(undefined); },
+        index: (name) => ({
+          openCursor: (range) => packCursor(Array.from(packCache.values()).filter((record) =>
+            name === "packId" && record.packId === range.lower)),
+          get: (key) => request(Array.from(packCache.values()).find((record) =>
+            name === "packFuzzy" && record.packId === key[0] && record.fuzzy === key[1]))
+        })
       };
       const database = { transaction };
       Object.defineProperty(window, "indexedDB", { value: { open: () => request(database) } });
@@ -135,7 +169,7 @@
         }
         if (url.pathname === "/v1/update/check") {
           return { ok: true, json: async () => ({
-            ok: true, latestVersion: "0.9.43", cacheCompatibility: "keep", cacheSchema: 3,
+            ok: true, latestVersion: "0.9.44", cacheCompatibility: "keep", cacheSchema: 3,
             changes: ["Placeholder improvement", "Placeholder bug fix"]
           }) };
         }
@@ -209,36 +243,64 @@
       shadow.querySelector(".provider").value = "google";
       shadow.querySelector(".provider").dispatchEvent(new Event("change"));
       await new Promise((resolve) => setTimeout(resolve, 200));
-      const autosavedSettings = JSON.parse(localStorage.getItem("omori-translator.settings.v2") || "null");
       const autoApplyForcedOn = window.__vnRevivalTranslator.settings().autoTranslate === true;
       const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey");
       const superBulkButtonRemoved = !shadow.querySelector(".superBulkTranslate");
-      const translationScopesPresent = shadow.querySelector(".storyTranslationScope")?.getAttribute("aria-current") === "true"
-        && shadow.querySelector(".storyTranslationScope")?.textContent.includes("Stable · dialogue windows")
-        && shadow.querySelector(".fullTranslationScope")?.getAttribute("aria-disabled") === "true"
-        && shadow.querySelector(".fullTranslationScope")?.textContent.includes("Coming soon");
+      const storyScopeButton = shadow.querySelector(".storyTranslationScope");
+      const fullScopeButton = shadow.querySelector(".fullTranslationScope");
+      const translationScopesPresent = storyScopeButton?.getAttribute("aria-pressed") === "true"
+        && storyScopeButton?.textContent.includes("Stable · dialogue windows")
+        && fullScopeButton?.getAttribute("aria-pressed") === "false"
+        && fullScopeButton?.textContent.includes("Experimental · menus + dialogue");
+      fullScopeButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const fullTranslationScopeSwitch = window.__vnRevivalTranslator.getTranslationScope() === "full"
+        && window.__vnRevivalTranslator.settings().translationScope === "full"
+        && fullScopeButton.getAttribute("aria-pressed") === "true"
+        && fullScopeButton.classList.contains("active")
+        && !storyScopeButton.classList.contains("active")
+        && shadow.querySelector(".scopeHint").textContent.includes("cached translations are applied to menus");
+      const autosavedSettings = JSON.parse(localStorage.getItem("omori-translator.settings.v2") || "null");
       const liveTranslationLogPresent = shadow.querySelector(".translationLogBox")?.textContent
         .includes("New translations will appear here.")
         && shadow.querySelector(".translationLogEntries")?.getAttribute("aria-live") === "polite";
+      const translationLogEntries = shadow.querySelector(".translationLogEntries");
+      const translationLogEmpty = shadow.querySelector(".translationLogEmpty");
+      const staleLogEntry = document.createElement("div");
+      staleLogEntry.textContent = "Stale result from a previous language";
+      translationLogEntries.append(staleLogEntry);
+      translationLogEmpty.hidden = true;
       const bulkButton = shadow.querySelector(".bulkTranslate");
+      const bulkCancelButton = shadow.querySelector(".bulkCancel");
       bulkButton.click();
       await new Promise((resolve) => setTimeout(resolve, 35));
+      const bulkCancelRect = bulkCancelButton.getBoundingClientRect();
       const activeTranslationWorkspaceState = {
         hostBusy: host.classList.contains("bulkBusyHost"),
         panelBusy: shadow.querySelector(".panel").classList.contains("bulkBusy"),
         logOpen: shadow.querySelector(".translationLogBox").open,
-        activeRow: bulkButton.closest(".bulkActionRow").classList.contains("activeBulkAction"),
-        cancelLabel: bulkButton.textContent === "Cancel translation",
+        previousRunLogCleared: translationLogEntries.children.length === 0
+          && !translationLogEmpty.hidden
+          && translationLogEmpty.textContent.includes("Saved history remains on disk"),
+        interruptLabel: bulkButton.textContent === "Interrupt translation (progress will be saved)"
+          && bulkCancelButton.textContent === "Interrupt translation (progress will be saved)",
+        interruptColorMatches: getComputedStyle(bulkCancelButton).backgroundColor
+          === getComputedStyle(bulkButton).backgroundColor,
+        interruptSpinnerVisible: getComputedStyle(bulkCancelButton, "::before").animationName === "vr-spin",
+        fixedCancelVisible: getComputedStyle(bulkCancelButton).display === "flex"
+          && bulkCancelRect.height >= 48
+          && bulkCancelRect.top >= 0
+          && bulkCancelRect.bottom <= innerHeight,
         wordStatus: shadow.querySelector(".status").textContent.includes("Words:"),
         logFillsSpace: getComputedStyle(shadow.querySelector(".translationLogBox")).display === "flex",
         collapseHidden: getComputedStyle(shadow.querySelector(".bar")).display === "none"
       };
       const activeTranslationWorkspace = Object.values(activeTranslationWorkspaceState).every(Boolean);
-      bulkButton.click();
+      bulkCancelButton.click();
       await new Promise((resolve) => setTimeout(resolve, 160));
       const translationWorkspaceRestored = !host.classList.contains("bulkBusyHost")
         && !shadow.querySelector(".panel").classList.contains("bulkBusy")
-        && !bulkButton.closest(".bulkActionRow").classList.contains("activeBulkAction")
+        && getComputedStyle(shadow.querySelector(".bulkCancelBar")).display === "none"
         && bulkButton.textContent === "Bulk Translate All Assets";
       shadow.querySelector(".projectSite").click();
       const projectSiteOpenedExternally = window.externalUrls.includes("https://vnrevival.fun/");
@@ -312,6 +374,49 @@
         buttonWrap: button.style.getPropertyValue("white-space")
       };
 
+      const sharedSource = "A shared cache line.";
+      const ownTranslation = "Собственный перевод";
+      const importedTranslation = "Импортированный перевод";
+      const sharedKey = window.VNRevivalTranslationCore.makeCacheKey(
+        sharedSource, "ru", "google", "omori", window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION
+      );
+      window.smokeCache.set(sharedKey, ownTranslation);
+      const sharedFile = new File([
+        JSON.stringify({ format: "vnrevival-translator-cache", version: 2, gameId: "omori", exportedAt: "2026-08-29T00:00:00.000Z" }),
+        "\n",
+        JSON.stringify([sharedKey, importedTranslation]),
+        "\n"
+      ], "friend-russian-cache.jsonl", { type: "application/x-ndjson" });
+      const cacheFileInput = shadow.querySelector(".cacheFile");
+      async function selectSharedFile() {
+        Object.defineProperty(cacheFileInput, "files", { configurable: true, value: [sharedFile] });
+        cacheFileInput.dispatchEvent(new Event("change"));
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      await selectSharedFile();
+      const importModalDetectedRussian = !shadow.querySelector(".packModal").hidden
+        && shadow.querySelector(".packLanguage").value === "ru"
+        && shadow.querySelector(".packSummary").textContent.includes("Russian")
+        && shadow.querySelector(".packSummary").textContent.includes("1 translation");
+      shadow.querySelector(".packCancel").click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const importCancellationKeptData = !localStorage.getItem("omori-translator.translation-packs.v1")
+        && window.smokePackCache.size === 0;
+      await selectSharedFile();
+      shadow.querySelector(".packConfirm").click();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const importedPackTakesPriority = window.__vnRevivalTranslator.getLanguage() === "ru"
+        && window.__vnRevivalTranslator.queryMemoryCache(sharedSource) === importedTranslation
+        && !shadow.querySelector(".removeTranslationPack").hidden
+        && shadow.querySelector(".translationPackStatus").textContent.includes("friend-russian-cache.jsonl");
+      shadow.querySelector(".removeTranslationPack").click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const removingPackRestoresOwnCache = window.__vnRevivalTranslator.queryMemoryCache(sharedSource) === ownTranslation
+        && shadow.querySelector(".removeTranslationPack").hidden
+        && window.smokePackCache.size === 0;
+      const translationPackImportFlow = importModalDetectedRussian && importCancellationKeptData
+        && importedPackTakesPriority && removingPackRestoresOwnCache;
+
       const passed = translated.text === "ترى امرأة جميلة بالقرب من الباب."
         && translated.direction === "rtl"
         && translated.language === "ar"
@@ -338,6 +443,7 @@
         && obsoleteControlsRemoved
         && superBulkButtonRemoved
         && translationScopesPresent
+        && fullTranslationScopeSwitch
         && liveTranslationLogPresent
         && activeTranslationWorkspace
         && translationWorkspaceRestored
@@ -347,12 +453,14 @@
         && autosavedSettings.lmStudioModel === "local/qwen"
         && autosavedSettings.openAICompatibleModel === "kimi-k2.5"
         && autosavedSettings.autoTranslate === true
+        && autosavedSettings.translationScope === "full"
         && removedSettingsButtons
         && settingsAlwaysVisible
         && modeUsesToggle
         && collapsedStateApplied
         && expandedStateSaved
         && contactLinksPresent
+        && translationPackImportFlow
         && restored.text === "You see a beautiful woman near the door."
         && restored.direction === false
         && restored.language === false
@@ -383,6 +491,7 @@
         obsoleteControlsRemoved,
         superBulkButtonRemoved,
         translationScopesPresent,
+        fullTranslationScopeSwitch,
         liveTranslationLogPresent,
         activeTranslationWorkspace,
         activeTranslationWorkspaceState,
@@ -395,6 +504,11 @@
         collapsedStateApplied,
         expandedStateSaved,
         contactLinksPresent,
+        translationPackImportFlow,
+        importModalDetectedRussian,
+        importCancellationKeptData,
+        importedPackTakesPriority,
+        removingPackRestoresOwnCache,
         translated,
         restored
       });

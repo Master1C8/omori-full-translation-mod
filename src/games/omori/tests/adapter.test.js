@@ -61,15 +61,90 @@ test("omori redraws a completed cached page directly without restarting message 
   assert.match(source, /messageWindow\._textState = null;\s*messageWindow\.pause = true/);
 });
 
-test("omori limits translation hooks to dialogue surfaces for every language", () => {
+test("omori keeps Story dialogue-only and gates menu hooks behind Full Translation", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "adapter.js"), "utf8");
   assert.match(source, /Window_Message/);
   assert.match(source, /Window_NameBox/);
   assert.match(source, /Window_ChoiceList/);
-  assert.doesNotMatch(source, /Window_Help/);
-  assert.doesNotMatch(source, /Window_ScrollText/);
-  assert.doesNotMatch(source, /__vnRevivalDrawHooked/);
-  assert.doesNotMatch(source, /Window_OmoriFilePrompt/);
+  assert.match(source, /const isFullTranslationActive = \(\) => isTranslateActive\(\) && currentTranslationScope\(\) === "full"/);
+  assert.match(source, /Bitmap\.prototype\.drawText = function\(text\)/);
+  assert.match(source, /Window_Base\.prototype\.drawTextEx = function\(text\)/);
+  assert.match(source, /owner && isFullTranslationActive\(\) && !isDialogueWindow\(owner\)/);
+  assert.match(source, /refreshNonDialogueWindows\(\)/);
+});
+
+test("Full Translation draws cached menu text and switching back restores Story output", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "adapter.js"), "utf8");
+  const draws = [];
+  let scope = "story";
+  function Bitmap() {}
+  Bitmap.prototype.drawText = function(text) { draws.push(String(text)); };
+  function WindowBase() { this.children = []; this.createContents(); }
+  WindowBase.prototype.createContents = function() { this.contents = new Bitmap(); };
+  WindowBase.prototype.drawText = function(text) { this.contents.drawText(text, 0, 0, 200, 36, "left"); };
+  WindowBase.prototype.drawTextEx = function(text) { this.contents.drawText(text, 0, 0, 200, 36, "left"); };
+  WindowBase.prototype.processNormalCharacter = function(textState) { textState.index += 1; };
+  function WindowMessage() { WindowBase.call(this); this.visible = true; }
+  WindowMessage.prototype = Object.create(WindowBase.prototype);
+  WindowMessage.prototype.constructor = WindowMessage;
+  WindowMessage.prototype.startMessage = function() {};
+  WindowMessage.prototype.update = function() {};
+  function GameMessage() { this._texts = []; }
+  GameMessage.prototype.add = function(text) { this._texts.push(text); };
+  GameMessage.prototype.allText = function() { return this._texts.join("\n"); };
+
+  const scene = { children: [] };
+  const windowObject = {
+    Bitmap,
+    Window_Base: WindowBase,
+    Window_Message: WindowMessage,
+    Game_Message: GameMessage,
+    SceneManager: { _scene: scene },
+    $gameMessage: new GameMessage(),
+    VNRevivalTranslationCore: { fontFallbacks: () => ["sans-serif"], isRtlLanguage: () => false },
+    __vnRevivalTranslator: {
+      getMode: () => "translated",
+      getTranslationScope: () => scope,
+      getLanguage: () => "ru",
+      isSourceText: (text) => /[A-Za-z]/.test(text),
+      queryMemoryCache: (text) => text === "ITEMS" ? "ПРЕДМЕТЫ" : null,
+      registerAdapterText() {}
+    }
+  };
+  const intervalCallbacks = [];
+  const context = {
+    window: windowObject,
+    document: { readyState: "complete" },
+    setInterval(callback) { intervalCallbacks.push(callback); return 1; },
+    clearInterval() {},
+    console
+  };
+  vm.runInNewContext(source, context);
+  intervalCallbacks.forEach((callback) => callback());
+
+  const menu = new WindowBase();
+  menu.refresh = function() { this.drawText("ITEMS"); };
+  const message = new WindowMessage();
+  scene.children.push(menu, message);
+
+  menu.drawText("ITEMS");
+  assert.equal(draws.at(-1), "ITEMS");
+
+  scope = "full";
+  context.VNRevivalGameAdapter.onTranslationScopeChanged("full");
+  menu.drawTextEx("ITEMS");
+  assert.equal(draws.at(-1), "ПРЕДМЕТЫ");
+  message.drawText("ITEMS");
+  assert.equal(draws.at(-1), "ITEMS");
+
+  context.VNRevivalGameAdapter.onModeChanged("source");
+  assert.equal(draws.at(-1), "ITEMS");
+  context.VNRevivalGameAdapter.onModeChanged("translated");
+  assert.equal(draws.at(-1), "ПРЕДМЕТЫ");
+
+  scope = "story";
+  context.VNRevivalGameAdapter.onTranslationScopeChanged("story");
+  assert.equal(draws.at(-1), "ITEMS");
 });
 
 test("omori name boxes reserve Cyrillic width and shrink only at the screen edge", () => {
@@ -84,12 +159,11 @@ test("omori name boxes reserve Cyrillic width and shrink only at the screen edge
   assert.match(source, /this\.drawTextEx\(this\._text \|\| translated, drawX, drawY/);
 });
 
-test("omori Russian name boxes use stable character names before cache lookup", () => {
+test("omori name boxes use the same cache-backed translation path as dialogue", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "adapter.js"), "utf8");
-  assert.match(source, /const RUSSIAN_CHARACTER_NAMES = Object\.freeze/);
-  assert.ok(source.includes('BERLY: "\\u0411\\u0415\\u0420\\u041B\\u0418"'));
-  assert.match(source, /translator\.getLanguage\(\)/);
-  assert.match(source, /translateCharacterName\(text\)/);
+  assert.doesNotMatch(source, /RUSSIAN_CHARACTER_NAMES/);
+  assert.doesNotMatch(source, /translateCharacterName/);
+  assert.match(source, /const translated = text && isTranslateActive\(\) \? translateString\(text\) : text/);
 });
 
 test("omori RTL messages draw one shaped line while preserving message pacing", () => {

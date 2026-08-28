@@ -4,7 +4,6 @@ import unittest
 import io
 import json
 import shutil
-import tarfile
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -168,49 +167,6 @@ class ArgosServiceTests(unittest.TestCase):
             self.assertIn("--no-deps", command)
             self.assertIn("--only-binary=:all:", command)
             self.assertEqual(command[command.index("--requirement") + 1], str(requirements))
-
-    def test_bergamot_model_install_verifies_archive_and_builds_local_registry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload = root / "payload"
-            payload.mkdir()
-            (payload / "model.intgemm.alphas.bin").write_bytes(b"model")
-            (payload / "vocab.enes.spm").write_bytes(b"vocab")
-            (payload / "lex.s2t.bin").write_bytes(b"lex")
-            archive = root / "model.tar.gz"
-            with tarfile.open(archive, "w:gz") as bundle:
-                bundle.add(payload, arcname="enes.student.tiny")
-            expected_hash = argos_service.sha256_file(archive)
-            bridge = argos_service.ArgosBridge(root / "data")
-
-            def fake_download(_links, destination, _maximum):
-                shutil.copy2(archive, destination)
-                return destination
-
-            with mock.patch.dict(argos_service.BERGAMOT_MODELS, {
-                "es": ("https://models.example/en-es.tar.gz", expected_hash)
-            }, clear=True), mock.patch.object(bridge, "_download_https", side_effect=fake_download):
-                status = bridge.install_bergamot_model("es")
-                self.assertTrue(status["offlineReady"])
-                self.assertGreater(status["modelBytes"], 0)
-                registry = bridge.bergamot_registry()
-                self.assertEqual(registry["models"][0]["from"], "en")
-                self.assertEqual(registry["models"][0]["to"], "es")
-                model_path = bridge.bergamot_model_file("es", "model")
-                self.assertEqual(model_path.read_bytes(), b"model")
-
-    def test_model_archives_reject_parent_directory_entries(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "unsafe.tar.gz"
-            with tarfile.open(archive, "w:gz") as bundle:
-                member = tarfile.TarInfo("../escape.bin")
-                member.size = 3
-                bundle.addfile(member, io.BytesIO(b"bad"))
-            with self.assertRaises(argos_service.BridgeError) as caught:
-                argos_service.safe_extract_tar(archive, root / "extract")
-            self.assertEqual(caught.exception.code, "model_archive_invalid")
-            self.assertFalse((root / "escape.bin").exists())
 
     def test_ctranslate2_opus_translates_with_persistent_int8_model(self):
         with tempfile.TemporaryDirectory() as directory:

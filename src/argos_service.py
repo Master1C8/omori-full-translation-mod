@@ -15,7 +15,6 @@ import site
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import threading
 import time
@@ -49,23 +48,10 @@ ARGOS_BATCH_MAX_ITEMS = 16
 ASSET_INDEX_SCHEMA = 1
 ASSET_INDEX_MAX_BYTES = 16 * 1024 * 1024
 MAX_MODEL_BYTES = 1_073_741_824
-BERGAMOT_VERSION = "0.4.9"
 UPDATE_MANIFEST_URL = "https://vnrevival.fun/downloads/omori/latest.json"
 UPDATE_MANIFEST_MAX_BYTES = 65_536
 UPDATE_CHECK_TIMEOUT = 10
 RUNTIME_REQUIREMENTS_PATH = Path(__file__).with_name("requirements-runtime-macos.txt")
-
-# Pinned tiny English -> target models from the official TranslateLocally
-# Bergamot catalog. Archive hashes are verified before extraction.
-BERGAMOT_MODELS = {
-    "bg": ("https://data.statmt.org/bergamot/models/bgen/enbg.student.tiny11.v1.3ea060c1b76470a7.tar.gz", "3ea060c1b76470a7769dc1f32010a99fcc9a2e868a58c429cd8e8251fa1330c8"),
-    "cs": ("https://data.statmt.org/bergamot/models/csen/encs.student.tiny11.v1.b5c1ff605296b0e5.tar.gz", "b5c1ff605296b0e5a55ae6876db434fded62ae0c947e153f758d7b8a58c2c3dd"),
-    "de": ("https://data.statmt.org/bergamot/models/deen/ende.student.tiny11.v2.93821e13b3c511b5.tar.gz", "93821e13b3c511b5390f9fb79f476f738d66e3656889bf076e906897e614fed2"),
-    "es": ("https://data.statmt.org/bergamot/models/esen/enes.student.tiny11.v1.a7203a8f8e9daea8.tar.gz", "a7203a8f8e9daea85698d5912f25cca6fecae3e4097b188a0c31ed2d58e13c61"),
-    "et": ("https://data.statmt.org/bergamot/models/eten/enet.student.tiny11.v1.0b8f835b0c154aaa.tar.gz", "0b8f835b0c154aaa01f612bfcf1bdcd41f86f1088f1226f2d3d6fa8155cb80a0"),
-    "fr": ("https://data.statmt.org/bergamot/models/fren/enfr.student.tiny11.v1.805d112122af03d0.tar.gz", "805d112122af03d0fe2769eacaaaf5a9eac2c4b97e862a5b2cf0eb95862a7efb"),
-    "pl": ("https://data.statmt.org/bergamot/models/plen/enpl.student.tiny11.v1.c33219daa12e7872.tar.gz", "c33219daa12e7872cf7ac8a1b86a2f3e0592ebadd7e756bf11d16d9a7725cf9b"),
-}
 
 # Google language code -> Argos package language code. Only direct English models
 # from the official Argos package index are exposed.
@@ -145,21 +131,6 @@ def _safe_archive_path(destination: Path, name: str) -> Path:
     except ValueError as error:
         raise BridgeError("model_archive_invalid", "The model archive contains an unsafe path", 422) from error
     return candidate
-
-
-def safe_extract_tar(archive_path: Path, destination: Path) -> None:
-    total = 0
-    with tarfile.open(archive_path, "r:gz") as archive:
-        members = archive.getmembers()
-        for member in members:
-            _safe_archive_path(destination, member.name)
-            if member.issym() or member.islnk() or member.isdev():
-                raise BridgeError("model_archive_invalid", "The model archive contains unsupported links", 422)
-            if member.isfile():
-                total += max(0, member.size)
-                if total > MAX_MODEL_BYTES:
-                    raise BridgeError("model_archive_too_large", "The extracted model exceeds the allowed size", 413)
-        archive.extractall(destination, members=members)
 
 
 def safe_extract_zip(archive_path: Path, destination: Path) -> None:
@@ -474,9 +445,6 @@ class ArgosBridge:
         self.state_dir = self.data_dir / "state"
         self.packages_dir = self.state_dir / "packages"
         self.cache_dir = self.data_dir / "cache"
-        self.bergamot_dir = self.data_dir / "bergamot"
-        self.bergamot_models_dir = self.bergamot_dir / "models"
-        self.bergamot_assets_dir = Path(__file__).resolve().parent / "bergamot-web"
         self.ctranslate2_dir = self.data_dir / "ctranslate2-opus"
         self.ctranslate2_models_dir = self.ctranslate2_dir / "models"
         self._lock = threading.RLock()
@@ -644,7 +612,7 @@ class ArgosBridge:
     def _configure_environment(self) -> None:
         for path in (
             self.runtime_dir, self.state_dir, self.packages_dir, self.cache_dir,
-            self.bergamot_models_dir, self.ctranslate2_models_dir,
+            self.ctranslate2_models_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         os.environ["XDG_DATA_HOME"] = str(self.state_dir)
@@ -973,138 +941,6 @@ class ArgosBridge:
             if any(not translated.strip() for translated in translations):
                 raise BridgeError("empty_translation", "Argos returned an empty batch item", 500)
         return {"ok": True, "translations": translations, "offline": True}
-
-    def _verified_model_manifest(self, directory: Path) -> dict[str, Any] | None:
-        try:
-            payload = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict) or not isinstance(payload.get("files"), dict):
-            return None
-        for part in ("model", "vocab", "lex"):
-            name = payload["files"].get(part)
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", name):
-                return None
-            if not (directory / name).is_file():
-                return None
-        return payload
-
-    def bergamot_status(self, target: Any) -> dict[str, Any]:
-        target_code = target if isinstance(target, str) and target in BERGAMOT_MODELS else None
-        directory = self.bergamot_models_dir / target_code if target_code else None
-        installed = self._verified_model_manifest(directory) if directory else None
-        runtime_installed = all((self.bergamot_assets_dir / name).is_file() for name in (
-            "translator.js", "worker/translator-worker.js",
-            "worker/bergamot-translator-worker.js", "worker/bergamot-translator-worker.wasm",
-        ))
-        return {
-            "ok": True,
-            "engine": "Bergamot WASM",
-            "runtimeInstalled": runtime_installed,
-            "runtimeVersion": BERGAMOT_VERSION if runtime_installed else None,
-            "runtimeBytes": directory_size(self.bergamot_assets_dir),
-            "sentenceModelInstalled": runtime_installed,
-            "requestedLanguage": target if isinstance(target, str) else None,
-            "targetCode": target_code,
-            "supportedLanguages": sorted(BERGAMOT_MODELS),
-            "supported": target_code is not None,
-            "modelInstalled": installed is not None,
-            "modelBytes": directory_size(directory) if installed and directory else 0,
-            "offlineReady": runtime_installed and installed is not None,
-            "offline": True,
-        }
-
-    def install_bergamot_model(self, target: Any) -> dict[str, Any]:
-        if not isinstance(target, str) or target not in BERGAMOT_MODELS:
-            raise BridgeError("unsupported_language", "Bergamot has no direct English model for this language", 409)
-        if not self.bergamot_status(target)["runtimeInstalled"]:
-            raise BridgeError("runtime_broken", "The bundled Bergamot WASM engine is missing", 500)
-        with self._lock:
-            destination = self.bergamot_models_dir / target
-            if self._verified_model_manifest(destination) is not None:
-                return self.bergamot_status(target)
-            url, expected_hash = BERGAMOT_MODELS[target]
-            downloads = self.cache_dir / "downloads"
-            downloads.mkdir(parents=True, exist_ok=True)
-            archive_path = downloads / f"bergamot-en-{target}.tar.gz"
-            self._download_https([url], archive_path, MAX_MODEL_BYTES)
-            actual_hash = sha256_file(archive_path)
-            if actual_hash != expected_hash:
-                archive_path.unlink(missing_ok=True)
-                raise BridgeError("model_checksum_failed", "The Bergamot model checksum did not match", 422)
-            try:
-                with tempfile.TemporaryDirectory(prefix="bergamot-", dir=downloads) as temporary:
-                    extracted = Path(temporary)
-                    safe_extract_tar(archive_path, extracted)
-                    model_files = [entry for entry in extracted.rglob("*.bin") if entry.is_file() and "lex" not in entry.name]
-                    vocab_files = [entry for entry in extracted.rglob("*.spm") if entry.is_file()]
-                    lex_files = [entry for entry in extracted.rglob("lex*.bin") if entry.is_file()]
-                    if len(model_files) != 1 or not vocab_files or len(lex_files) != 1:
-                        raise BridgeError("model_archive_invalid", "The Bergamot archive is missing required model files", 422)
-                    staging = self.bergamot_models_dir / f".{target}.installing"
-                    shutil.rmtree(staging, ignore_errors=True)
-                    staging.mkdir(parents=True)
-                    selected = {"model": model_files[0], "vocab": vocab_files[0], "lex": lex_files[0]}
-                    manifest_files: dict[str, str] = {}
-                    hashes: dict[str, str] = {}
-                    for part, source in selected.items():
-                        name = {"model": "model.bin", "vocab": "vocab.spm", "lex": "lex.bin"}[part]
-                        shutil.copy2(source, staging / name)
-                        manifest_files[part] = name
-                        hashes[part] = sha256_file(staging / name)
-                    (staging / "manifest.json").write_text(json.dumps({
-                        "engine": "bergamot", "version": BERGAMOT_VERSION, "target": target,
-                        "archiveSha256": expected_hash, "files": manifest_files, "hashes": hashes,
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    shutil.rmtree(destination, ignore_errors=True)
-                    staging.replace(destination)
-            finally:
-                archive_path.unlink(missing_ok=True)
-        return self.bergamot_status(target)
-
-    def uninstall_bergamot_model(self, target: Any) -> dict[str, Any]:
-        if not isinstance(target, str) or target not in BERGAMOT_MODELS:
-            raise BridgeError("unsupported_language", "Bergamot has no model for this language", 409)
-        with self._lock:
-            shutil.rmtree(self.bergamot_models_dir / target, ignore_errors=True)
-        return self.bergamot_status(target)
-
-    def bergamot_registry(self) -> dict[str, Any]:
-        entries = []
-        for target in sorted(BERGAMOT_MODELS):
-            directory = self.bergamot_models_dir / target
-            manifest = self._verified_model_manifest(directory)
-            files = {}
-            for part in ("model", "vocab", "lex"):
-                path = directory / manifest["files"][part] if manifest else None
-                files[part] = {
-                    "name": f"/v1/bergamot/model-file?target={urllib.parse.quote(target)}&part={part}",
-                    "size": path.stat().st_size if path else 0,
-                    "expectedSha256Hash": manifest.get("hashes", {}).get(part, "") if manifest else "",
-                }
-            entries.append({"from": "en", "to": target, "files": files})
-        return {"ok": True, "models": entries}
-
-    def bergamot_model_file(self, target: Any, part: Any) -> Path:
-        if not isinstance(target, str) or target not in BERGAMOT_MODELS or part not in ("model", "vocab", "lex"):
-            raise BridgeError("not_found", "Unknown Bergamot model file", 404)
-        directory = self.bergamot_models_dir / target
-        manifest = self._verified_model_manifest(directory)
-        if manifest is None:
-            raise BridgeError("model_missing", "Download the selected Bergamot model first", 409)
-        return directory / manifest["files"][part]
-
-    def bergamot_asset(self, relative: str) -> Path:
-        allowed = {
-            "translator.js", "worker/translator-worker.js",
-            "worker/bergamot-translator-worker.js", "worker/bergamot-translator-worker.wasm",
-        }
-        if relative not in allowed:
-            raise BridgeError("not_found", "Unknown Bergamot runtime asset", 404)
-        path = self.bergamot_assets_dir / relative
-        if not path.is_file():
-            raise BridgeError("runtime_broken", "The bundled Bergamot WASM engine is missing", 500)
-        return path
 
     def _load_ctranslate2_runtime(self) -> bool:
         if self._ctranslate2_module is not None:
@@ -2049,28 +1885,6 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
                     target = parse_qs(urlsplit(self.path).query).get("target", [None])[0]
                 self._write_json(self.bridge.status(target))
                 return
-            if self.path.startswith("/v1/bergamot/status"):
-                from urllib.parse import parse_qs, urlsplit
-                target = parse_qs(urlsplit(self.path).query).get("target", [None])[0]
-                self._write_json(self.bridge.bergamot_status(target))
-                return
-            if self.path == "/v1/bergamot/registry":
-                self._write_json(self.bridge.bergamot_registry())
-                return
-            if self.path.startswith("/v1/bergamot/model-file?"):
-                from urllib.parse import parse_qs, urlsplit
-                query = parse_qs(urlsplit(self.path).query)
-                path = self.bridge.bergamot_model_file(
-                    query.get("target", [None])[0], query.get("part", [None])[0]
-                )
-                self._write_binary_file(path, "application/octet-stream")
-                return
-            if self.path.startswith("/v1/bergamot/assets/"):
-                relative = urllib.parse.unquote(self.path[len("/v1/bergamot/assets/"):])
-                path = self.bridge.bergamot_asset(relative)
-                content_type = "application/wasm" if relative.endswith(".wasm") else "text/javascript; charset=utf-8"
-                self._write_binary_file(path, content_type)
-                return
             if self.path.startswith("/v1/ctranslate2/status"):
                 from urllib.parse import parse_qs, urlsplit
                 target = parse_qs(urlsplit(self.path).query).get("target", [None])[0]
@@ -2115,10 +1929,6 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
                 result = self.bridge.translate(payload.get("target"), payload.get("text"))
             elif self.path == "/v1/translate/batch":
                 result = self.bridge.translate_batch(payload.get("target"), payload.get("texts"))
-            elif self.path == "/v1/bergamot/models/install":
-                result = self.bridge.install_bergamot_model(payload.get("target"))
-            elif self.path == "/v1/bergamot/models/uninstall":
-                result = self.bridge.uninstall_bergamot_model(payload.get("target"))
             elif self.path == "/v1/ctranslate2/runtime/install":
                 result = self.bridge.install_ctranslate2_runtime()
             elif self.path == "/v1/ctranslate2/models/install":

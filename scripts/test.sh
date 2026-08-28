@@ -78,7 +78,7 @@ if grep -RInE '[А-Яа-яЁё]' \
   exit 1
 fi
 
-for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'importCache' 'clearCacheForLanguage' 'privacyAccepted' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'importJsonLinesCache' 'providerRegistry' 'translateBulkLanguage'; do
+for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'privacyAccepted' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage'; do
   grep -Fq "$REQUIRED" src/translator-runtime.js || {
     echo "Missing runtime feature: $REQUIRED" >&2
     exit 1
@@ -95,7 +95,7 @@ grep -Fq 'const MEMORY_CACHE_LIMIT = 50000;' src/translator-runtime.js || {
   exit 1
 }
 
-for REQUIRED in 'google' 'gemini' 'mymemory' 'argos' 'bergamot' 'ctranslate2-opus' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
+for REQUIRED in 'google' 'gemini' 'mymemory' 'argos' 'ctranslate2-opus' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
   grep -Fq "$REQUIRED" src/providers.js || {
     echo "Missing provider feature: $REQUIRED" >&2
     exit 1
@@ -109,12 +109,17 @@ for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXEC
   }
 done
 
-for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'translate_batch' 'adaptive_argos_cpu_settings' 'ASSET_INDEX_SCHEMA' 'assetCache' 'install_bergamot_model' 'bergamot_registry' 'install_ctranslate2_model' 'ctranslate2_translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'game_language_candidates' '_aes256_encrypt_block' '/v1/translate/batch' '/v1/bergamot/status' '/v1/ctranslate2/status' '/v1/gemini/status' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/status' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/game/strings' 'request_game_executable_change' '/v1/launcher/reselect-executable'; do
+for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'translate_batch' 'adaptive_argos_cpu_settings' 'ASSET_INDEX_SCHEMA' 'assetCache' 'install_ctranslate2_model' 'ctranslate2_translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'game_language_candidates' '_aes256_encrypt_block' '/v1/translate/batch' '/v1/ctranslate2/status' '/v1/gemini/status' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/status' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/game/strings' 'request_game_executable_change' '/v1/launcher/reselect-executable'; do
   grep -Eq "$REQUIRED" src/argos_service.py || {
     echo "Missing Argos bridge feature: $REQUIRED" >&2
     exit 1
   }
 done
+
+if rg -n -i 'bergamot' src/providers.js src/translator-runtime.js src/argos_service.py; then
+  echo "Removed Bergamot provider is still present in product code" >&2
+  exit 1
+fi
 
 grep -Eq 'SITE_NAME = "VN Revival"' src/translator-runtime.js
 grep -Eq 'SITE_URL = "https://vnrevival.fun/"' src/translator-runtime.js

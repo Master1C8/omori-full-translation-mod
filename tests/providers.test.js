@@ -9,7 +9,7 @@ const registry = globalThis.VNRevivalTranslationProviders;
 test("provider registry exposes a stable extension contract", () => {
   assert.equal(registry.contractVersion, 1);
   assert.deepEqual(registry.list.map(({ id }) => id), [
-    "google", "gemini", "mymemory", "argos", "bergamot", "ctranslate2-opus", "lmstudio", "openai-compatible"
+    "google", "gemini", "mymemory", "argos", "ctranslate2-opus", "lmstudio", "openai-compatible"
   ]);
   for (const provider of registry.list) {
     assert.equal(typeof provider.supportsLanguage, "function");
@@ -19,20 +19,7 @@ test("provider registry exposes a stable extension contract", () => {
   }
 });
 
-test("Bergamot and CTranslate2 OPUS providers stay behind local engine contracts", async () => {
-  let bergamotCall = null;
-  const bergamot = await registry.byId.bergamot.translateChunk({
-    text: "Hello", language: "es", signal: undefined,
-    bergamotTranslate: async (...args) => {
-      bergamotCall = args;
-      return "Hola";
-    }
-  });
-  assert.equal(bergamot, "Hola");
-  assert.deepEqual(bergamotCall, ["Hello", "es", undefined]);
-  assert.equal(registry.byId.bergamot.modelManager, "bergamot");
-  assert.equal(registry.byId.bergamot.requiresPrivacy, false);
-
+test("CTranslate2 OPUS provider stays behind its local engine contract", async () => {
   let ctranslate2Call = null;
   const opus = await registry.byId["ctranslate2-opus"].translateChunk({
     text: "Hello", language: "ru", signal: undefined,
@@ -46,6 +33,10 @@ test("Bergamot and CTranslate2 OPUS providers stay behind local engine contracts
   assert.deepEqual(ctranslate2Call.options.body, { text: "Hello", target: "ru" });
   assert.equal(registry.byId["ctranslate2-opus"].modelManager, "ctranslate2-opus");
   assert.equal(registry.byId["ctranslate2-opus"].requiresPrivacy, false);
+});
+
+test("removed Bergamot provider is absent", () => {
+  assert.equal(registry.byId.bergamot, undefined);
 });
 
 test("online providers own URL construction and response parsing", async () => {

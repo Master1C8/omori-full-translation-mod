@@ -18,6 +18,49 @@
     return translated;
   }
 
+  function currentTranslationScope() {
+    if (typeof window === "undefined") return "story";
+    const translator = window.__vnRevivalTranslator;
+    if (translator && typeof translator.getTranslationScope === "function") {
+      return translator.getTranslationScope() === "full" ? "full" : "story";
+    }
+    return window.__vnRevival_translationScope === "full" ? "full" : "story";
+  }
+
+  function isDialogueWindow(windowObject) {
+    if (typeof window === "undefined" || !windowObject) return false;
+    return !!(
+      (window.Window_Message && windowObject instanceof window.Window_Message)
+      || (window.Window_ChoiceList && windowObject instanceof window.Window_ChoiceList)
+      || (window.Window_NameBox && windowObject instanceof window.Window_NameBox)
+    );
+  }
+
+  function visitActiveGameWindows(callback) {
+    if (typeof window === "undefined" || !window.SceneManager || !window.SceneManager._scene
+      || !window.Window_Base || typeof callback !== "function") return;
+    const seen = new Set();
+    const visit = (node) => {
+      if (!node || (typeof node !== "object" && typeof node !== "function") || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof window.Window_Base) callback(node);
+      if (Array.isArray(node.children)) {
+        for (const child of node.children) visit(child);
+      }
+    };
+    visit(window.SceneManager._scene);
+  }
+
+  function refreshNonDialogueWindows() {
+    visitActiveGameWindows((windowObject) => {
+      if (typeof window.__vnRevivalMapWindowBitmap === "function") {
+        try { window.__vnRevivalMapWindowBitmap(windowObject); } catch (_) {}
+      }
+      if (isDialogueWindow(windowObject) || typeof windowObject.refresh !== "function") return;
+      try { windowObject.refresh(); } catch (_) {}
+    });
+  }
+
   const adapter = Object.freeze({
     contractVersion: 2,
     privateSelectors: Object.freeze([
@@ -47,6 +90,7 @@
     onModeChanged(newMode) {
       if (typeof window === "undefined") return;
       window.__vnRevival_isTranslatedMode = (newMode === "translated");
+      if (currentTranslationScope() === "full") refreshNonDialogueWindows();
       if (window.SceneManager && window.SceneManager._scene) {
         const sc = window.SceneManager._scene;
         const messageWindow = sc._messageWindow;
@@ -99,6 +143,11 @@
         : "translated");
       adapter.onTranslationsChanged();
     },
+    onTranslationScopeChanged(scope) {
+      if (typeof window === "undefined") return;
+      window.__vnRevival_translationScope = scope === "full" ? "full" : "story";
+      refreshNonDialogueWindows();
+    },
     onTranslationsChanged() {
       if (typeof window === "undefined" || !window.SceneManager || !window.SceneManager._scene) return;
       const sc = window.SceneManager._scene;
@@ -107,6 +156,7 @@
       if (sc._choiceListWindow && sc._choiceListWindow.visible && typeof sc._choiceListWindow.refresh === "function") {
         try { sc._choiceListWindow.refresh(); } catch (_) {}
       }
+      if (currentTranslationScope() === "full") refreshNonDialogueWindows();
     }
   });
 
@@ -121,18 +171,8 @@
       const skipCache = new Set();
       const FONT_FALLBACK_STACK = 'GameFont, OMORI_GAME, OMORI_GAME2, NotoSans_Regular, "Noto Sans", Arial, sans-serif, -apple-system';
       const RTL_SCRIPT_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
-      const RUSSIAN_CHARACTER_NAMES = Object.freeze({
-        OMORI: "\u041E\u041C\u041E\u0420\u0418",
-        AUBREY: "\u041E\u0411\u0420\u0418",
-        KEL: "\u041A\u0415\u041B",
-        HERO: "\u0425\u0418\u0420\u041E",
-        BASIL: "\u0411\u042D\u0417\u0418\u041B",
-        MARI: "\u041C\u0410\u0420\u0418",
-        SUNNY: "\u0421\u0410\u041D\u041D\u0418",
-        BERLY: "\u0411\u0415\u0420\u041B\u0418"
-      });
-
       const isTranslateActive = () => !!window.__vnRevival_isTranslatedMode;
+      const isFullTranslationActive = () => isTranslateActive() && currentTranslationScope() === "full";
 
       const activeLanguage = () => {
         const translator = window.__vnRevivalTranslator;
@@ -193,19 +233,6 @@
 
         requestTranslation(translator, str);
         return str;
-      };
-
-      const translateCharacterName = (text) => {
-        if (!isTranslateActive() || typeof text !== "string") return text;
-        const translator = window.__vnRevivalTranslator;
-        const language = translator && typeof translator.getLanguage === "function"
-          ? String(translator.getLanguage() || "").toLowerCase().split("-")[0]
-          : "";
-        const trimmed = text.trim();
-        if (language === "ru" && Object.prototype.hasOwnProperty.call(RUSSIAN_CHARACTER_NAMES, trimmed.toUpperCase())) {
-          return text.replace(trimmed, RUSSIAN_CHARACTER_NAMES[trimmed.toUpperCase()]);
-        }
-        return translateString(text);
       };
 
       const redrawCompletedMessage = (rawText, mode) => {
@@ -311,7 +338,62 @@
           };
         }
 
-        // 2. Game_Message: Pre-emptive Interception
+        // 2. Full Translation: translate complete strings drawn by non-dialogue
+        // game windows. Bitmap ownership lets custom OMORI windows that draw
+        // directly to their contents participate without touching sprites or
+        // the dedicated dialogue hooks below.
+        const bitmapOwners = new WeakMap();
+        const mapWindowBitmap = (windowObject) => {
+          if (windowObject && windowObject.contents) bitmapOwners.set(windowObject.contents, windowObject);
+        };
+        window.__vnRevivalMapWindowBitmap = mapWindowBitmap;
+        visitActiveGameWindows(mapWindowBitmap);
+
+        if (window.Window_Base && typeof window.Window_Base.prototype.createContents === "function"
+          && !window.Window_Base.prototype.__vnRevivalFullContentsHooked) {
+          window.Window_Base.prototype.__vnRevivalFullContentsHooked = true;
+          const _createContents = window.Window_Base.prototype.createContents;
+          window.Window_Base.prototype.createContents = function() {
+            const result = _createContents.apply(this, arguments);
+            mapWindowBitmap(this);
+            return result;
+          };
+        }
+
+        if (window.Bitmap && typeof window.Bitmap.prototype.drawText === "function"
+          && !window.Bitmap.prototype.__vnRevivalFullDrawHooked) {
+          window.Bitmap.prototype.__vnRevivalFullDrawHooked = true;
+          const _bitmapDrawText = window.Bitmap.prototype.drawText;
+          window.Bitmap.prototype.drawText = function(text) {
+            const owner = bitmapOwners.get(this);
+            const shouldTranslate = owner && isFullTranslationActive() && !isDialogueWindow(owner)
+              && !owner.__vnRevivalDrawingTextEx;
+            const args = Array.prototype.slice.call(arguments);
+            if (shouldTranslate && typeof text === "string") args[0] = translateString(text);
+            return _bitmapDrawText.apply(this, args);
+          };
+        }
+
+        if (window.Window_Base && typeof window.Window_Base.prototype.drawTextEx === "function"
+          && !window.Window_Base.prototype.__vnRevivalFullDrawTextExHooked) {
+          window.Window_Base.prototype.__vnRevivalFullDrawTextExHooked = true;
+          const _drawTextEx = window.Window_Base.prototype.drawTextEx;
+          window.Window_Base.prototype.drawTextEx = function(text) {
+            if (!isFullTranslationActive() || isDialogueWindow(this) || typeof text !== "string") {
+              return _drawTextEx.apply(this, arguments);
+            }
+            const args = Array.prototype.slice.call(arguments);
+            args[0] = translateString(text);
+            this.__vnRevivalDrawingTextEx = true;
+            try {
+              return _drawTextEx.apply(this, args);
+            } finally {
+              this.__vnRevivalDrawingTextEx = false;
+            }
+          };
+        }
+
+        // 3. Game_Message: Pre-emptive Interception
         if (window.Game_Message && !window.Game_Message.prototype.__vnRevivalHooked) {
           window.Game_Message.prototype.__vnRevivalHooked = true;
           const _add = window.Game_Message.prototype.add;
@@ -330,7 +412,7 @@
           };
         }
 
-        // 3. Window_Message: Reactive Update Hook (The "First English" Fix)
+        // 4. Window_Message: Reactive Update Hook (The "First English" Fix)
         if (window.Window_Message && !window.Window_Message.prototype.__vnRevivalHooked) {
           window.Window_Message.prototype.__vnRevivalHooked = true;
 
@@ -411,7 +493,7 @@
           }
         }
 
-        // 4. RTL canvas messages: draw each complete logical line in one call
+        // 5. RTL canvas messages: draw each complete logical line in one call
         // so Chromium owns Arabic shaping, spacing, punctuation and bidi.
         if (window.Window_Base && !window.Window_Base.prototype.__vnRevivalRtlLinesHooked) {
           window.Window_Base.prototype.__vnRevivalRtlLinesHooked = true;
@@ -455,7 +537,7 @@
           };
         }
 
-        // 5. Dialogue choices are the only command window translated by the mod.
+        // 6. Dialogue choices use their dedicated hook in both scopes.
         if (window.Window_ChoiceList && !window.Window_ChoiceList.prototype.__vnRevivalDialogueChoicesHooked) {
           window.Window_ChoiceList.prototype.__vnRevivalDialogueChoicesHooked = true;
           const _choiceDrawItem = window.Window_ChoiceList.prototype.drawItem;
@@ -482,12 +564,12 @@
           };
         }
 
-        // 5. Window_NameBox Fix (Direct refresh)
+        // 7. Window_NameBox Fix (Direct refresh)
         if (window.Window_NameBox && !window.Window_NameBox.prototype.__vnRevivalHooked) {
            window.Window_NameBox.prototype.__vnRevivalHooked = true;
            const _nameRefresh = window.Window_NameBox.prototype.refresh;
            window.Window_NameBox.prototype.refresh = function(text, position) {
-              const translated = text && isTranslateActive() ? translateCharacterName(text) : text;
+              const translated = text && isTranslateActive() ? translateString(text) : text;
               const rtlName = isRtlActive() && RTL_SCRIPT_PATTERN.test(String(translated || ""));
               const result = _nameRefresh.call(this, translated, position);
               if (translated && this.contents && typeof this.drawTextEx === "function") {

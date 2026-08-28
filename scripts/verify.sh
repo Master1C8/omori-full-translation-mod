@@ -24,8 +24,6 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
 [[ -s "$APP/Contents/Resources/steam-compat.js" ]]
-[[ -s "$APP/Contents/Resources/bergamot-web/worker/bergamot-translator-worker.wasm" ]]
-[[ -s "$APP/Contents/Resources/bergamot-web/LICENSE" ]]
 [[ -s "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md" ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
 [[ -x "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs" ]]
@@ -39,6 +37,10 @@ grep -Eq '(^| )x86_64( |$)' <<< "$CONTROLLER_ARCHS"
 (cd "$READY" && shasum -a 256 -c "$WINDOWS_CHECKSUM")
 
 CONTENTS=$(unzip -Z1 "$ZIP")
+if grep -qi 'bergamot' <<< "$CONTENTS"; then
+  echo "Removed Bergamot files are still present in the macOS archive" >&2
+  exit 1
+fi
 UNEXPECTED_CONTENTS=$(grep -Fv '/Contents/Resources/NWJS Runtime.app/' <<< "$CONTENTS" || true)
 if grep -Eqi '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$UNEXPECTED_CONTENTS"; then
   echo "Archive contains game or user files" >&2
@@ -46,19 +48,19 @@ if grep -Eqi '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$UNEXPECTED
 fi
 grep -Fq '/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs' <<< "$CONTENTS"
 grep -Fq '/Contents/Resources/steam-compat.js' <<< "$CONTENTS"
-grep -Fq '/Contents/Resources/bergamot-web/worker/bergamot-translator-worker.wasm' <<< "$CONTENTS"
-grep -Fq '/Contents/Resources/bergamot-web/LICENSE' <<< "$CONTENTS"
 RUNTIME_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs")
 grep -Eq '(^| )arm64( |$)' <<< "$RUNTIME_ARCHS"
 
 WINDOWS_CONTENTS=$(unzip -Z1 "$WINDOWS_ZIP")
+if grep -qi 'bergamot' <<< "$WINDOWS_CONTENTS"; then
+  echo "Removed Bergamot files are still present in the Windows archive" >&2
+  exit 1
+fi
 grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/argos_service.py" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/requirements-runtime-macos.txt" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/bergamot-web/worker/bergamot-translator-worker.wasm" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/bergamot-web/LICENSE" <<< "$WINDOWS_CONTENTS"
 WINDOWS_NOTICES=$(unzip -p "$WINDOWS_ZIP" "$DIST_NAME/THIRD_PARTY_NOTICES.txt")
 grep -Fq "$PRODUCT_NAME bundles the Python embeddable runtime" <<< "$WINDOWS_NOTICES"
 if grep -Fq '__PRODUCT_NAME__' <<< "$WINDOWS_NOTICES"; then

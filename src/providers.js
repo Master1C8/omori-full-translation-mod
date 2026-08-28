@@ -122,29 +122,6 @@
       }
     },
     {
-      id: "bergamot",
-      label: "Bergamot Offline",
-      concurrency: 1,
-      delay: 0,
-      retries: 1,
-      contextLimit: 3200,
-      requiresPrivacy: false,
-      modelManager: "bergamot",
-      supportsLanguage(code, context) {
-        return core.providerSupportsLanguage("argos", code, context && context.localLanguages);
-      },
-      splitText(text) {
-        return [text];
-      },
-      hint() {
-        return "Bergamot: Firefox-compatible WASM translation runs entirely on this computer. Tiny models are fast but support a limited set of languages.";
-      },
-      async translateChunk(context) {
-        if (typeof context.bergamotTranslate !== "function") throw new Error("The Bergamot WASM engine is unavailable");
-        return context.bergamotTranslate(context.text, context.language, context.signal);
-      }
-    },
-    {
       id: "ctranslate2-opus",
       label: "CTranslate2 + OPUS-MT",
       concurrency: 1,

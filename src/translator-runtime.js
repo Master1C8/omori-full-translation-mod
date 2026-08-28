@@ -41,6 +41,7 @@
   const LEGACY_SETTINGS_KEY = `${game.storageNamespace}.settings.v1`;
   const CACHE_META_KEY = `${game.storageNamespace}.cache-meta.v3`;
   const CACHE_DIRTY_KEY = `${game.storageNamespace}.cache-meta-dirty.v3`;
+  const TRANSLATION_PACK_META_KEY = `${game.storageNamespace}.translation-packs.v1`;
   const LEGACY_CACHE_META_KEYS = Object.freeze([
     `${game.storageNamespace}.cache-meta.v1`, `${game.storageNamespace}.cache-meta.v2`
   ]);
@@ -49,7 +50,9 @@
   ]);
   const DB_NAME = game.cacheDatabase || `${game.storageNamespace}-cache`;
   const STORE_NAME = "translations";
+  const TRANSLATION_PACK_STORE_NAME = "translationPackEntries";
   const CACHE_FORMAT = "vnrevival-translator-cache";
+  const TRANSLATION_PACK_FORMAT = "vnrevival-translation-pack";
   const legacyCompatibility = game.legacyCompatibility || {};
   const LEGACY_CACHE_FORMATS = Array.isArray(legacyCompatibility.cacheFormats)
     ? legacyCompatibility.cacheFormats.filter((value) => typeof value === "string" && value)
@@ -65,6 +68,7 @@
   const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY = 60 * 60 * 1000;
+  const INTERRUPT_TRANSLATION_LABEL = "Interrupt translation (progress will be saved)";
   const GOOGLE_RATE_LIMIT_STATE_KEY = `${game.storageNamespace}.google-rate-limit-state.v2`;
   const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
@@ -83,6 +87,7 @@
     autoTranslate: AUTO_APPLY_TRANSLATIONS,
     privacyAccepted: false,
     mode: "translated",
+    translationScope: "story",
     lmStudioModel: "",
     openAICompatiblePreset: "opencode-go",
     openAICompatibleBaseURL: OPENAI_COMPATIBLE_PRESETS["opencode-go"].baseURL,
@@ -114,6 +119,8 @@
   let cacheMetadataPromise = null;
   let cacheMetadataVerified = false;
   let cacheMetadataSaveTimer = 0;
+  let translationPackMetadata = loadTranslationPackMetadata();
+  let importedPackLanguage = "";
   let argosStatus = null;
   let argosBusy = false;
   let argosSupportedLanguages = null;
@@ -124,7 +131,6 @@
   let lmStudioBusy = false;
   let openAICompatibleStatus = null;
   let openAICompatibleBusy = false;
-  let bergamotRuntimePromise = null;
   const applied = new WeakMap();
   const appliedNodes = new Set();
   const originalPresentation = new WeakMap();
@@ -137,6 +143,8 @@
   }
   const memoryCache = new Map();
   const fuzzyMemoryCache = new Map();
+  const importedPackCache = new Map();
+  const importedPackFuzzyCache = new Map();
   const observedTranslationContainers = new WeakSet();
   const visibleTranslationContainers = new Set();
   const pendingTranslationRoots = new Set();
@@ -144,6 +152,36 @@
 
   function emptyCacheMetadata() {
     return { version: 1, records: 0, bytes: 0, languages: {} };
+  }
+
+  function emptyTranslationPackMetadata() {
+    return { version: 1, languages: {} };
+  }
+
+  function loadTranslationPackMetadata() {
+    try {
+      const value = JSON.parse(localStorage.getItem(TRANSLATION_PACK_META_KEY) || "null");
+      if (!value || value.version !== 1 || !value.languages || typeof value.languages !== "object") {
+        return emptyTranslationPackMetadata();
+      }
+      const languages = {};
+      for (const [language, record] of Object.entries(value.languages)) {
+        if (!LANGUAGES.some(([code]) => code === language) || !record || typeof record !== "object") continue;
+        if (typeof record.packId !== "string" || !/^[A-Za-z0-9-]{16,80}$/.test(record.packId)) continue;
+        languages[language] = {
+          packId: record.packId,
+          records: Math.max(0, Number(record.records) || 0),
+          fileName: typeof record.fileName === "string" ? record.fileName.slice(0, 255) : "",
+          provider: typeof record.provider === "string" ? record.provider.slice(0, 120) : "shared",
+          importedAt: typeof record.importedAt === "string" ? record.importedAt : ""
+        };
+      }
+      return { version: 1, languages };
+    } catch (_) { return emptyTranslationPackMetadata(); }
+  }
+
+  function saveTranslationPackMetadata() {
+    localStorage.setItem(TRANSLATION_PACK_META_KEY, JSON.stringify(translationPackMetadata));
   }
 
   function isValidCacheMetric(value) {
@@ -255,6 +293,7 @@
       autoTranslate: AUTO_APPLY_TRANSLATIONS,
       privacyAccepted: typeof source.privacyAccepted === "boolean" ? source.privacyAccepted : migratedLegacy,
       mode: source.mode === "source" ? "source" : defaults.mode,
+      translationScope: source.translationScope === "full" ? "full" : defaults.translationScope,
       lmStudioModel: typeof source.lmStudioModel === "string" && source.lmStudioModel.length <= 512
         ? source.lmStudioModel : defaults.lmStudioModel,
       openAICompatiblePreset,
@@ -344,12 +383,17 @@
   function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 3);
+      const request = indexedDB.open(DB_NAME, 4);
       request.onupgradeneeded = (event) => {
         if (!request.result.objectStoreNames.contains(STORE_NAME)) {
           request.result.createObjectStore(STORE_NAME);
         } else if (event.oldVersion < 3) {
           request.transaction.objectStore(STORE_NAME).clear();
+        }
+        if (!request.result.objectStoreNames.contains(TRANSLATION_PACK_STORE_NAME)) {
+          const packStore = request.result.createObjectStore(TRANSLATION_PACK_STORE_NAME, { keyPath: "key" });
+          packStore.createIndex("packId", "packId", { unique: false });
+          packStore.createIndex("packFuzzy", ["packId", "fuzzy"], { unique: false });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -374,6 +418,91 @@
       if (value) memoryCacheSet(key, value);
       return value;
     } catch (_) { return null; }
+  }
+
+  function activeTranslationPack(language) {
+    return translationPackMetadata.languages[String(language || "")] || null;
+  }
+
+  function translationPackEntryKey(packId, source) {
+    return `${packId}\n${core.normalizeText(source)}`;
+  }
+
+  function importedPackMemorySet(record) {
+    if (!record || typeof record.source !== "string" || typeof record.translation !== "string") return;
+    if (importedPackCache.has(record.source)) importedPackCache.delete(record.source);
+    importedPackCache.set(record.source, record.translation);
+    if (record.fuzzy) importedPackFuzzyCache.set(record.fuzzy, record.translation);
+    while (importedPackCache.size > MEMORY_CACHE_LIMIT) {
+      importedPackCache.delete(importedPackCache.keys().next().value);
+    }
+  }
+
+  async function preloadImportedPackCache(language = settings.language) {
+    importedPackCache.clear();
+    importedPackFuzzyCache.clear();
+    importedPackLanguage = language;
+    const pack = activeTranslationPack(language);
+    if (!pack) return 0;
+    let loaded = 0;
+    try {
+      const db = await openDb();
+      await new Promise((resolve, reject) => {
+        const store = db.transaction(TRANSLATION_PACK_STORE_NAME, "readonly").objectStore(TRANSLATION_PACK_STORE_NAME);
+        const request = store.index("packId").openCursor(IDBKeyRange.only(pack.packId));
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) { resolve(); return; }
+          importedPackMemorySet(cursor.value);
+          loaded += 1;
+          cursor.continue();
+        };
+      });
+    } catch (_) {}
+    return loaded;
+  }
+
+  async function importedPackGet(source, language) {
+    const pack = activeTranslationPack(language);
+    if (!pack) return null;
+    if (importedPackLanguage !== language) await preloadImportedPackCache(language);
+    const normalized = core.normalizeText(source);
+    const fuzzy = core.stripOmoriPrefixes(source);
+    let translation = importedPackCache.get(normalized)
+      || (fuzzy ? importedPackFuzzyCache.get(fuzzy) : null);
+    if (!translation) {
+      try {
+        const db = await openDb();
+        const store = db.transaction(TRANSLATION_PACK_STORE_NAME, "readonly").objectStore(TRANSLATION_PACK_STORE_NAME);
+        let record = await new Promise((resolve, reject) => {
+          const request = store.get(translationPackEntryKey(pack.packId, normalized));
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => reject(request.error);
+        });
+        if (!record && fuzzy) {
+          record = await new Promise((resolve, reject) => {
+            const request = store.index("packFuzzy").get([pack.packId, fuzzy]);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => reject(request.error);
+          });
+        }
+        if (record) {
+          importedPackMemorySet(record);
+          translation = record.translation;
+        }
+      } catch (_) { return null; }
+    }
+    return translation && core.protectedMarkupLayoutMatches(source, translation) ? translation : null;
+  }
+
+  function importedPackMemoryGet(source, language) {
+    if (!activeTranslationPack(language) || importedPackLanguage !== language) return null;
+    const normalized = core.normalizeText(source);
+    const fuzzy = core.stripOmoriPrefixes(source);
+    const translation = importedPackCache.get(normalized)
+      || (fuzzy ? importedPackFuzzyCache.get(fuzzy) : null);
+    return translation && core.protectedMarkupLayoutMatches(source, translation) ? translation : null;
   }
 
   async function cachePut(key, value) {
@@ -662,96 +791,6 @@
     } catch (_) {}
   }
 
-  async function fetchBergamotAsset(relative, responseType) {
-    if (!LOCAL_BRIDGE) throw new Error("The local Bergamot helper is unavailable");
-    const response = await fetch(`${LOCAL_BRIDGE.baseURL}/v1/bergamot/assets/${relative}`, {
-      headers: { "X-VNRevival-Token": LOCAL_BRIDGE.token }, cache: "no-store"
-    });
-    if (!response.ok) throw new Error(`Could not load Bergamot asset: ${relative}`);
-    return responseType === "arrayBuffer" ? response.arrayBuffer() : response.text();
-  }
-
-  function ensureBergamotRuntime() {
-    if (bergamotRuntimePromise) return bergamotRuntimePromise;
-    bergamotRuntimePromise = (async () => {
-      const [moduleSource, workerSource, glueSource, wasmBuffer] = await Promise.all([
-        fetchBergamotAsset("translator.js", "text"),
-        fetchBergamotAsset("worker/translator-worker.js", "text"),
-        fetchBergamotAsset("worker/bergamot-translator-worker.js", "text"),
-        fetchBergamotAsset("worker/bergamot-translator-worker.wasm", "arrayBuffer")
-      ]);
-      const wasmNeedle = "new URL('./bergamot-translator-worker.wasm', self.location)";
-      const glueNeedle = "self.importScripts('bergamot-translator-worker.js')";
-      const moduleNeedle = "new Worker(new URL('./worker/translator-worker.js', import.meta.url))";
-      if (!workerSource.includes(wasmNeedle) || !workerSource.includes(glueNeedle) || !moduleSource.includes(moduleNeedle)) {
-        throw new Error("The bundled Bergamot runtime is incompatible");
-      }
-      const objectURLs = [];
-      try {
-        const wasmURL = URL.createObjectURL(new Blob([wasmBuffer], { type: "application/wasm" }));
-        objectURLs.push(wasmURL);
-        const patchedWorker = workerSource.replace(
-          wasmNeedle,
-          `new URL(${JSON.stringify(wasmURL)})`
-        ).replace(
-          glueNeedle,
-          `eval.call(self, ${JSON.stringify(glueSource)})`
-        );
-        const workerURL = URL.createObjectURL(new Blob([patchedWorker], { type: "text/javascript" }));
-        objectURLs.push(workerURL);
-        const patchedModule = moduleSource.replace(
-          moduleNeedle,
-          `new Worker(${JSON.stringify(workerURL)})`
-        );
-        const moduleURL = URL.createObjectURL(new Blob([patchedModule], { type: "text/javascript" }));
-        objectURLs.push(moduleURL);
-        const bergamot = await import(moduleURL);
-        class LocalBergamotBacking extends bergamot.TranslatorBacking {
-          async loadModelRegistery() {
-            const payload = await requestLocalHelper("/v1/bergamot/registry");
-            return Array.isArray(payload.models) ? payload.models : [];
-          }
-          async fetch(url, _checksum, extra) {
-            const path = String(url || "");
-            if (!path.startsWith("/v1/bergamot/model-file?")) throw new Error("Invalid local Bergamot model URL");
-            const response = await fetch(LOCAL_BRIDGE.baseURL + path, {
-              headers: { "X-VNRevival-Token": LOCAL_BRIDGE.token },
-              cache: "no-store", signal: extra && extra.signal
-            });
-            if (!response.ok) throw new Error("Could not read the installed Bergamot model");
-            return response.arrayBuffer();
-          }
-        }
-        const backing = new LocalBergamotBacking({ pivotLanguage: null, cacheSize: 256 });
-        const translator = new bergamot.LatencyOptimisedTranslator({ pivotLanguage: null, cacheSize: 256 }, backing);
-        await translator.worker;
-        return translator;
-      } finally {
-        for (const url of objectURLs) URL.revokeObjectURL(url);
-      }
-    })().catch((error) => {
-      bergamotRuntimePromise = null;
-      throw error;
-    });
-    return bergamotRuntimePromise;
-  }
-
-  async function translateWithBergamot(text, language, signal) {
-    const translator = await ensureBergamotRuntime();
-    const response = await translator.translate({ from: "en", to: language, text, html: false }, { signal });
-    const translated = response && response.target && response.target.text;
-    if (typeof translated !== "string" || !translated.trim()) throw new Error("Bergamot returned an empty translation");
-    return translated;
-  }
-
-  function resetBergamotRuntime() {
-    const pending = bergamotRuntimePromise;
-    bergamotRuntimePromise = null;
-    if (pending) pending.then((translator) => {
-      if (translator && typeof translator.delete === "function") translator.delete();
-    }).catch(() => {});
-  }
-
   function isTranslationRateLimited(error) {
     const code = String(error && error.code || "");
     const message = String(error && error.message || "");
@@ -770,7 +809,6 @@
           text, language, sourceLanguage: SOURCE_LANGUAGE, signal,
           model: providerUsesLMStudio(provider) ? settings.lmStudioModel : "",
           openAICompatible: providerUsesOpenAICompatible(provider) ? openAICompatibleConnection() : null,
-          bergamotTranslate: translateWithBergamot,
           languageName: (LANGUAGES.find(([code]) => code === language) || [null, language])[1],
           fetch: (input, init) => fetch(input, init),
           localRequest: requestLocalHelper,
@@ -909,12 +947,13 @@
     return Object.freeze({ pause, update, current: () => lastEstimate });
   }
 
-  function translationProgressText(completedWords, totalWords, remainingMs, waitSeconds) {
+  function translationProgressText(completedWords, totalWords, remainingMs, waitSeconds, provider) {
     const completed = Math.max(0, Math.floor(Number(completedWords) || 0));
     const total = Math.max(completed, Math.floor(Number(totalWords) || 0));
     const wordProgress = `Words: ${completed.toLocaleString("en-US")}/${total.toLocaleString("en-US")}`;
     if (Number(waitSeconds) > 0) {
-      return `${wordProgress} · Waiting: ${formatRetryCountdown(Math.ceil(waitSeconds))}`;
+      const providerLabel = PROVIDERS[provider] ? PROVIDERS[provider].label : "Translation provider";
+      return `${wordProgress} · Rate limited by ${providerLabel} · retrying in ${formatRetryCountdown(Math.ceil(waitSeconds))}`;
     }
     if (!completed || !total || !Number.isFinite(remainingMs)) {
       return `${wordProgress} · Time left: calculating…`;
@@ -984,6 +1023,12 @@
     // while leaving path and identifier detection to the shared source-text filter.
     if (/[\u0410-\u044F\u0401\u0451]/.test(source) || !core.hasEnglishText(source)) {
       return { text: source, cached: true };
+    }
+
+    const importedTranslation = await importedPackGet(source, language);
+    if (importedTranslation) {
+      if (logCachedResult) appendTranslationLog(source, importedTranslation, language, "Imported translation", true);
+      return { text: importedTranslation, cached: true, imported: true };
     }
 
     const key = makeTranslationCacheKey(source, language, provider);
@@ -1721,45 +1766,27 @@
     return format === CACHE_FORMAT || LEGACY_CACHE_FORMATS.includes(format);
   }
 
-  async function writeCacheEntries(entries) {
-    if (!entries.length) return;
-    const db = await openDb();
-    await new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, "readwrite");
-      const store = transaction.objectStore(STORE_NAME);
-      for (const [key, value] of entries) store.put(value, key);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error || new Error("Cache transaction aborted"));
-    });
+  function languageName(language) {
+    const entry = LANGUAGES.find(([code]) => code === language);
+    return entry ? entry[1] : language;
   }
 
-  async function importJsonLinesCache(file, validateOnly) {
+  function providerName(provider, variant) {
+    const base = PROVIDERS[provider] ? PROVIDERS[provider].label
+      : (provider === "shared" ? "Shared translation" : provider);
+    return variant ? `${base} · variant ${variant.slice(0, 8)}` : base;
+  }
+
+  async function streamJsonLines(file, consume) {
     const reader = file.stream().getReader();
     const decoder = new TextDecoder();
     let pending = "";
-    let header = null;
-    let imported = 0;
-    let batch = [];
+    let lineNumber = 0;
     async function consumeLine(line) {
       if (!line.trim()) return;
-      if (line.length > 250000) throw new Error("Cache entry is too large");
-      const value = JSON.parse(line);
-      if (!header) {
-        if (!value || !isAcceptedCacheFormat(value.format) || value.version !== 2
-          || (value.gameId && value.gameId !== game.id)) throw new Error("Invalid format");
-        header = value;
-        return;
-      }
-      if (!isValidCacheEntry(value)) throw new Error("Invalid cache entry");
-      imported += 1;
-      if (imported > CACHE_IMPORT_ENTRY_LIMIT) throw new Error("Too many cache entries");
-      if (!validateOnly) batch.push(value);
-      if (!validateOnly && batch.length >= CACHE_IO_BATCH_SIZE) {
-        await writeCacheEntries(batch);
-        batch = [];
-        setStatus(`Importing: ${imported}`);
-      }
+      lineNumber += 1;
+      if (line.length > 250000) throw new Error("Translation entry is too large");
+      await consume(JSON.parse(line), lineNumber);
     }
     while (true) {
       const chunk = await reader.read();
@@ -1770,53 +1797,237 @@
       if (chunk.done) break;
     }
     if (pending) await consumeLine(pending);
-    if (!header) throw new Error("Invalid format");
-    if (!validateOnly) await writeCacheEntries(batch);
-    return imported;
   }
 
-  async function importLegacyCache(file) {
-    if (file.size > 25 * 1024 * 1024) throw new Error("Legacy cache file is too large");
-    const payload = JSON.parse(await file.text());
-    if (!payload || !isAcceptedCacheFormat(payload.format) || payload.version !== 1
-      || (payload.gameId && payload.gameId !== game.id) || !Array.isArray(payload.entries)) {
-      throw new Error("Invalid format");
+  function isValidTranslationPackPair(pair) {
+    if (!(Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "string")) return false;
+    const source = core.normalizeText(pair[0]);
+    const translation = String(pair[1] || "").trim();
+    return !!(source && translation && source.length < 120000 && translation.length < 120000
+      && core.protectedMarkupLayoutMatches(source, translation));
+  }
+
+  function translationSelectionKey(language, provider, variant) {
+    return `${language}\u0000${provider}\u0000${variant || ""}`;
+  }
+
+  function addTranslationFileSelection(inspection, language, provider, variant) {
+    if (!LANGUAGES.some(([code]) => code === language)) throw new Error(`Unsupported language: ${language}`);
+    const key = translationSelectionKey(language, provider, variant);
+    let selection = inspection.selectionMap.get(key);
+    if (!selection) {
+      selection = { language, provider, variant: variant || "", count: 0 };
+      inspection.selectionMap.set(key, selection);
     }
-    const valid = payload.entries.filter(isValidCacheEntry).slice(0, 100000);
-    await writeCacheEntries(valid);
-    return valid.length;
+    selection.count += 1;
+    inspection.records += 1;
+    if (inspection.records > CACHE_IMPORT_ENTRY_LIMIT) throw new Error("Too many translation entries");
   }
 
-  async function cacheFileVersion(file) {
-    const prefix = await file.slice(0, 512).text();
-    const firstLine = prefix.split("\n", 1)[0];
-    try {
-      const value = JSON.parse(firstLine);
-      return value && isAcceptedCacheFormat(value.format) ? Number(value.version) : 0;
-    } catch (_) {}
-    const formatMatch = prefix.match(/"format"\s*:\s*"([^"]+)"/);
-    if (formatMatch && isAcceptedCacheFormat(formatMatch[1])
-      && /"version"\s*:\s*1(?:\D|$)/.test(prefix)) return 1;
-    return 0;
+  function inspectRawCacheEntry(inspection, entry) {
+    if (!isValidCacheEntry(entry)) throw new Error("Invalid cache entry");
+    const source = core.cacheKeySource(entry[0]);
+    if (!isValidTranslationPackPair([source, entry[1]])) throw new Error("Translation changed protected game markup");
+    addTranslationFileSelection(
+      inspection,
+      core.cacheKeyLanguage(entry[0]),
+      core.cacheKeyProvider(entry[0]),
+      core.cacheKeyVariant(entry[0])
+    );
   }
 
-  async function importCache(file) {
+  async function inspectTranslationFile(file) {
+    if (!file || file.size <= 0) throw new Error("The selected file is empty");
+    if (file.size > 512 * 1024 * 1024) throw new Error("The selected file is too large");
+    const prefix = await file.slice(0, 4096).text();
+    const firstLine = prefix.split("\n").find((line) => line.trim());
+    let header;
+    try { header = JSON.parse(firstLine || ""); } catch (_) {
+      const formatMatch = prefix.match(/"format"\s*:\s*"([^"]+)"/);
+      if (formatMatch && isAcceptedCacheFormat(formatMatch[1])
+        && /"version"\s*:\s*1(?:\D|$)/.test(prefix)) {
+        header = { format: formatMatch[1], version: 1 };
+      } else {
+        throw new Error("Invalid translation file");
+      }
+    }
+    const inspection = {
+      file, fileName: String(file.name || "translation.jsonl"), header, kind: "",
+      records: 0, selectionMap: new Map(), selections: [], gameId: header && header.gameId ? header.gameId : "",
+      createdAt: header && typeof header.exportedAt === "string" ? header.exportedAt
+        : (header && typeof header.createdAt === "string" ? header.createdAt : "")
+    };
+    if (inspection.gameId && inspection.gameId !== game.id) throw new Error(`This file is for ${inspection.gameId}, not ${game.id}`);
+
+    if (header && header.format === TRANSLATION_PACK_FORMAT && header.version === 1) {
+      if (header.sourceLanguage && header.sourceLanguage !== SOURCE_LANGUAGE) {
+        throw new Error(`This translation starts from ${header.sourceLanguage}, not ${SOURCE_LANGUAGE}`);
+      }
+      const language = String(header.language || "");
+      const provider = typeof header.provider === "string" && header.provider ? header.provider : "shared";
+      inspection.kind = "pack-v1";
+      await streamJsonLines(file, async (value, lineNumber) => {
+        if (lineNumber === 1) return;
+        if (!isValidTranslationPackPair(value)) throw new Error("Invalid translation pack entry");
+        addTranslationFileSelection(inspection, language, provider, "");
+      });
+    } else if (header && isAcceptedCacheFormat(header.format) && header.version === 2) {
+      inspection.kind = "cache-v2";
+      await streamJsonLines(file, async (value, lineNumber) => {
+        if (lineNumber === 1) return;
+        inspectRawCacheEntry(inspection, value);
+      });
+    } else if (header && isAcceptedCacheFormat(header.format) && header.version === 1) {
+      if (file.size > 25 * 1024 * 1024) throw new Error("Legacy cache file is too large");
+      const payload = JSON.parse(await file.text());
+      if (!Array.isArray(payload.entries)) throw new Error("Invalid legacy cache file");
+      if (payload.gameId && payload.gameId !== game.id) throw new Error(`This file is for ${payload.gameId}, not ${game.id}`);
+      inspection.gameId = payload.gameId || inspection.gameId;
+      inspection.kind = "cache-v1";
+      for (const entry of payload.entries) inspectRawCacheEntry(inspection, entry);
+    } else {
+      throw new Error("Unsupported translation file format");
+    }
+    inspection.selections = Array.from(inspection.selectionMap.values())
+      .sort((a, b) => languageName(a.language).localeCompare(languageName(b.language))
+        || providerName(a.provider, a.variant).localeCompare(providerName(b.provider, b.variant)));
+    delete inspection.selectionMap;
+    if (!inspection.selections.length) throw new Error("The file contains no translations");
+    return inspection;
+  }
+
+  async function writeTranslationPackBatch(records) {
+    if (!records.length) return;
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(TRANSLATION_PACK_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(TRANSLATION_PACK_STORE_NAME);
+      for (const record of records) store.put(record);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not save the translation pack"));
+      transaction.onabort = () => reject(transaction.error || new Error("Translation pack import was aborted"));
+    });
+  }
+
+  async function deleteTranslationPackEntries(packId) {
+    if (!packId) return;
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(TRANSLATION_PACK_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(TRANSLATION_PACK_STORE_NAME);
+      const request = store.index("packId").openCursor(IDBKeyRange.only(packId));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        cursor.delete();
+        cursor.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not remove the translation pack"));
+      transaction.onabort = () => reject(transaction.error || new Error("Translation pack removal was aborted"));
+    });
+  }
+
+  async function clearAllTranslationPacks() {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(TRANSLATION_PACK_STORE_NAME, "readwrite");
+      transaction.objectStore(TRANSLATION_PACK_STORE_NAME).clear();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not clear imported translations"));
+      transaction.onabort = () => reject(transaction.error || new Error("Imported translation reset was aborted"));
+    });
+    translationPackMetadata = emptyTranslationPackMetadata();
+    localStorage.removeItem(TRANSLATION_PACK_META_KEY);
+    importedPackCache.clear();
+    importedPackFuzzyCache.clear();
+    importedPackLanguage = "";
+  }
+
+  function translationPairMatchesSelection(key, selection) {
+    return core.cacheKeyLanguage(key) === selection.language
+      && core.cacheKeyProvider(key) === selection.provider
+      && core.cacheKeyVariant(key) === selection.variant;
+  }
+
+  async function forEachSelectedTranslationPair(inspection, selection, consume) {
+    if (inspection.kind === "pack-v1") {
+      await streamJsonLines(inspection.file, async (value, lineNumber) => {
+        if (lineNumber === 1) return;
+        if (!isValidTranslationPackPair(value)) throw new Error("Invalid translation pack entry");
+        await consume(core.normalizeText(value[0]), String(value[1]).trim());
+      });
+      return;
+    }
+    if (inspection.kind === "cache-v2") {
+      await streamJsonLines(inspection.file, async (value, lineNumber) => {
+        if (lineNumber === 1) return;
+        if (!isValidCacheEntry(value)) throw new Error("Invalid cache entry");
+        if (!translationPairMatchesSelection(value[0], selection)) return;
+        const source = core.cacheKeySource(value[0]);
+        if (!isValidTranslationPackPair([source, value[1]])) throw new Error("Translation changed protected game markup");
+        await consume(source, value[1]);
+      });
+      return;
+    }
+    const payload = JSON.parse(await inspection.file.text());
+    for (const value of payload.entries || []) {
+      if (!isValidCacheEntry(value) || !translationPairMatchesSelection(value[0], selection)) continue;
+      const source = core.cacheKeySource(value[0]);
+      if (!isValidTranslationPackPair([source, value[1]])) throw new Error("Translation changed protected game markup");
+      await consume(source, value[1]);
+    }
+  }
+
+  async function installTranslationPack(inspection, selection) {
+    const packId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    const previous = activeTranslationPack(selection.language);
+    let batch = [];
+    let written = 0;
+    let activated = false;
     try {
-      if (!file) throw new Error("Missing file");
-      const version = await cacheFileVersion(file);
-      if (version !== 1 && version !== 2) throw new Error("Invalid format");
-      markCacheMetadataDirty();
-      if (version === 2) await importJsonLinesCache(file, true);
-      const imported = version === 2 ? await importJsonLinesCache(file, false) : await importLegacyCache(file);
-      memoryCache.clear();
-      cacheMetadata = null;
-      cacheMetadataVerified = false;
-      await getCacheMetadata();
-      await refreshCacheStats();
-      await preloadMemoryCache();
-      setStatus(`Imported: ${imported}`);
+      await forEachSelectedTranslationPair(inspection, selection, async (source, translation) => {
+        const normalized = core.normalizeText(source);
+        batch.push({
+          key: translationPackEntryKey(packId, normalized), packId, source: normalized,
+          fuzzy: core.stripOmoriPrefixes(normalized), translation: String(translation)
+        });
+        written += 1;
+        if (batch.length >= CACHE_IO_BATCH_SIZE) {
+          await writeTranslationPackBatch(batch);
+          batch = [];
+          setStatus(`Importing ${languageName(selection.language)}: ${written.toLocaleString()}`);
+        }
+      });
+      await writeTranslationPackBatch(batch);
+      if (!written) throw new Error("The selected language contains no translations");
+      translationPackMetadata.languages[selection.language] = {
+        packId, records: written, fileName: inspection.fileName,
+        provider: providerName(selection.provider, selection.variant), importedAt: new Date().toISOString()
+      };
+      saveTranslationPackMetadata();
+      activated = true;
+      if (previous && previous.packId !== packId) await deleteTranslationPackEntries(previous.packId).catch(() => null);
+      populateLanguageOptions(settings.provider, selection.language);
+      languageSelect.value = selection.language;
+      if (settings.language !== selection.language) {
+        abortActiveOperation("target language changed by translation import");
+        settingsGeneration += 1;
+        settings.language = selection.language;
+        saveSettings();
+      }
+      await reloadSelectedLanguageCache(false);
+      invalidateAppliedTranslations();
       scheduleAutoTranslation(50);
-    } catch (_) { setStatus("Invalid cache file"); }
+      refreshTranslationPackStatus();
+      setStatus(`Imported ${written.toLocaleString()} ${languageName(selection.language)} translations`);
+      return written;
+    } catch (error) {
+      if (!activated) await deleteTranslationPackEntries(packId).catch(() => null);
+      throw error;
+    }
   }
 
   async function translateBulkLanguage(strings, language, provider, signal, onProgress) {
@@ -1874,9 +2085,9 @@
   async function bulkTranslateAll() {
     if (running) {
       if (activeOperation === "bulk") {
-        bulkButton.textContent = "Cancelling…";
+        bulkButton.textContent = "Interrupting…";
         bulkButton.disabled = true;
-        abortActiveOperation("Cancel translation was pressed");
+        abortActiveOperation("Interrupt translation was pressed");
       } else {
         abortActiveOperation("cancelled by starting bulk translation");
       }
@@ -1899,7 +2110,8 @@
       activeAbortReason = "";
       abortController = new AbortController();
       setBulkUiBusy(true);
-      setBulkButtonWorking("Cancel translation");
+      clearTranslationLog();
+      setBulkButtonWorking(INTERRUPT_TRANSLATION_LABEL);
       setStatus("Words: 0/0 · Time left: calculating…");
       const payload = await requestLocalHelper(`/v1/game/strings?gameId=${game.id}`, { signal: abortController.signal });
       if (!payload || !Array.isArray(payload.strings)) throw new Error("Could not extract strings");
@@ -1920,14 +2132,14 @@
           if (rateLimitSeconds > 0) {
             etaTracker.pause();
             setStatus(translationProgressText(
-              completedWords, totalWords, etaTracker.current(), rateLimitSeconds
+              completedWords, totalWords, etaTracker.current(), rateLimitSeconds, provider
             ));
             return;
           }
           const remainingJobs = Math.max(0, strings.length - done);
           setStatus(translationProgressText(
             completedWords, totalWords,
-            etaTracker.update(newlyTranslated, newlyTranslated + remainingJobs), 0
+            etaTracker.update(newlyTranslated, newlyTranslated + remainingJobs), 0, provider
           ));
         }
       );
@@ -1967,9 +2179,9 @@
   async function translateTestPhraseAllLanguages() {
     if (running) {
       if (activeOperation === "test-phrase") {
-        testPhraseButton.textContent = "Cancelling…";
+        testPhraseButton.textContent = "Interrupting…";
         testPhraseButton.disabled = true;
-        abortActiveOperation("Cancel test phrase translation was pressed");
+        abortActiveOperation("Interrupt translation was pressed");
       }
       return;
     }
@@ -2013,7 +2225,8 @@
       activeAbortReason = "";
       abortController = new AbortController();
       setBulkUiBusy(true);
-      setTestPhraseButtonWorking("Cancel test phrase");
+      clearTranslationLog();
+      setTestPhraseButtonWorking(INTERRUPT_TRANSLATION_LABEL);
       const signal = abortController.signal;
       const phraseWords = countTranslationWords(LANGUAGE_TEST_PHRASE_SOURCE);
       const totalWords = phraseWords * targets.length;
@@ -2034,12 +2247,14 @@
           const [language, name] = targets[index];
           const key = makeTranslationCacheKey(LANGUAGE_TEST_PHRASE_SOURCE, language, provider);
           try {
-            let existing = await cacheGet(key);
+            let existing = await importedPackGet(LANGUAGE_TEST_PHRASE_SOURCE, language);
+            const existingImported = !!existing;
+            if (!existing) existing = await cacheGet(key);
             if (existing && !core.protectedMarkupLayoutMatches(LANGUAGE_TEST_PHRASE_SOURCE, existing)) existing = null;
             if (existing) {
               cached += 1;
-              appendTranslationLog(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, provider, true);
-              await logTranslationToBridge(provider, language, LANGUAGE_TEST_PHRASE_SOURCE, existing, true);
+              appendTranslationLog(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, existingImported ? "Imported translation" : provider, true);
+              if (!existingImported) await logTranslationToBridge(provider, language, LANGUAGE_TEST_PHRASE_SOURCE, existing, true);
             } else {
               if (providerUsesManagedOffline(provider)) {
                 const prepared = await prepareManagedOfflineTestPhraseTarget(
@@ -2050,7 +2265,7 @@
                   () => {
                     etaTracker.pause();
                     setStatus(translationProgressText(
-                      done * phraseWords, totalWords, etaTracker.current(), 0
+                      done * phraseWords, totalWords, etaTracker.current(), 0, provider
                     ));
                   }
                 );
@@ -2069,7 +2284,7 @@
                   (seconds) => {
                     etaTracker.pause();
                     setStatus(translationProgressText(
-                      done * phraseWords, totalWords, etaTracker.current(), seconds
+                      done * phraseWords, totalWords, etaTracker.current(), seconds, provider
                     ));
                   }
                 )
@@ -2098,7 +2313,8 @@
             done * phraseWords,
             totalWords,
             etaTracker.update(created, created + Math.max(0, targets.length - done)),
-            0
+            0,
+            provider
           ));
         }
       }
@@ -2147,6 +2363,7 @@
     localStorage.removeItem(SETTINGS_KEY);
     localStorage.removeItem(LEGACY_SETTINGS_KEY);
     await clearAllCache();
+    await clearAllTranslationPacks();
     localStorage.removeItem(CACHE_META_KEY);
     localStorage.removeItem(CACHE_DIRTY_KEY);
     for (const key of LEGACY_CACHE_META_KEYS) localStorage.removeItem(key);
@@ -2158,6 +2375,7 @@
     updateProviderHint();
     updateModeButton();
     await refreshCacheStats();
+    refreshTranslationPackStatus();
     setStatus("All translator data deleted");
   }
 
@@ -2168,14 +2386,18 @@
   shadow.innerHTML = `
     <style>
       :host{all:initial!important;display:block!important;position:fixed!important;z-index:9999999!important;left:var(--vr-left,auto)!important;top:var(--vr-top,14px)!important;right:var(--vr-right,14px)!important}*{box-sizing:border-box}.panel{width:306px!important;color:#fff!important;background:rgba(32,19,28,.97)!important;border:1px solid #c69b55!important;border-radius:9px!important;box-shadow:0 5px 24px rgba(0,0,0,0.95)!important;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;overflow:hidden!important;position:relative!important;z-index:9999999!important}.bar{cursor:move;padding:7px 9px;color:#f4d18f;background:#412436;font-weight:700;user-select:none}.row{display:flex;gap:6px;padding:7px}.primary,.secondary,.gear,.danger{border:1px solid #c69b55;border-radius:6px;background:#6b344f;color:#fff;padding:7px 9px;cursor:pointer;font:inherit}.primary{flex:1;font-weight:700}.secondary{background:#442b39}.gear{width:38px}.status{min-height:23px;padding:0 9px 3px;color:#ddd;font-size:12px}.hotkey{padding:0 9px 7px;color:#f4d18f;font-size:11px}.retry{margin:0 8px 7px;width:calc(100% - 16px)}.settings{display:none;padding:0 8px 9px;border-top:1px solid #6e4d56}.settings.open{display:block}.settings label.title{display:block;margin:7px 0 3px}.settings select,.settings input{width:100%;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.check{display:flex;gap:7px;align-items:center;margin:8px 0}.hint,.providerHint,.cacheStats,.argosStatus,.geminiStatus,.geminiNotice,.lmStudioStatus,.lmStudioNotice,.openAICompatibleStatus,.openAICompatibleNotice{color:#bdaeb6;font-size:11px;line-height:1.3}.providerHint{margin-top:4px}.argosBox,.geminiBox,.lmStudioBox,.openAICompatibleBox,.cacheBox{margin-top:8px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.geminiKey,.lmStudioModel,.openAICompatiblePreset,.openAICompatibleBaseURL,.openAICompatibleModel,.openAICompatibleKey{margin-top:6px}.argosActions,.geminiActions,.lmStudioActions,.openAICompatibleActions,.privacyActions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.argosActions button,.geminiActions button,.lmStudioActions button,.openAICompatibleActions button,.privacyActions button{flex:1;min-width:82px}.primary:disabled,.secondary:disabled,.danger:disabled{opacity:.55;cursor:default}.danger{background:#71313a}.privacy{margin:0 8px 8px;padding:8px;border:1px solid #d19a44;border-radius:6px;background:#38291f;color:#f8e5bf;font-size:12px}.compat{margin:0 8px 7px;padding:6px;border-radius:5px;background:#71431f;color:#ffe6be;font-size:11px}.site{padding:7px 9px;border-top:1px solid #6e4d56;text-align:center;color:#bdaeb6;font-size:11px}.site a,.geminiNotice a,.openAICompatibleNotice a{color:#f4d18f;font-weight:700;text-decoration:none}.site a:hover,.geminiNotice a:hover,.openAICompatibleNotice a:hover{text-decoration:underline}.hidden{display:none!important}
-      .settings{display:block!important;max-height:calc(100vh - 92px);overflow-y:auto}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.translationScope{margin-top:7px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.translationScopeLabel{margin-bottom:5px;color:#f4d18f;font-weight:700}.scopeChoices{display:grid;grid-template-columns:1fr 1fr;gap:5px}.scopeChoice{min-width:0;padding:6px;border:1px solid #6e4d56;border-radius:5px;background:#241720;color:#bdaeb6}.scopeChoice.active{border-color:#c69b55;background:#4b2d3f;color:#fff}.scopeChoice.disabled{opacity:.55}.scopeName,.scopeState{display:block}.scopeName{font-size:11px;font-weight:700}.scopeState{margin-top:2px;font-size:9px;line-height:1.2}.scopeHint{margin-top:5px;color:#bdaeb6;font-size:10px;line-height:1.3}.updateStatus{padding:0 9px 5px;color:#9d9098;font-size:11px;line-height:1.25}.updateStatus.available{color:#f4d18f}.updateStatus.error{color:#d9a0a0}.updateChanges{margin:-1px 9px 6px;padding-left:16px;color:#c9bdc4;font-size:10px;line-height:1.35}.updateChanges li+li{margin-top:2px}.bulkTranslate,.testPhraseTranslate,.reset{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.testPhraseTranslate.working::before,.reset.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationLogBox{margin-top:7px;border:1px solid #6e4d56;border-radius:5px;background:#1b1218;color:#ddd;font-size:11px}.translationLogBox summary{padding:6px;cursor:pointer;color:#f4d18f;font-weight:700}.translationLogToolbar{display:flex;align-items:center;justify-content:space-between;gap:5px;padding:0 6px 5px;color:#8f8189;flex-wrap:wrap}.translationLogNote{flex:1;min-width:120px}.translationLogActions{display:flex;gap:4px;flex-wrap:wrap}.translationLogActions button{padding:3px 6px!important;font-size:10px!important}.translationLogEmpty{padding:4px 6px 7px;color:#8f8189}.translationLogEntries{max-height:170px;overflow:auto}.translationLogEntry{padding:6px;border-top:1px solid #49333f;overflow-wrap:anywhere}.translationLogMeta{margin-bottom:3px;color:#c69b55}.translationLogSource,.translationLogTarget{white-space:pre-wrap}.translationLogSource{color:#aaa}.translationLogArrow{color:#8f8189;padding:2px 0}@keyframes vr-spin{to{transform:rotate(360deg)}}
-      :host(.bulkBusyHost){left:0!important;top:0!important;right:0!important;width:100vw!important;height:100vh!important}.panel.bulkBusy{display:flex!important;flex-direction:column!important;width:100vw!important;height:100vh!important;border-radius:0!important}.panel.bulkBusy>*{display:none!important}.panel.bulkBusy>.status{display:block!important;flex:0 0 auto!important;min-height:0!important;padding:10px 12px!important;background:#412436!important;color:#f4d18f!important;font-size:14px!important;font-weight:700!important;text-align:center!important}.panel.bulkBusy>.settings{display:flex!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow:hidden!important;padding:0!important;border:0!important}.panel.bulkBusy .settings>*{display:none!important}.panel.bulkBusy .settings>.cacheBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important}.panel.bulkBusy .cacheBox>*{display:none!important}.panel.bulkBusy .cacheBox>.translationLogBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;border-width:1px 0!important;border-radius:0!important}.panel.bulkBusy .translationLogBox summary{flex:0 0 auto!important;padding:10px 12px!important;font-size:14px!important}.panel.bulkBusy .translationLogToolbar{display:none!important}.panel.bulkBusy .translationLogEmpty{flex:0 0 auto!important;padding:10px 12px!important}.panel.bulkBusy .translationLogEntries{display:block!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow-y:auto!important;font-size:13px!important}.panel.bulkBusy .cacheBox>.bulkActionRow.activeBulkAction{display:flex!important;flex:0 0 auto!important;margin:0!important;padding:10px 12px!important;background:#241720!important}.panel.bulkBusy .activeBulkAction>button{width:100%!important;min-height:48px!important;font-size:16px!important}
+      .settings{display:block!important;max-height:calc(100vh - 92px);overflow-y:auto}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.translationScope{margin-top:7px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.translationScopeLabel{margin-bottom:5px;color:#f4d18f;font-weight:700}.scopeChoices{display:grid;grid-template-columns:1fr 1fr;gap:5px}.scopeChoice{min-width:0;padding:6px;border:1px solid #6e4d56;border-radius:5px;background:#241720;color:#bdaeb6;cursor:pointer;font:inherit;text-align:left}.scopeChoice.active{border-color:#c69b55;background:#4b2d3f;color:#fff}.scopeName,.scopeState{display:block}.scopeName{font-size:11px;font-weight:700}.scopeState{margin-top:2px;font-size:9px;line-height:1.2}.scopeHint{margin-top:5px;color:#bdaeb6;font-size:10px;line-height:1.3}.updateStatus{padding:0 9px 5px;color:#9d9098;font-size:11px;line-height:1.25}.updateStatus.available{color:#f4d18f}.updateStatus.error{color:#d9a0a0}.updateChanges{margin:-1px 9px 6px;padding-left:16px;color:#c9bdc4;font-size:10px;line-height:1.35}.updateChanges li+li{margin-top:2px}.bulkTranslate,.testPhraseTranslate,.bulkCancel,.reset{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.testPhraseTranslate.working::before,.bulkCancel.working::before,.reset.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationLogBox{margin-top:7px;border:1px solid #6e4d56;border-radius:5px;background:#1b1218;color:#ddd;font-size:11px}.translationLogBox summary{padding:6px;cursor:pointer;color:#f4d18f;font-weight:700}.translationLogToolbar{display:flex;align-items:center;justify-content:space-between;gap:5px;padding:0 6px 5px;color:#8f8189;flex-wrap:wrap}.translationLogNote{flex:1;min-width:120px}.translationLogActions{display:flex;gap:4px;flex-wrap:wrap}.translationLogActions button{padding:3px 6px!important;font-size:10px!important}.translationLogEmpty{padding:4px 6px 7px;color:#8f8189}.translationLogEntries{max-height:170px;overflow:auto}.translationLogEntry{padding:6px;border-top:1px solid #49333f;overflow-wrap:anywhere}.translationLogMeta{margin-bottom:3px;color:#c69b55}.translationLogSource,.translationLogTarget{white-space:pre-wrap}.translationLogSource{color:#aaa}.translationLogArrow{color:#8f8189;padding:2px 0}@keyframes vr-spin{to{transform:rotate(360deg)}}
+      .bulkCancelBar{display:none}.panel.bulkBusy>.bulkCancelBar{display:flex!important;flex:0 0 auto!important;padding:10px 12px!important;background:#241720!important}.panel.bulkBusy>.bulkCancelBar>.bulkCancel{display:flex!important;width:100%!important;min-height:48px!important;align-items:center!important;justify-content:center!important;font-size:16px!important}
+      :host(.bulkBusyHost){left:0!important;top:0!important;right:0!important;width:100vw!important;height:100vh!important}.panel.bulkBusy{display:flex!important;flex-direction:column!important;width:100vw!important;height:100vh!important;border-radius:0!important}.panel.bulkBusy>*{display:none!important}.panel.bulkBusy>.status{display:block!important;flex:0 0 auto!important;min-height:0!important;padding:10px 12px!important;background:#412436!important;color:#f4d18f!important;font-size:14px!important;font-weight:700!important;text-align:center!important}.panel.bulkBusy>.settings{display:flex!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow:hidden!important;padding:0!important;border:0!important}.panel.bulkBusy .settings>*{display:none!important}.panel.bulkBusy .settings>.cacheBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important}.panel.bulkBusy .cacheBox>*{display:none!important}.panel.bulkBusy .cacheBox>.translationLogBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;border-width:1px 0!important;border-radius:0!important}.panel.bulkBusy .translationLogBox summary{flex:0 0 auto!important;padding:10px 12px!important;font-size:14px!important}.panel.bulkBusy .translationLogToolbar{display:none!important}.panel.bulkBusy .translationLogEmpty{flex:0 0 auto!important;padding:10px 12px!important}.panel.bulkBusy .translationLogEntries{display:block!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow-y:auto!important;font-size:13px!important}
       .site{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap}.siteLabel{white-space:nowrap}.contacts{display:inline-flex;align-items:center;gap:5px}.site .contactIcon{display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;border:1px solid #6e4d56;border-radius:6px;background:#2c1b26;text-decoration:none}.site .contactIcon:hover{border-color:#c69b55;background:#412436;text-decoration:none}.contactIcon svg{display:block;width:15px;height:15px;fill:currentColor}.site .discord{color:#8c9eff}.site .telegram{color:#55bde9}.site .email{color:#9b87f5}
+      .argosAction.working,.argosRemove.working{display:flex;align-items:center;justify-content:center;gap:8px}.argosAction.working::before,.argosRemove.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}
+      .importCache.working{display:flex;align-items:center;justify-content:center;gap:8px}.importCache.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationPackStatus{margin-top:6px;padding:6px;border:1px solid #49333f;border-radius:5px;color:#bdaeb6;font-size:10px;line-height:1.3}.translationPackActions{display:flex;gap:5px;margin-top:5px}.translationPackActions button{flex:1;padding:5px}.packModal[hidden]{display:none!important}.packModal{position:absolute;z-index:30;inset:0;display:flex;align-items:center;justify-content:center;padding:12px;background:rgba(14,8,12,.88)}.packDialog{width:100%;max-height:100%;overflow:auto;padding:12px;border:1px solid #c69b55;border-radius:8px;background:#241720;box-shadow:0 8px 30px rgba(0,0,0,.8)}.packDialogTitle{color:#f4d18f;font-size:16px;font-weight:700}.packDialogFile{margin-top:5px;color:#9d9098;font-size:10px;overflow-wrap:anywhere}.packDialog label{display:block;margin-top:9px;color:#d7c8cf;font-size:11px}.packDialog select{width:100%;margin-top:3px;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.packSummary{margin-top:9px;padding:7px;border:1px solid #49333f;border-radius:5px;color:#ddd;font-size:11px;line-height:1.45}.packWarning{margin-top:7px;color:#f4d18f;font-size:10px;line-height:1.35}.packDialogActions{display:flex;gap:6px;margin-top:10px}.packDialogActions button{flex:1}
     </style>
     <div class="panel">
       <div class="bar"><span class="barTitle">${PRODUCT_NAME} ${VERSION}</span><button class="collapseToggle" type="button" title="Collapse translator" aria-label="Collapse translator">−</button></div>
       <div class="row"><button class="secondary mode modeToggle" type="button" aria-label="Dialogue display"><span class="modeChoice translationChoice">Translation</span><span class="modeChoice originalChoice">Original</span></button></div>
       <div class="status">Ready</div>
+      <div class="bulkCancelBar"><button class="primary bulkCancel working" type="button">${INTERRUPT_TRANSLATION_LABEL}</button></div>
       <div class="updateStatus">Checking for updates…</div>
       <ul class="updateChanges" hidden></ul>
       <button class="secondary retry" hidden>Retry failed</button>
@@ -2188,10 +2410,10 @@
         <div class="translationScope" role="group" aria-label="Translation mode">
           <div class="translationScopeLabel">Translation mode</div>
           <div class="scopeChoices">
-            <div class="scopeChoice storyTranslationScope active" aria-current="true"><span class="scopeName">Story Translation</span><span class="scopeState">Stable · dialogue windows</span></div>
-            <div class="scopeChoice fullTranslationScope disabled" aria-disabled="true"><span class="scopeName">Full Translation</span><span class="scopeState">Coming soon</span></div>
+            <button class="scopeChoice storyTranslationScope active" type="button" aria-pressed="true"><span class="scopeName">Story Translation</span><span class="scopeState">Stable · dialogue windows</span></button>
+            <button class="scopeChoice fullTranslationScope" type="button" aria-pressed="false"><span class="scopeName">Full Translation</span><span class="scopeState">Experimental · menus + dialogue</span></button>
           </div>
-          <div class="scopeHint">Story Translation changes only dialogue windows for reliable, consistent presentation. Full interface translation is not enabled yet.</div>
+          <div class="scopeHint">Story Translation changes dialogue windows only. Full Translation also applies cached translations to menus and other game windows.</div>
         </div>
         <label class="title">Bulk translation service</label><select class="provider"></select>
         <div class="providerHint"></div>
@@ -2234,6 +2456,7 @@
         </div>
         <div class="cacheBox">
           <div class="cacheStats">Calculating cache…</div>
+          <div class="translationPackStatus">No imported translation for this language.</div>
           <input type="file" class="cacheFile" accept=".jsonl,.json" style="display:none">
           <div class="row bulkActionRow" style="padding:7px 0 0">
             <button class="primary bulkTranslate" style="background:#4a69bd">Bulk Translate All Assets</button>
@@ -2250,9 +2473,12 @@
             <div class="translationLogEmpty">New translations will appear here. Use View saved to load earlier entries.</div>
             <div class="translationLogEntries" aria-live="polite"></div>
           </details>
-          <div class="row" style="padding:7px 0 0;gap:5px">
-            <button class="secondary importCache" style="flex:1;padding:5px">Import cache</button>
-            <button class="secondary exportCache" style="flex:1;padding:5px">Export cache</button>
+          <div class="translationPackActions">
+            <button class="secondary importCache">Load translation file</button>
+            <button class="danger removeTranslationPack" hidden>Remove imported</button>
+          </div>
+          <div class="row" style="padding:5px 0 0;gap:5px">
+            <button class="secondary exportCache" style="flex:1;padding:5px">Export cache backup</button>
           </div>
           <button class="danger reset" style="margin-top:7px;width:100%">Reset all data</button>
         </div>
@@ -2271,6 +2497,17 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm9 7.1L20.2 7H3.8l8.2 5.1Zm0 2.3L3 8.8V17h18V8.8l-9 5.6Z"/></svg>
           </a>
         </span>
+      </div>
+      <div class="packModal" role="dialog" aria-modal="true" aria-labelledby="packDialogTitle" hidden>
+        <div class="packDialog">
+          <div class="packDialogTitle" id="packDialogTitle">Import translation</div>
+          <div class="packDialogFile"></div>
+          <label>Language<select class="packLanguage"></select></label>
+          <label class="packProviderRow">Translation source<select class="packProvider"></select></label>
+          <div class="packSummary"></div>
+          <div class="packWarning">The imported translation will be shown before your own provider cache. Your existing translations will not be overwritten.</div>
+          <div class="packDialogActions"><button class="secondary packCancel" type="button">Cancel</button><button class="primary packConfirm" type="button">Import</button></div>
+        </div>
       </div>
     </div>`;
   const ensureHostOnTop = () => {
@@ -2291,6 +2528,9 @@
   const panel = shadow.querySelector(".panel");
   const collapseButton = shadow.querySelector(".collapseToggle");
   const modeButton = shadow.querySelector(".mode");
+  const storyTranslationScopeButton = shadow.querySelector(".storyTranslationScope");
+  const fullTranslationScopeButton = shadow.querySelector(".fullTranslationScope");
+  const translationScopeHint = shadow.querySelector(".scopeHint");
   const retryButton = shadow.querySelector(".retry");
   const statusElement = shadow.querySelector(".status");
   const updateStatusElement = shadow.querySelector(".updateStatus");
@@ -2324,9 +2564,12 @@
   const openCodeGoReferralLink = shadow.querySelector(".openCodeGoReferral");
   const resetButton = shadow.querySelector(".reset");
   const importButton = shadow.querySelector(".importCache");
+  const removeTranslationPackButton = shadow.querySelector(".removeTranslationPack");
+  const translationPackStatusElement = shadow.querySelector(".translationPackStatus");
   const exportButton = shadow.querySelector(".exportCache");
   const bulkButton = shadow.querySelector(".bulkTranslate");
   const testPhraseButton = shadow.querySelector(".testPhraseTranslate");
+  const bulkCancelButton = shadow.querySelector(".bulkCancel");
   const translationLogBox = shadow.querySelector(".translationLogBox");
   const translationLogEntries = shadow.querySelector(".translationLogEntries");
   const translationLogEmpty = shadow.querySelector(".translationLogEmpty");
@@ -2339,7 +2582,17 @@
   const privacyBox = shadow.querySelector(".privacy");
   const compatibilityBox = shadow.querySelector(".compat");
   const projectSiteLink = shadow.querySelector(".projectSite");
+  const packModal = shadow.querySelector(".packModal");
+  const packDialogFile = shadow.querySelector(".packDialogFile");
+  const packLanguageSelect = shadow.querySelector(".packLanguage");
+  const packProviderRow = shadow.querySelector(".packProviderRow");
+  const packProviderSelect = shadow.querySelector(".packProvider");
+  const packSummaryElement = shadow.querySelector(".packSummary");
+  const packCancelButton = shadow.querySelector(".packCancel");
+  const packConfirmButton = shadow.querySelector(".packConfirm");
   const bulkControlState = new Map();
+  let pendingPackInspection = null;
+  let pendingPackDialogResolve = null;
 
   function setBulkButtonWorking(label) {
     bulkButton.classList.add("working");
@@ -2377,6 +2630,134 @@
     resetButton.disabled = false;
   }
 
+  function setImportButtonWorking(label) {
+    importButton.classList.add("working");
+    importButton.textContent = label;
+    importButton.disabled = true;
+  }
+
+  function setImportButtonIdle() {
+    importButton.classList.remove("working");
+    importButton.textContent = "Load translation file";
+    importButton.disabled = false;
+  }
+
+  function refreshTranslationPackStatus() {
+    if (!translationPackStatusElement || !removeTranslationPackButton) return;
+    const pack = activeTranslationPack(settings.language);
+    if (!pack) {
+      translationPackStatusElement.textContent = `No imported translation for ${languageName(settings.language)}.`;
+      removeTranslationPackButton.hidden = true;
+      return;
+    }
+    translationPackStatusElement.textContent = `Imported ${languageName(settings.language)} · ${pack.records.toLocaleString()} translations · ${pack.provider}${pack.fileName ? ` · ${pack.fileName}` : ""}`;
+    removeTranslationPackButton.hidden = false;
+  }
+
+  function currentPackDialogSelection() {
+    if (!pendingPackInspection) return null;
+    return pendingPackInspection.selections.find((selection) =>
+      selection.language === packLanguageSelect.value
+      && translationSelectionKey(selection.language, selection.provider, selection.variant) === packProviderSelect.value
+    ) || null;
+  }
+
+  function refreshPackDialogSelection() {
+    if (!pendingPackInspection) return;
+    const language = packLanguageSelect.value;
+    const selections = pendingPackInspection.selections.filter((selection) => selection.language === language);
+    packProviderSelect.replaceChildren();
+    for (const selection of selections) {
+      const option = document.createElement("option");
+      option.value = translationSelectionKey(selection.language, selection.provider, selection.variant);
+      option.textContent = providerName(selection.provider, selection.variant);
+      packProviderSelect.appendChild(option);
+    }
+    packProviderRow.hidden = selections.length <= 1;
+    const selection = currentPackDialogSelection() || selections[0];
+    if (!selection) return;
+    packProviderSelect.value = translationSelectionKey(selection.language, selection.provider, selection.variant);
+    refreshPackDialogSummary();
+  }
+
+  function refreshPackDialogSummary() {
+    const selection = currentPackDialogSelection();
+    if (!selection || !pendingPackInspection) return;
+    const existing = activeTranslationPack(selection.language);
+    const dateText = pendingPackInspection.createdAt
+      ? ` · created ${new Date(pendingPackInspection.createdAt).toLocaleString()}` : "";
+    packSummaryElement.textContent = `${GAME_TITLE} · ${languageName(selection.language)} · ${selection.count.toLocaleString()} translations${dateText}${existing ? ` · replaces the active ${languageName(selection.language)} imported pack` : ""}`;
+    packConfirmButton.textContent = `Import ${languageName(selection.language)}`;
+  }
+
+  function closePackDialog(selection) {
+    packModal.hidden = true;
+    pendingPackInspection = null;
+    const resolve = pendingPackDialogResolve;
+    pendingPackDialogResolve = null;
+    if (resolve) resolve(selection || null);
+  }
+
+  function showPackImportDialog(inspection) {
+    pendingPackInspection = inspection;
+    packDialogFile.textContent = inspection.fileName;
+    packLanguageSelect.replaceChildren();
+    const languages = Array.from(new Set(inspection.selections.map((selection) => selection.language)));
+    for (const language of languages) {
+      const option = document.createElement("option");
+      option.value = language;
+      option.textContent = languageName(language);
+      packLanguageSelect.appendChild(option);
+    }
+    packLanguageSelect.value = languages.includes(settings.language) ? settings.language : languages[0];
+    refreshPackDialogSelection();
+    packModal.hidden = false;
+    return new Promise((resolve) => { pendingPackDialogResolve = resolve; });
+  }
+
+  async function loadTranslationFile(file) {
+    if (!file) return;
+    setImportButtonWorking("Checking file…");
+    try {
+      setStatus("Checking translation file…");
+      const inspection = await inspectTranslationFile(file);
+      setImportButtonIdle();
+      const selection = await showPackImportDialog(inspection);
+      if (!selection) {
+        setStatus("Translation import cancelled");
+        return;
+      }
+      setImportButtonWorking("Importing…");
+      await installTranslationPack(inspection, selection);
+    } catch (error) {
+      setStatus(error && error.message ? error.message : "Invalid translation file");
+    } finally {
+      setImportButtonIdle();
+    }
+  }
+
+  async function removeActiveTranslationPack() {
+    const language = settings.language;
+    const pack = activeTranslationPack(language);
+    if (!pack || !confirm(`Remove the imported ${languageName(language)} translation? Your own provider cache will remain.`)) return;
+    removeTranslationPackButton.disabled = true;
+    try {
+      await deleteTranslationPackEntries(pack.packId);
+      delete translationPackMetadata.languages[language];
+      saveTranslationPackMetadata();
+      await preloadImportedPackCache(language);
+      if (populateLanguageOptions(settings.provider, language)) persistControlSettings();
+      invalidateAppliedTranslations();
+      refreshTranslationPackStatus();
+      scheduleAutoTranslation(50);
+      setStatus(`Imported ${languageName(language)} translation removed`);
+    } catch (error) {
+      setStatus(error && error.message ? error.message : "Could not remove imported translation");
+    } finally {
+      removeTranslationPackButton.disabled = false;
+    }
+  }
+
   function setBulkUiBusy(busy) {
     panel.classList.toggle("bulkBusy", busy);
     host.classList.toggle("bulkBusyHost", busy);
@@ -2386,7 +2767,7 @@
     }
     if (busy) translationLogBox.open = true;
     for (const control of shadow.querySelectorAll("button, select, input")) {
-      if (busy && control === cancelButton) continue;
+      if (busy && (control === cancelButton || control === bulkCancelButton)) continue;
       if (busy) {
         if (!bulkControlState.has(control)) bulkControlState.set(control, control.disabled);
         control.disabled = true;
@@ -2395,7 +2776,18 @@
         bulkControlState.delete(control);
       }
     }
-    if (busy) cancelButton.disabled = false;
+    if (busy) {
+      cancelButton.disabled = false;
+      bulkCancelButton.textContent = INTERRUPT_TRANSLATION_LABEL;
+      bulkCancelButton.style.background = cancelButton.style.background;
+      bulkCancelButton.classList.add("working");
+      bulkCancelButton.disabled = false;
+    } else {
+      bulkCancelButton.textContent = INTERRUPT_TRANSLATION_LABEL;
+      bulkCancelButton.style.removeProperty("background");
+      bulkCancelButton.classList.remove("working");
+      bulkCancelButton.disabled = false;
+    }
   }
 
   for (const provider of PROVIDER_LIST) {
@@ -2587,6 +2979,32 @@
     modeButton.setAttribute("aria-pressed", String(translated));
     modeButton.title = translated ? "Show original text" : "Show translation";
   }
+  function updateTranslationScopeControls() {
+    const full = settings.translationScope === "full";
+    storyTranslationScopeButton.classList.toggle("active", !full);
+    fullTranslationScopeButton.classList.toggle("active", full);
+    storyTranslationScopeButton.setAttribute("aria-pressed", String(!full));
+    fullTranslationScopeButton.setAttribute("aria-pressed", String(full));
+    translationScopeHint.textContent = full
+      ? "Experimental: cached translations are applied to menus and other game windows as well as dialogue."
+      : "Stable: only dialogue windows, speaker names, and dialogue choices are translated.";
+  }
+  function setTranslationScope(scope) {
+    const nextScope = scope === "full" ? "full" : "story";
+    if (settings.translationScope === nextScope) return;
+    abortActiveOperation("translation mode changed");
+    settingsGeneration += 1;
+    settings.translationScope = nextScope;
+    saveSettings();
+    updateTranslationScopeControls();
+    if (typeof adapter.onTranslationScopeChanged === "function") {
+      try { adapter.onTranslationScopeChanged(nextScope); } catch (_) {}
+    }
+    setStatus(nextScope === "full"
+      ? "Full Translation enabled · experimental menu translation"
+      : "Story Translation enabled · dialogue windows only");
+    scheduleAutoTranslation(50);
+  }
   function updateCollapsedState() {
     panel.classList.toggle("collapsed", settings.collapsed);
     collapseButton.textContent = settings.collapsed ? "+" : "−";
@@ -2600,10 +3018,6 @@
       argos: {
         name: "Argos", statusPath: "/v1/status", runtimeInstallPath: "/v1/runtime/install",
         modelInstallPath: "/v1/models/install", modelUninstallPath: "/v1/models/uninstall"
-      },
-      bergamot: {
-        name: "Bergamot", statusPath: "/v1/bergamot/status", runtimeInstallPath: null,
-        modelInstallPath: "/v1/bergamot/models/install", modelUninstallPath: "/v1/bergamot/models/uninstall"
       },
       "ctranslate2-opus": {
         name: "CTranslate2 + OPUS-MT", statusPath: "/v1/ctranslate2/status",
@@ -2629,7 +3043,8 @@
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) return [];
     if (providerUsesManagedOffline(provider) && !Array.isArray(argosSupportedLanguages)) return LANGUAGES;
-    return LANGUAGES.filter(([code]) => selectedProvider.supportsLanguage(code, { localLanguages: argosSupportedLanguages }));
+    return LANGUAGES.filter(([code]) => activeTranslationPack(code)
+      || selectedProvider.supportsLanguage(code, { localLanguages: argosSupportedLanguages }));
   }
   function populateLanguageOptions(provider, preferredLanguage) {
     const previous = preferredLanguage || languageSelect.value || settings.language;
@@ -2651,7 +3066,7 @@
       ? languageSelect.options[languageSelect.selectedIndex].textContent
       : languageSelect.value;
   }
-  function reloadSelectedLanguageCache(announce) {
+  async function reloadSelectedLanguageCache(announce) {
     const generation = settingsGeneration;
     const language = settings.language;
     const provider = settings.provider;
@@ -2659,17 +3074,17 @@
     memoryCache.clear();
     fuzzyMemoryCache.clear();
     if (announce) setStatus(`Loading ${languageName} cache…`);
-    return preloadMemoryCache().then((loaded) => {
-      if (generation !== settingsGeneration || language !== settings.language || provider !== settings.provider) {
-        return false;
-      }
-      if (typeof adapter.onLanguageChanged === "function") {
-        adapter.onLanguageChanged(language, provider);
-      }
-      scheduleAutoTranslation(50);
-      if (announce) setStatus(`Ready: ${languageName} cache loaded (${loaded.toLocaleString()})`);
-      return true;
-    });
+    const [loaded] = await Promise.all([preloadMemoryCache(), preloadImportedPackCache(language)]);
+    if (generation !== settingsGeneration || language !== settings.language || provider !== settings.provider) {
+      return false;
+    }
+    if (typeof adapter.onLanguageChanged === "function") {
+      adapter.onLanguageChanged(language, provider);
+    }
+    refreshTranslationPackStatus();
+    scheduleAutoTranslation(50);
+    if (announce) setStatus(`Ready: ${languageName} cache loaded (${loaded.toLocaleString()})`);
+    return true;
   }
   function persistControlSettings() {
     const languageChanged = settings.language !== languageSelect.value;
@@ -2688,8 +3103,10 @@
     saveSettings();
     scheduleAutoTranslation(50);
   }
-  function setArgosBusy(busy) {
+  function setArgosBusy(busy, activeButton) {
     argosBusy = busy;
+    argosActionButton.classList.toggle("working", busy && activeButton === argosActionButton);
+    argosRemoveButton.classList.toggle("working", busy && activeButton === argosRemoveButton);
     argosActionButton.disabled = busy;
     argosRemoveButton.disabled = busy;
     languageSelect.disabled = busy || geminiBusy || lmStudioBusy || openAICompatibleBusy || !languageSelect.options.length;
@@ -3001,8 +3418,10 @@
   }
 
   updateModeButton();
+  updateTranslationScopeControls();
   updateProviderHint();
   refreshCacheStats();
+  refreshTranslationPackStatus();
   checkForUpdates();
 
   projectSiteLink.addEventListener("click", (event) => {
@@ -3016,6 +3435,8 @@
     openExternalUrl(OPENCODE_GO_REFERRAL_URL);
   });
   modeButton.addEventListener("click", toggleMode);
+  storyTranslationScopeButton.addEventListener("click", () => setTranslationScope("story"));
+  fullTranslationScopeButton.addEventListener("click", () => setTranslationScope("full"));
   retryButton.addEventListener("click", retryFailed);
   let suppressCollapseClick = false;
   collapseButton.addEventListener("click", (event) => {
@@ -3037,6 +3458,7 @@
   const onLanguageChange = () => {
     persistControlSettings();
     refreshCacheStats();
+    refreshTranslationPackStatus();
     if (providerUsesManagedOffline(providerSelect.value)) refreshArgosStatus();
     setStatus(`Language: ${selectedLanguageName()} (restart recommended)`);
   };
@@ -3060,14 +3482,29 @@
   });
   exportButton.addEventListener("click", exportCache);
   importButton.addEventListener("click", () => cacheFileInput.click());
+  removeTranslationPackButton.addEventListener("click", () => { void removeActiveTranslationPack(); });
+  packLanguageSelect.addEventListener("change", refreshPackDialogSelection);
+  packProviderSelect.addEventListener("change", refreshPackDialogSummary);
+  packCancelButton.addEventListener("click", () => closePackDialog(null));
+  packConfirmButton.addEventListener("click", () => closePackDialog(currentPackDialogSelection()));
+  packModal.addEventListener("click", (event) => {
+    if (event.target === packModal) closePackDialog(null);
+  });
   bulkButton.addEventListener("click", bulkTranslateAll);
   testPhraseButton.addEventListener("click", translateTestPhraseAllLanguages);
+  bulkCancelButton.addEventListener("click", () => {
+    if (!running || !activeOperation) return;
+    bulkCancelButton.textContent = "Interrupting…";
+    bulkCancelButton.disabled = true;
+    if (activeOperation === "test-phrase") void translateTestPhraseAllLanguages();
+    else void bulkTranslateAll();
+  });
   translationLogViewButton.addEventListener("click", viewSavedTranslationLog);
   translationLogSaveButton.addEventListener("click", saveTranslationLog);
   translationLogClearButton.addEventListener("click", clearTranslationLog);
   cacheFileInput.addEventListener("change", () => {
     if (cacheFileInput.files && cacheFileInput.files[0]) {
-      importCache(cacheFileInput.files[0]);
+      void loadTranslationFile(cacheFileInput.files[0]);
       cacheFileInput.value = "";
     }
   });
@@ -3192,7 +3629,7 @@
     if (argosBusy || !LOCAL_BRIDGE) return;
     const engine = managedOfflineEngine(providerSelect.value);
     if (!engine) return;
-    setArgosBusy(true);
+    setArgosBusy(true, argosActionButton);
     try {
       const status = await refreshArgosStatus();
       if (!status || !status.supported) return;
@@ -3206,7 +3643,6 @@
         : `Downloading the English → ${selectedLanguageName()} model…`;
       await requestLocalHelper(engine.modelInstallPath, { body: { target: languageSelect.value } });
       await refreshArgosStatus();
-      if (providerSelect.value === "bergamot") await ensureBergamotRuntime();
       setStatus(`${engine.name} is ready for offline translation`);
     } catch (error) {
       argosStatusElement.textContent = error && error.message ? error.message : `Could not install ${engine.name}`;
@@ -3219,10 +3655,9 @@
     if (argosBusy || !confirm(`Remove the offline model for ${selectedLanguageName()}?`)) return;
     const engine = managedOfflineEngine(providerSelect.value);
     if (!engine) return;
-    setArgosBusy(true);
+    setArgosBusy(true, argosRemoveButton);
     try {
       await requestLocalHelper(engine.modelUninstallPath, { body: { target: languageSelect.value } });
-      if (providerSelect.value === "bergamot") resetBergamotRuntime();
       invalidateAppliedTranslations();
       await refreshArgosStatus();
       setStatus(`${engine.name} model removed`);
@@ -3457,11 +3892,14 @@
       }
     },
     getMode: () => settings.mode,
+    getTranslationScope: () => settings.translationScope,
     getLanguage: () => settings.language,
     getProvider: () => settings.provider,
     isSourceText: (text) => hasSourceText(text),
     queryMemoryCache: (text) => {
       if (!core.normalizeText(text)) return null;
+      const imported = importedPackMemoryGet(text, settings.language);
+      if (imported) return imported;
       const key = makeTranslationCacheKey(text, settings.language, settings.provider);
       let hit = memoryCache.get(key);
       if (!hit) {
@@ -3484,6 +3922,9 @@
   if (legacyCompatibility.translatorGlobal) {
     window[legacyCompatibility.translatorGlobal] = window.__vnRevivalTranslator;
   }
+  if (typeof adapter.onTranslationScopeChanged === "function") {
+    try { adapter.onTranslationScopeChanged(settings.translationScope); } catch (_) {}
+  }
   console.info(`[${PRODUCT_NAME} ${VERSION}] loaded for ${GAME_TITLE}`);
-  preloadMemoryCache();
+  reloadSelectedLanguageCache(false);
 })();

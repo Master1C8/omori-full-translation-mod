@@ -13,9 +13,6 @@ https://github.com/argosopentech/argos-translate
 CTranslate2 — MIT
 https://github.com/OpenNMT/CTranslate2
 
-Bergamot Translator 0.4.9 — Mozilla Public License 2.0
-https://github.com/browsermt/bergamot-translator
-
 OPUS-MT model collection — Creative Commons Attribution 4.0
 https://github.com/Helsinki-NLP/OPUS-MT-train
 
