@@ -63,6 +63,10 @@ test("round-trips contextual translation markers and rejects damaged output", ()
 
 test("detects natural English and rejects paths, assets, hashes, and numbers", () => {
   assert.equal(core.hasEnglishText("Continue adventure"), true);
+  assert.equal(core.hasEnglishText("We don't have time for this..."), true);
+  assert.equal(core.hasEnglishText("When a friend/foe is SAD, they become DEPRESSED."), true);
+  assert.equal(core.hasEnglishText("2+2 = 4... I guess?"), true);
+  assert.equal(core.hasEnglishText("\\n<12/25 - CHRISTMAS>My first photo!"), true);
   assert.equal(core.hasEnglishText("123 + 45"), false);
   assert.equal(core.hasEnglishText("portrait.png"), false);
   assert.equal(core.hasEnglishText("https://example.com"), false);

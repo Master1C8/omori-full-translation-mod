@@ -30,16 +30,23 @@ node --check src/providers.js
 node --check "src/games/$GAME_ID/adapter.js"
 node --check src/translator-runtime.js
 node --check launcher/macos/steam-compat.js
+node --check scripts/browser-smoke-cdp.js
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
 mkdir -p "$ROOT/.build"
 python3 scripts/generate-game-config.py "$GAME_MANIFEST" "$ROOT/.build/game-config.js"
 node --check "$ROOT/.build/game-config.js"
+"$ROOT/scripts/run-browser-smoke.sh"
 python3 scripts/render-template.py launcher/windows/launcher.c "$ROOT/.build/windows-launcher-smoke.c" \
   VERSION "$(tr -d '[:space:]' < VERSION)" PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" \
   WINDOWS_EXECUTABLE "$WINDOWS_EXECUTABLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS" \
   GAME_ID "$GAME_ID" STEAM_APP_ID "$STEAM_APP_ID" DEBUG_TARGET_TITLE "$DEBUG_TARGET_TITLE" DEBUG_TARGET_URL "$DEBUG_TARGET_URL"
 PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m unittest discover -s tests -p 'test_*.py'
-zsh -n launcher/macos/launch.sh scripts/build.sh scripts/build-windows.sh scripts/test.sh scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh scripts/prepare-nwjs-macos.sh
+for SCRIPT in \
+  launcher/macos/launch.sh scripts/build.sh scripts/build-windows.sh scripts/test.sh \
+  scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh \
+  scripts/prepare-nwjs-macos.sh scripts/run-browser-smoke.sh; do
+  zsh -n "$SCRIPT"
+done
 
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -municode -mwindows \
@@ -71,12 +78,17 @@ if grep -RInE '[А-Яа-яЁё]' \
   exit 1
 fi
 
-for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'importCache' 'clearCacheForLanguage' 'privacyAccepted' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'importJsonLinesCache' 'providerRegistry' 'SUPER_BULK_LANGUAGES' 'superBulkTranslateAll' 'translateBulkLanguage'; do
+for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'importCache' 'clearCacheForLanguage' 'privacyAccepted' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'importJsonLinesCache' 'providerRegistry' 'translateBulkLanguage'; do
   grep -Fq "$REQUIRED" src/translator-runtime.js || {
     echo "Missing runtime feature: $REQUIRED" >&2
     exit 1
   }
 done
+
+if grep -Eq 'SUPER_BULK_LANGUAGES|superBulkTranslateAll|superBulkTranslate|super-bulk|Super Bulk' src/translator-runtime.js; then
+  echo "Removed Super Bulk mode is still present in translator-runtime.js" >&2
+  exit 1
+fi
 
 grep -Fq 'const MEMORY_CACHE_LIMIT = 50000;' src/translator-runtime.js || {
   echo "RAM cache must retain 50000 recent translations" >&2
@@ -122,6 +134,9 @@ grep -Fq 'hw.optional.arm64' launcher/macos/launch.sh
 grep -Fq 'vnrevival-omori-runtime.' launcher/macos/launch.sh
 grep -Fq 'capture_steam_argument' launcher/macos/launch.sh
 grep -Fq 'VNREVIVAL_STEAM_ARGUMENT="$STEAM_ARGUMENT"' launcher/macos/launch.sh
+grep -Fq 'TRACKED_GAME_PID="$GAME_PID"' launcher/macos/launch.sh
+grep -Fq '"$COMMAND" == "$GAME_TARGET/Contents/MacOS/"*' launcher/macos/launch.sh
+grep -Fq '/bin/kill -0 "$TRACKED_GAME_PID"' launcher/macos/launch.sh
 grep -Fq 'inject_js_start' launcher/macos/launch.sh
 grep -Fq 'getAchievementNames: () => []' launcher/macos/steam-compat.js
 grep -Fq 'gameWindow.restore()' launcher/macos/steam-compat.js
@@ -130,6 +145,12 @@ if grep -Eq 'console\.|writeFile|appendFile' launcher/macos/steam-compat.js; the
   exit 1
 fi
 grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
+grep -Fq 'ROOT_APP_STAGING="$BUILD_DIR/root-app-staging.app"' scripts/build.sh
+grep -Fq 'ROOT_APP_PREVIOUS="$BUILD_DIR/root-app-previous.app"' scripts/build.sh
+grep -Fq 'DEFAULT_NWJS_SHA256="d601cb05998c2ff69c0400d38af58dc7ba068c536f8e744aa3347e8b66a61483"' scripts/prepare-nwjs-macos.sh
+grep -Fq 'verify_archive' scripts/prepare-nwjs-macos.sh
+grep -Fq '.verified-archive-sha256' scripts/prepare-nwjs-macos.sh
+grep -Fq '/bin/rm -rf -- "$RUNTIME_APP"' scripts/prepare-nwjs-macos.sh
 grep -Fq 'kill "$ARGOS_PID"' launcher/macos/launch.sh
 grep -Fq "UNEXPECTED_CONTENTS=" scripts/verify.sh
 grep -Fq '"$ROOT/$PRODUCT_NAME.app"' scripts/build.sh

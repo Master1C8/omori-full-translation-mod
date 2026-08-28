@@ -20,6 +20,7 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 [[ -x "$APP/Contents/MacOS/$PRODUCT_NAME" ]]
 [[ -x "$APP/Contents/Resources/VNRevivalTranslatorController" ]]
 [[ -x "$APP/Contents/Resources/argos_service.py" ]]
+[[ -s "$APP/Contents/Resources/requirements-runtime-macos.txt" ]]
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
 [[ -s "$APP/Contents/Resources/steam-compat.js" ]]
@@ -54,6 +55,7 @@ WINDOWS_CONTENTS=$(unzip -Z1 "$WINDOWS_ZIP")
 grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/argos_service.py" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/requirements-runtime-macos.txt" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/bergamot-web/worker/bergamot-translator-worker.wasm" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/bergamot-web/LICENSE" <<< "$WINDOWS_CONTENTS"

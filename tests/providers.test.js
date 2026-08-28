@@ -61,7 +61,7 @@ test("online providers own URL construction and response parsing", async () => {
   assert.equal(translated, "Привет");
   assert.equal(new URL(requestedURL).searchParams.get("tl"), "ru");
   assert.equal(registry.byId.google.concurrency, 1);
-  assert.equal(registry.byId.google.delay, 5000);
+  assert.equal(registry.byId.google.delay, 1000);
 });
 
 test("offline provider delegates translation to the authenticated local helper", async () => {

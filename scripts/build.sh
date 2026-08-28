@@ -38,7 +38,7 @@ MAC_SIGN_IDENTITY="${VNREVIVAL_MAC_SIGN_IDENTITY:--}"
 MAC_NOTARY_PROFILE="${VNREVIVAL_MAC_NOTARY_PROFILE:-}"
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
 
-VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/test.sh"
+VNREVIVAL_REQUIRE_BROWSER_SMOKE=1 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/test.sh"
 "$ROOT/scripts/prepare-nwjs-macos.sh"
 rm -rf "$BUILD_DIR/macos"
 mkdir -p "$BUILD_DIR/checksums" "$READY_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -81,6 +81,7 @@ cp "$BUILD_DIR/VNRevivalTranslatorController" "$APP/Contents/Resources/"
 cp "$BUILD_DIR/translator.bundle.js" "$APP/Contents/Resources/"
 cp "$GAME_MANIFEST" "$APP/Contents/Resources/game.json"
 cp "$ROOT/src/argos_service.py" "$APP/Contents/Resources/"
+cp "$ROOT/src/requirements-runtime-macos.txt" "$APP/Contents/Resources/"
 cp -R "$ROOT/src/bergamot-web" "$APP/Contents/Resources/bergamot-web"
 cp "$ROOT/launcher/macos/steam-compat.js" "$APP/Contents/Resources/"
 /bin/cp -cR "$BUILD_DIR/nwjs-macos-arm64-${VNREVIVAL_NWJS_VERSION:-0.115.0}/NWJS Runtime.app" "$APP/Contents/Resources/NWJS Runtime.app"
@@ -109,9 +110,21 @@ rm -f "$MAC_ZIP" "$MAC_CHECKSUM"
 
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/build-windows.sh" "$BUILD_DIR/translator.bundle.js"
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/verify.sh"
-/bin/rm -rf -- "$ROOT/$PRODUCT_NAME.app"
-/bin/cp -cR "$APP" "$ROOT/$PRODUCT_NAME.app"
-/usr/bin/codesign --verify --deep --strict "$ROOT/$PRODUCT_NAME.app"
+ROOT_APP="$ROOT/$PRODUCT_NAME.app"
+ROOT_APP_STAGING="$BUILD_DIR/root-app-staging.app"
+ROOT_APP_PREVIOUS="$BUILD_DIR/root-app-previous.app"
+/bin/rm -rf -- "$ROOT_APP_STAGING" "$ROOT_APP_PREVIOUS"
+/bin/cp -cR "$APP" "$ROOT_APP_STAGING"
+/usr/bin/codesign --verify --deep --strict "$ROOT_APP_STAGING"
+if [[ -e "$ROOT_APP" ]]; then
+  /bin/mv "$ROOT_APP" "$ROOT_APP_PREVIOUS"
+fi
+if ! /bin/mv "$ROOT_APP_STAGING" "$ROOT_APP"; then
+  [[ ! -e "$ROOT_APP_PREVIOUS" ]] || /bin/mv "$ROOT_APP_PREVIOUS" "$ROOT_APP"
+  exit 1
+fi
+/usr/bin/codesign --verify --deep --strict "$ROOT_APP"
+/bin/rm -rf -- "$ROOT_APP_PREVIOUS"
 [[ -s "$MAC_ZIP" ]]
 [[ -s "$READY_DIR/$ARCHIVE_PREFIX-Windows-$VERSION.zip" ]]
 echo "Built the two current release archives"

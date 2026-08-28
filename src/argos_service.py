@@ -53,6 +53,7 @@ BERGAMOT_VERSION = "0.4.9"
 UPDATE_MANIFEST_URL = "https://vnrevival.fun/downloads/omori/latest.json"
 UPDATE_MANIFEST_MAX_BYTES = 65_536
 UPDATE_CHECK_TIMEOUT = 10
+RUNTIME_REQUIREMENTS_PATH = Path(__file__).with_name("requirements-runtime-macos.txt")
 
 # Pinned tiny English -> target models from the official TranslateLocally
 # Bergamot catalog. Archive hashes are verified before extraction.
@@ -746,26 +747,20 @@ class ArgosBridge:
             if not self._load_runtime():
                 if self.runtime_is_bundled:
                     raise BridgeError("runtime_broken", "The bundled Argos engine is damaged", 500)
-                commands = [
-                    [
-                        "ctranslate2>=4.0,<5", "packaging",
-                        "pyyaml>=6,<7", "sacremoses>=0.0.53,<0.2", "sentencepiece>=0.2.0,<0.3",
-                    ],
-                    ["--no-deps", f"argostranslate=={ARGOS_VERSION}"],
-                ]
-                output = []
-                for packages in commands:
-                    output.extend(self._pip_install_runtime(packages))
+                self._pip_install_runtime()
                 if not self._load_runtime():
                     raise BridgeError("runtime_install_failed", "Argos was installed but could not start", 500)
             self._prepare_sentence_detector()
         return self.status(None)
 
-    def _pip_install_runtime(self, packages: list[str]) -> list[str]:
+    def _pip_install_runtime(self) -> list[str]:
+        if not RUNTIME_REQUIREMENTS_PATH.is_file():
+            raise BridgeError("runtime_lock_missing", "The hash-locked offline runtime manifest is missing", 500)
         command = [
             sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
             "--upgrade", "--ignore-installed", "--only-binary=:all:",
-            "--target", str(self.runtime_dir), *packages,
+            "--require-hashes", "--no-deps", "--target", str(self.runtime_dir),
+            "--requirement", str(RUNTIME_REQUIREMENTS_PATH),
         ]
         result = subprocess.run(
             command,
@@ -1158,10 +1153,7 @@ class ArgosBridge:
         if not self._load_ctranslate2_runtime():
             if self.runtime_is_bundled:
                 raise BridgeError("runtime_broken", "The bundled CTranslate2 engine is damaged", 500)
-            self._pip_install_runtime([
-                "ctranslate2>=4.0,<5", "packaging", "pyyaml>=6,<7",
-                "sentencepiece>=0.2.0,<0.3",
-            ])
+            self._pip_install_runtime()
             if not self._load_ctranslate2_runtime():
                 raise BridgeError("runtime_install_failed", "CTranslate2 was installed but could not start", 500)
         return self.ctranslate2_status(None)

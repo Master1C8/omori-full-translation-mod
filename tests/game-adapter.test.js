@@ -70,6 +70,29 @@ test("full-translation mode keeps gameplay cache-only and gates bulk uploads", (
   assert.doesNotMatch(runtimeSource, /allowAuto/);
 });
 
+test("natural OMORI dialogue is not rejected by broad code punctuation heuristics", () => {
+  assert.doesNotMatch(runtimeSource, /source\.includes\("this\."\)/);
+  assert.doesNotMatch(runtimeSource, /\/\[\\\+\\\*\\\/\]\/\.test\(source\)/);
+  assert.match(runtimeSource, /!core\.hasEnglishText\(source\)/);
+});
+
+test("cache mutations wait for IndexedDB commit before updating in-memory state", () => {
+  const cachePutBody = runtimeSource.slice(
+    runtimeSource.indexOf("async function cachePut"),
+    runtimeSource.indexOf("async function preloadMemoryCache")
+  );
+  const clearAllBody = runtimeSource.slice(
+    runtimeSource.indexOf("async function clearAllCache"),
+    runtimeSource.indexOf("function sleep")
+  );
+  assert.ok(cachePutBody.indexOf("transaction.oncomplete") < cachePutBody.indexOf("memoryCacheSet(key, value)"));
+  assert.match(cachePutBody, /transaction\.onabort/);
+  assert.doesNotMatch(cachePutBody, /catch \(_\) \{ return false; \}/);
+  assert.ok(clearAllBody.indexOf("transaction.oncomplete") < clearAllBody.indexOf("memoryCache.clear()"));
+  assert.match(clearAllBody, /transaction\.onabort/);
+  assert.doesNotMatch(clearAllBody, /catch \(_\)/);
+});
+
 test("every provider path protects OMORI markup and rejects unsafe cached output", () => {
   assert.match(runtimeSource, /core\.translateProtectedText\(/);
   assert.match(runtimeSource, /translateWithProtectedMarkup\(\s*source, language, provider/);
@@ -93,19 +116,25 @@ test("translator panel uses always-on cache application without obsolete manual 
 test("expanded panel shows all settings with one collapse control and a mode toggle", () => {
   assert.match(runtimeSource, /<div class="settings open">/);
   assert.match(runtimeSource, /class="secondary mode modeToggle"/);
+  assert.match(runtimeSource, /aria-label="Dialogue display"/);
   assert.match(runtimeSource, /class="modeChoice translationChoice">Translation/);
   assert.match(runtimeSource, /class="modeChoice originalChoice">Original/);
+  assert.match(runtimeSource, /class="scopeChoice storyTranslationScope active" aria-current="true"/);
+  assert.match(runtimeSource, /class="scopeChoice fullTranslationScope disabled" aria-disabled="true"/);
+  assert.match(runtimeSource, /Stable · dialogue windows/);
+  assert.match(runtimeSource, /Full interface translation is not enabled yet\./);
+  assert.doesNotMatch(runtimeSource, /fullTranslationScope\.addEventListener/);
   assert.doesNotMatch(runtimeSource, /<button class="gear"/);
   assert.equal((runtimeSource.match(/class="collapseToggle"/g) || []).length, 1);
 });
 
 test("active translation uses the full app for word progress, live log, and its cancel button", () => {
   const bulkButtonIndex = runtimeSource.indexOf('class="primary bulkTranslate"');
-  const superBulkButtonIndex = runtimeSource.indexOf('class="primary superBulkTranslate"');
+  const testPhraseButtonIndex = runtimeSource.indexOf('class="primary testPhraseTranslate"');
   const importButtonIndex = runtimeSource.indexOf('class="secondary importCache"');
   const exportButtonIndex = runtimeSource.indexOf('class="secondary exportCache"');
-  assert.ok(bulkButtonIndex > 0 && bulkButtonIndex < superBulkButtonIndex
-    && superBulkButtonIndex < importButtonIndex && importButtonIndex < exportButtonIndex);
+  assert.ok(bulkButtonIndex > 0 && bulkButtonIndex < testPhraseButtonIndex
+    && testPhraseButtonIndex < importButtonIndex && importButtonIndex < exportButtonIndex);
   assert.match(runtimeSource, /setBulkButtonWorking\("Starting…"\)/);
   assert.match(runtimeSource, /bulkButton\.classList\.add\("working"\)/);
   assert.match(runtimeSource, /\.bulkTranslate\.working::before/);
@@ -129,6 +158,15 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /Time left: about \$\{Math\.ceil\(remainingMs \/ 60000\)\} min/);
   assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, translated, language, provider, false\)/);
   assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, provider, true\)/);
+});
+
+test("ETA throughput uses only fresh translations from the current operation", () => {
+  assert.match(runtimeSource,
+    /etaTracker\.update\(newlyTranslated, newlyTranslated \+ remainingJobs\)/);
+  assert.match(runtimeSource,
+    /etaTracker\.update\(created, created \+ Math\.max\(0, targets\.length - done\)\)/);
+  assert.doesNotMatch(runtimeSource, /etaTracker\.update\(done, strings\.length\)/);
+  assert.doesNotMatch(runtimeSource, /etaTracker\.update\(done, targets\.length\)/);
 });
 
 test("reset all data shows activity until cache deletion finishes", () => {
@@ -187,23 +225,8 @@ test("startup update check reports availability, cache impact, and failure", () 
   assert.match(runtimeSource, /checkForUpdates\(\);/);
 });
 
-test("Super Bulk translates the required 17 languages in a fixed sequential order", () => {
-  const languageBlock = runtimeSource.slice(
-    runtimeSource.indexOf("const SUPER_BULK_LANGUAGES"),
-    runtimeSource.indexOf("const AUTO_APPLY_TRANSLATIONS")
-  );
-  const codes = Array.from(languageBlock.matchAll(/code: "([^"]+)"/g), (match) => match[1]);
-  assert.deepEqual(codes, [
-    "es", "de", "pl", "vi", "ru", "ar", "fa", "iw", "zh-CN",
-    "zh-TW", "ja", "ko", "hi", "bn", "th", "my", "ka"
-  ]);
-  assert.match(runtimeSource, /class="primary superBulkTranslate"/);
-  assert.match(runtimeSource, /async function superBulkTranslateAll\(\)/);
-  assert.match(runtimeSource, /for \(let languageIndex = 0; languageIndex < SUPER_BULK_LANGUAGES\.length; languageIndex \+= 1\)/);
-  assert.match(runtimeSource, /const result = await translateBulkLanguage\(/);
-  assert.match(runtimeSource, /activeOperation = "super-bulk"/);
-  assert.match(runtimeSource, /Completed translations stay cached if you cancel/);
-  assert.match(runtimeSource, /providerUsesManagedOffline\(settings\.provider\)/);
+test("removed Super Bulk mode is absent from the runtime", () => {
+  assert.doesNotMatch(runtimeSource, /SUPER_BULK_LANGUAGES|superBulkTranslateAll|superBulkTranslate|super-bulk|Super Bulk/);
 });
 
 test("test phrase control builds one exact live-dialogue cache entry for every available language", () => {
@@ -226,7 +249,7 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /core\.createRateLimitState/);
   assert.match(runtimeSource, /retryDelay = googleRateLimitState\(\)\.nextDelay/);
   assert.match(runtimeSource, /rememberGoogleRateLimit/);
-  assert.match(runtimeSource, /Google processes one language every 5 seconds/);
+  assert.match(runtimeSource, /Google processes one language every second/);
   assert.match(runtimeSource, /etaTracker\.pause\(\);\s*setStatus\(translationProgressText\(\s*done \* phraseWords, totalWords, etaTracker\.current\(\), seconds/);
   assert.match(runtimeSource, /const concurrency = 1/);
   assert.match(runtimeSource, /Math\.max\(TEST_PHRASE_GOOGLE_DELAY, providerConfig\.delay\)/);
@@ -339,7 +362,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
 });
 
 test("bulk translation continues while the game window is hidden", () => {
-  assert.match(runtimeSource, /activeOperation !== "bulk" && activeOperation !== "super-bulk"/);
+  assert.match(runtimeSource, /activeOperation !== "bulk" && activeOperation !== "test-phrase"/);
 });
 
 test("incomplete bulk translation reports its cancellation or provider failure", () => {

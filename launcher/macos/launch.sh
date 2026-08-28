@@ -35,6 +35,7 @@ ARGOS_LOG="$ARGOS_DATA_DIR/argos-service.log"
 RESELECT_MARKER="$ARGOS_DATA_DIR/.reselect-game-executable"
 ARGOS_PID=""
 GAME_PID=""
+TRACKED_GAME_PID=""
 RUNTIME_SESSION_DIR=""
 APPLE_SILICON_COMPAT=0
 STEAM_ARGUMENT=""
@@ -264,7 +265,25 @@ else
 fi
 
 game_main_running() {
-  /usr/bin/pgrep -x "$GAME_PROCESS_NAME" >/dev/null 2>&1
+  local PID COMMAND
+  if [[ -n "$TRACKED_GAME_PID" ]]; then
+    /bin/kill -0 "$TRACKED_GAME_PID" >/dev/null 2>&1
+    return
+  fi
+  for PID in $(/usr/bin/pgrep -x "$GAME_PROCESS_NAME" 2>/dev/null); do
+    COMMAND=$(/bin/ps -p "$PID" -o command= 2>/dev/null || true)
+    [[ -n "$COMMAND" ]] || continue
+    if [[ "$GAME_KIND" == "native_app" && "$COMMAND" == "$GAME_TARGET/Contents/MacOS/"* ]]; then
+      return 0
+    fi
+    if [[ "$GAME_KIND" == "native_bin" && ( "$COMMAND" == "$NATIVE_BINARY" || "$COMMAND" == "$NATIVE_BINARY "* ) ]]; then
+      return 0
+    fi
+    if [[ "$GAME_KIND" == "crossover" && "$COMMAND" == *"$GAME_TARGET"* ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 if [[ ! -x "$CONTROLLER" || ! -f "$TRANSLATOR" || ! -f "$ARGOS_SERVICE" ]]; then
@@ -349,9 +368,11 @@ if [[ "$GAME_KIND" == "native_app" ]]; then
     "$NATIVE_BINARY" "${NATIVE_LAUNCH_ARGS[@]}" >/dev/null 2>&1 &
   fi
   GAME_PID=$!
+  TRACKED_GAME_PID="$GAME_PID"
 elif [[ "$GAME_KIND" == "native_bin" ]]; then
   "$NATIVE_BINARY" "--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT" >/dev/null 2>&1 &
   GAME_PID=$!
+  TRACKED_GAME_PID="$GAME_PID"
 else
   STEAM_STATUS=1
   if [[ -f "$STEAM_EXE" ]]; then

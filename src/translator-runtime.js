@@ -35,25 +35,6 @@
     lmstudio: Object.freeze({ name: "LM Studio", baseURL: "http://127.0.0.1:1234/v1", requiresKey: false }),
     custom: Object.freeze({ name: "Custom", baseURL: "", requiresKey: false })
   });
-  const SUPER_BULK_LANGUAGES = Object.freeze([
-    Object.freeze({ code: "es", name: "Spanish" }),
-    Object.freeze({ code: "de", name: "German" }),
-    Object.freeze({ code: "pl", name: "Polish" }),
-    Object.freeze({ code: "vi", name: "Vietnamese" }),
-    Object.freeze({ code: "ru", name: "Russian" }),
-    Object.freeze({ code: "ar", name: "Arabic" }),
-    Object.freeze({ code: "fa", name: "Persian" }),
-    Object.freeze({ code: "iw", name: "Hebrew" }),
-    Object.freeze({ code: "zh-CN", name: "Chinese Simplified" }),
-    Object.freeze({ code: "zh-TW", name: "Chinese Traditional" }),
-    Object.freeze({ code: "ja", name: "Japanese" }),
-    Object.freeze({ code: "ko", name: "Korean" }),
-    Object.freeze({ code: "hi", name: "Hindi" }),
-    Object.freeze({ code: "bn", name: "Bengali" }),
-    Object.freeze({ code: "th", name: "Thai" }),
-    Object.freeze({ code: "my", name: "Myanmar" }),
-    Object.freeze({ code: "ka", name: "Georgian" })
-  ]);
   const LANGUAGE_TEST_PHRASE_SOURCE = "<WordWrap>\\marHi, OMORI! Cliff-faced as usual, I see.\\!<br>You should totally smile more! I've always liked your smile.";
   const AUTO_APPLY_TRANSLATIONS = true;
   const SETTINGS_KEY = `${game.storageNamespace}.settings.v2`;
@@ -79,7 +60,7 @@
   const TRANSLATION_LOG_LIMIT = 40;
   const TRANSLATION_LOG_VIEW_LIMIT = 200;
   const UPDATE_CHECK_TIMEOUT = 12000;
-  const TEST_PHRASE_GOOGLE_DELAY = 5000;
+  const TEST_PHRASE_GOOGLE_DELAY = 1000;
   const TEST_PHRASE_RATE_LIMIT_DELAY = 15000;
   const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
@@ -397,28 +378,28 @@
 
   async function cachePut(key, value) {
     if (!key || !value) return false;
+    const metadata = await getCacheMetadata();
+    const db = await openDb();
+    markCacheMetadataDirty();
+    const previous = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      let oldValue = null;
+      transaction.oncomplete = () => resolve(oldValue);
+      transaction.onerror = () => reject(transaction.error || new Error("Cache transaction failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("Cache transaction aborted"));
+      const getRequest = store.get(key);
+      getRequest.onerror = () => reject(getRequest.error || new Error("Could not read the existing cache entry"));
+      getRequest.onsuccess = () => {
+        oldValue = typeof getRequest.result === "string" ? getRequest.result : null;
+        store.put(value, key);
+      };
+    });
     memoryCacheSet(key, value);
-    try {
-      const metadata = await getCacheMetadata();
-      const db = await openDb();
-      markCacheMetadataDirty();
-      const previous = await new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE_NAME, "readwrite");
-        const store = transaction.objectStore(STORE_NAME);
-        const getRequest = store.get(key);
-        getRequest.onerror = () => reject(getRequest.error);
-        getRequest.onsuccess = () => {
-          const oldValue = typeof getRequest.result === "string" ? getRequest.result : null;
-          const putRequest = store.put(value, key);
-          putRequest.onsuccess = () => resolve(oldValue);
-          putRequest.onerror = () => reject(putRequest.error);
-        };
-      });
-      if (previous !== null) adjustCacheMetadata(metadata, key, previous, -1);
-      adjustCacheMetadata(metadata, key, value, 1);
-      scheduleCacheMetadataSave();
-      return true;
-    } catch (_) { return false; }
+    if (previous !== null) adjustCacheMetadata(metadata, key, previous, -1);
+    adjustCacheMetadata(metadata, key, value, 1);
+    scheduleCacheMetadataSave();
+    return true;
   }
 
   async function preloadMemoryCache() {
@@ -612,23 +593,19 @@
   }
 
   async function clearAllCache() {
-    try {
-      const db = await openDb();
-      markCacheMetadataDirty();
-      await new Promise((resolve, reject) => {
-        const request = db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).clear();
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-      });
-      memoryCache.clear();
-      cacheMetadata = emptyCacheMetadata();
-      cacheMetadataVerified = true;
-      saveCacheMetadata(cacheMetadata);
-    } catch (_) {
-      memoryCache.clear();
-      cacheMetadata = null;
-      cacheMetadataVerified = false;
-    }
+    const db = await openDb();
+    markCacheMetadataDirty();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Cache deletion failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("Cache deletion was aborted"));
+      transaction.objectStore(STORE_NAME).clear();
+    });
+    memoryCache.clear();
+    cacheMetadata = emptyCacheMetadata();
+    cacheMetadataVerified = true;
+    saveCacheMetadata(cacheMetadata);
   }
 
   function sleep(ms, signal) {
@@ -901,15 +878,15 @@
       return lastEstimate;
     }
 
-    function update(completedWords, totalWords) {
+    function update(completedUnits, totalUnits) {
       const now = performance.now();
       if (pausedAt) {
         pausedDuration += now - pausedAt;
         pausedAt = 0;
       }
       const activeTime = now - pausedDuration;
-      const completed = Math.max(0, Math.floor(Number(completedWords) || 0));
-      const total = Math.max(completed, Math.floor(Number(totalWords) || 0));
+      const completed = Math.max(0, Math.floor(Number(completedUnits) || 0));
+      const total = Math.max(completed, Math.floor(Number(totalUnits) || 0));
       const previous = points[points.length - 1];
       if (!previous || completed > previous.words) points.push({ time: activeTime, words: completed });
       while (points.length > 2
@@ -1003,8 +980,9 @@
   async function translateText(source, language, provider, signal, allowNetwork, logCachedResult, onRateLimitWait) {
     if (!source || typeof source !== "string" || source.length < 2) return { text: source, cached: true };
 
-    // Hard barrier: Never translate if Cyrillic is detected or if it looks like code
-    if (/[\u0410-\u044F\u0401\u0451]/.test(source) || source.includes("this.") || /[\+\*\/]/.test(source)) {
+    // Source assets are English. Avoid re-translating an already translated value,
+    // while leaving path and identifier detection to the shared source-text filter.
+    if (/[\u0410-\u044F\u0401\u0451]/.test(source) || !core.hasEnglishText(source)) {
       return { text: source, cached: true };
     }
 
@@ -1436,7 +1414,7 @@
       for (let index = 0; index < job.parts.length; index += 1) {
         const part = job.parts[index];
         if (!result.cached) {
-          cachePut(makeTranslationCacheKey(part.source, language, provider), contextualParts[index]);
+          await cachePut(makeTranslationCacheKey(part.source, language, provider), contextualParts[index]);
         }
         if (part.node.isConnected && sourceForNode(part.node) === part.source) {
           rememberTranslation(part.node, part.source, contextualParts[index], language, provider);
@@ -1937,7 +1915,7 @@
       let etaTracker = null;
       const result = await translateBulkLanguage(
         strings, language, provider, abortController.signal,
-        ({ done, completedWords, totalWords, rateLimitSeconds }) => {
+        ({ done, completedWords, totalWords, newlyTranslated, rateLimitSeconds }) => {
           if (!etaTracker) etaTracker = createTranslationEtaTracker();
           if (rateLimitSeconds > 0) {
             etaTracker.pause();
@@ -1946,8 +1924,10 @@
             ));
             return;
           }
+          const remainingJobs = Math.max(0, strings.length - done);
           setStatus(translationProgressText(
-            completedWords, totalWords, etaTracker.update(done, strings.length), 0
+            completedWords, totalWords,
+            etaTracker.update(newlyTranslated, newlyTranslated + remainingJobs), 0
           ));
         }
       );
@@ -1980,138 +1960,6 @@
       activeAbortReason = "";
       setBulkUiBusy(false);
       setBulkButtonIdle();
-      refreshCacheStats();
-    }
-  }
-
-  async function superBulkTranslateAll() {
-    if (running) {
-      if (activeOperation === "super-bulk") {
-        superBulkButton.textContent = "Cancelling…";
-        superBulkButton.disabled = true;
-        abortActiveOperation("Cancel Super Bulk was pressed");
-      } else {
-        abortActiveOperation("cancelled by starting Super Bulk translation");
-      }
-      return;
-    }
-    if (bulkPreparing) return;
-    bulkPreparing = true;
-    setSuperBulkButtonWorking("Starting…");
-    try {
-      await new Promise((resolve) => {
-        let settled = false;
-        const finish = () => { if (!settled) { settled = true; resolve(); } };
-        requestAnimationFrame(finish);
-        setTimeout(finish, 100);
-      });
-      if (providerUsesManagedOffline(settings.provider)) {
-        setStatus("Super Bulk needs a service that supports all 17 languages. Choose OpenAI-compatible, LM Studio, Gemini, Google, or MyMemory.");
-        return;
-      }
-      const selectedProvider = PROVIDERS[settings.provider];
-      const unsupported = SUPER_BULK_LANGUAGES.filter(({ code }) => !selectedProvider.supportsLanguage(code));
-      if (unsupported.length) {
-        setStatus(`Selected service does not support: ${unsupported.map(({ name }) => name).join(", ")}`);
-        return;
-      }
-      if (!(await ensureBulkProviderReady())) return;
-      if (!confirm(
-        `Translate all OMORI dialogue sequentially into ${SUPER_BULK_LANGUAGES.length} languages using ${selectedProvider.label}? `
-        + "This can take many hours. Completed translations stay cached if you cancel."
-      )) {
-        setStatus("Super Bulk cancelled before start");
-        return;
-      }
-
-      running = true;
-      activeOperation = "super-bulk";
-      activeAbortReason = "";
-      abortController = new AbortController();
-      setBulkUiBusy(true);
-      setSuperBulkButtonWorking("Cancel all languages");
-      setStatus("Words: 0/0 · Time left: calculating…");
-      const payload = await requestLocalHelper(`/v1/game/strings?gameId=${game.id}`, { signal: abortController.signal });
-      if (!payload || !Array.isArray(payload.strings)) throw new Error("Could not extract strings");
-      const strings = payload.strings;
-      if (!strings.length) {
-        setStatus("No strings found in game assets");
-        return;
-      }
-
-      const provider = settings.provider;
-      const totalJobs = strings.length * SUPER_BULK_LANGUAGES.length;
-      const wordsPerLanguage = strings.reduce((sum, source) => sum + countTranslationWords(source), 0);
-      const totalWords = wordsPerLanguage * SUPER_BULK_LANGUAGES.length;
-      const etaTracker = createTranslationEtaTracker();
-      let completedBeforeLanguage = 0;
-      let completedWordsBeforeLanguage = 0;
-      let totalNew = 0;
-      let totalFailed = 0;
-      const failureReasons = new Map();
-
-      for (let languageIndex = 0; languageIndex < SUPER_BULK_LANGUAGES.length; languageIndex += 1) {
-        if (abortController.signal.aborted) break;
-        const { code, name } = SUPER_BULK_LANGUAGES[languageIndex];
-        setStatus(translationProgressText(
-          completedWordsBeforeLanguage,
-          totalWords,
-          etaTracker.update(completedBeforeLanguage, totalJobs),
-          0
-        ));
-        const result = await translateBulkLanguage(
-          strings, code, provider, abortController.signal,
-          ({ done, completedWords, rateLimitSeconds }) => {
-            const totalCompletedWords = completedWordsBeforeLanguage + completedWords;
-            const totalCompletedJobs = completedBeforeLanguage + done;
-            if (rateLimitSeconds > 0) etaTracker.pause();
-            setStatus(translationProgressText(
-              totalCompletedWords,
-              totalWords,
-              rateLimitSeconds > 0
-                ? etaTracker.current()
-                : etaTracker.update(totalCompletedJobs, totalJobs),
-              rateLimitSeconds
-            ));
-          }
-        );
-        completedBeforeLanguage += result.done;
-        completedWordsBeforeLanguage += result.completedWords;
-        totalNew += result.newlyTranslated;
-        totalFailed += result.failed;
-        for (const [reason, count] of result.failureReasons) {
-          failureReasons.set(reason, (failureReasons.get(reason) || 0) + count);
-        }
-      }
-
-      if (abortController.signal.aborted) {
-        setStatus(
-          `Super Bulk stopped at ${completedBeforeLanguage}/${totalJobs}: `
-          + (activeAbortReason || "cancelled by user")
-        );
-      } else if (totalFailed > 0) {
-        const reasons = Array.from(failureReasons.entries())
-          .map(([reason, count]) => `${reason} (${count})`)
-          .join("; ");
-        setStatus(`Super Bulk incomplete: ${totalJobs - totalFailed}/${totalJobs} saved · ${reasons}`);
-      } else {
-        await preloadMemoryCache();
-        setStatus(`Super Bulk complete: ${SUPER_BULK_LANGUAGES.length} languages · ${totalNew} new translations`);
-      }
-    } catch (error) {
-      if (error && error.name === "AbortError") {
-        setStatus(`Super Bulk stopped: ${activeAbortReason || "cancelled by user"}`);
-      } else {
-        setStatus(error.message || "Super Bulk translation failed");
-      }
-    } finally {
-      bulkPreparing = false;
-      running = false;
-      abortController = null;
-      activeOperation = null;
-      activeAbortReason = "";
-      setBulkUiBusy(false);
-      setSuperBulkButtonIdle();
       refreshCacheStats();
     }
   }
@@ -2151,7 +1999,7 @@
       if (!confirm(
         `Translate the current OMORI test phrase into ${targets.length} languages using ${providerConfig.label}? `
         + "Existing cached languages will be skipped."
-        + (provider === "google" ? " Google processes one language every 5 seconds and may pause after a temporary block." : "")
+        + (provider === "google" ? " Google processes one language every second and may pause after a temporary block." : "")
         + (providerUsesManagedOffline(provider)
           ? " The offline engine and missing models will be prepared automatically; models stay on disk. This can use substantial disk space and take a long time."
           : "")
@@ -2249,7 +2097,7 @@
           setStatus(translationProgressText(
             done * phraseWords,
             totalWords,
-            etaTracker.update(done, targets.length),
+            etaTracker.update(created, created + Math.max(0, targets.length - done)),
             0
           ));
         }
@@ -2320,13 +2168,13 @@
   shadow.innerHTML = `
     <style>
       :host{all:initial!important;display:block!important;position:fixed!important;z-index:9999999!important;left:var(--vr-left,auto)!important;top:var(--vr-top,14px)!important;right:var(--vr-right,14px)!important}*{box-sizing:border-box}.panel{width:306px!important;color:#fff!important;background:rgba(32,19,28,.97)!important;border:1px solid #c69b55!important;border-radius:9px!important;box-shadow:0 5px 24px rgba(0,0,0,0.95)!important;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif!important;overflow:hidden!important;position:relative!important;z-index:9999999!important}.bar{cursor:move;padding:7px 9px;color:#f4d18f;background:#412436;font-weight:700;user-select:none}.row{display:flex;gap:6px;padding:7px}.primary,.secondary,.gear,.danger{border:1px solid #c69b55;border-radius:6px;background:#6b344f;color:#fff;padding:7px 9px;cursor:pointer;font:inherit}.primary{flex:1;font-weight:700}.secondary{background:#442b39}.gear{width:38px}.status{min-height:23px;padding:0 9px 3px;color:#ddd;font-size:12px}.hotkey{padding:0 9px 7px;color:#f4d18f;font-size:11px}.retry{margin:0 8px 7px;width:calc(100% - 16px)}.settings{display:none;padding:0 8px 9px;border-top:1px solid #6e4d56}.settings.open{display:block}.settings label.title{display:block;margin:7px 0 3px}.settings select,.settings input{width:100%;border:1px solid #927047;border-radius:4px;background:#20131c;color:#fff;padding:6px}.check{display:flex;gap:7px;align-items:center;margin:8px 0}.hint,.providerHint,.cacheStats,.argosStatus,.geminiStatus,.geminiNotice,.lmStudioStatus,.lmStudioNotice,.openAICompatibleStatus,.openAICompatibleNotice{color:#bdaeb6;font-size:11px;line-height:1.3}.providerHint{margin-top:4px}.argosBox,.geminiBox,.lmStudioBox,.openAICompatibleBox,.cacheBox{margin-top:8px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.geminiKey,.lmStudioModel,.openAICompatiblePreset,.openAICompatibleBaseURL,.openAICompatibleModel,.openAICompatibleKey{margin-top:6px}.argosActions,.geminiActions,.lmStudioActions,.openAICompatibleActions,.privacyActions{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.argosActions button,.geminiActions button,.lmStudioActions button,.openAICompatibleActions button,.privacyActions button{flex:1;min-width:82px}.primary:disabled,.secondary:disabled,.danger:disabled{opacity:.55;cursor:default}.danger{background:#71313a}.privacy{margin:0 8px 8px;padding:8px;border:1px solid #d19a44;border-radius:6px;background:#38291f;color:#f8e5bf;font-size:12px}.compat{margin:0 8px 7px;padding:6px;border-radius:5px;background:#71431f;color:#ffe6be;font-size:11px}.site{padding:7px 9px;border-top:1px solid #6e4d56;text-align:center;color:#bdaeb6;font-size:11px}.site a,.geminiNotice a,.openAICompatibleNotice a{color:#f4d18f;font-weight:700;text-decoration:none}.site a:hover,.geminiNotice a:hover,.openAICompatibleNotice a:hover{text-decoration:underline}.hidden{display:none!important}
-      .settings{display:block!important;max-height:calc(100vh - 92px);overflow-y:auto}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.updateStatus{padding:0 9px 5px;color:#9d9098;font-size:11px;line-height:1.25}.updateStatus.available{color:#f4d18f}.updateStatus.error{color:#d9a0a0}.updateChanges{margin:-1px 9px 6px;padding-left:16px;color:#c9bdc4;font-size:10px;line-height:1.35}.updateChanges li+li{margin-top:2px}.bulkTranslate,.superBulkTranslate,.testPhraseTranslate,.reset{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.superBulkTranslate.working::before,.testPhraseTranslate.working::before,.reset.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationLogBox{margin-top:7px;border:1px solid #6e4d56;border-radius:5px;background:#1b1218;color:#ddd;font-size:11px}.translationLogBox summary{padding:6px;cursor:pointer;color:#f4d18f;font-weight:700}.translationLogToolbar{display:flex;align-items:center;justify-content:space-between;gap:5px;padding:0 6px 5px;color:#8f8189;flex-wrap:wrap}.translationLogNote{flex:1;min-width:120px}.translationLogActions{display:flex;gap:4px;flex-wrap:wrap}.translationLogActions button{padding:3px 6px!important;font-size:10px!important}.translationLogEmpty{padding:4px 6px 7px;color:#8f8189}.translationLogEntries{max-height:170px;overflow:auto}.translationLogEntry{padding:6px;border-top:1px solid #49333f;overflow-wrap:anywhere}.translationLogMeta{margin-bottom:3px;color:#c69b55}.translationLogSource,.translationLogTarget{white-space:pre-wrap}.translationLogSource{color:#aaa}.translationLogArrow{color:#8f8189;padding:2px 0}@keyframes vr-spin{to{transform:rotate(360deg)}}
+      .settings{display:block!important;max-height:calc(100vh - 92px);overflow-y:auto}.bar{display:flex;align-items:center;gap:8px;min-height:34px;touch-action:none}.barTitle{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapseToggle{width:24px;height:22px;padding:0;border:1px solid #c69b55;border-radius:5px;background:#6b344f;color:#fff;cursor:pointer;font:700 16px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.collapseToggle:hover{background:#7b405d}.panel.collapsed{width:30px!important;border:0!important;border-radius:5px!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}.panel.collapsed>:not(.bar){display:none!important}.panel.collapsed .bar{min-height:0!important;padding:0!important;background:transparent!important;cursor:move!important}.panel.collapsed .barTitle{display:none!important}.panel.collapsed .collapseToggle{width:30px;height:30px;line-height:26px;cursor:grab}.modeToggle{display:grid!important;grid-template-columns:1fr 1fr;gap:3px;width:100%;padding:3px!important;border-radius:8px!important}.modeChoice{padding:5px 8px;border-radius:5px;color:#bdaeb6;font-weight:600;text-align:center}.modeChoice.active{background:#6b344f;color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}.translationScope{margin-top:7px;padding:7px;border:1px solid #6e4d56;border-radius:6px}.translationScopeLabel{margin-bottom:5px;color:#f4d18f;font-weight:700}.scopeChoices{display:grid;grid-template-columns:1fr 1fr;gap:5px}.scopeChoice{min-width:0;padding:6px;border:1px solid #6e4d56;border-radius:5px;background:#241720;color:#bdaeb6}.scopeChoice.active{border-color:#c69b55;background:#4b2d3f;color:#fff}.scopeChoice.disabled{opacity:.55}.scopeName,.scopeState{display:block}.scopeName{font-size:11px;font-weight:700}.scopeState{margin-top:2px;font-size:9px;line-height:1.2}.scopeHint{margin-top:5px;color:#bdaeb6;font-size:10px;line-height:1.3}.updateStatus{padding:0 9px 5px;color:#9d9098;font-size:11px;line-height:1.25}.updateStatus.available{color:#f4d18f}.updateStatus.error{color:#d9a0a0}.updateChanges{margin:-1px 9px 6px;padding-left:16px;color:#c9bdc4;font-size:10px;line-height:1.35}.updateChanges li+li{margin-top:2px}.bulkTranslate,.testPhraseTranslate,.reset{display:flex;align-items:center;justify-content:center;gap:8px}.bulkTranslate.working::before,.testPhraseTranslate.working::before,.reset.working::before{content:"";width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:vr-spin .75s linear infinite}.translationLogBox{margin-top:7px;border:1px solid #6e4d56;border-radius:5px;background:#1b1218;color:#ddd;font-size:11px}.translationLogBox summary{padding:6px;cursor:pointer;color:#f4d18f;font-weight:700}.translationLogToolbar{display:flex;align-items:center;justify-content:space-between;gap:5px;padding:0 6px 5px;color:#8f8189;flex-wrap:wrap}.translationLogNote{flex:1;min-width:120px}.translationLogActions{display:flex;gap:4px;flex-wrap:wrap}.translationLogActions button{padding:3px 6px!important;font-size:10px!important}.translationLogEmpty{padding:4px 6px 7px;color:#8f8189}.translationLogEntries{max-height:170px;overflow:auto}.translationLogEntry{padding:6px;border-top:1px solid #49333f;overflow-wrap:anywhere}.translationLogMeta{margin-bottom:3px;color:#c69b55}.translationLogSource,.translationLogTarget{white-space:pre-wrap}.translationLogSource{color:#aaa}.translationLogArrow{color:#8f8189;padding:2px 0}@keyframes vr-spin{to{transform:rotate(360deg)}}
       :host(.bulkBusyHost){left:0!important;top:0!important;right:0!important;width:100vw!important;height:100vh!important}.panel.bulkBusy{display:flex!important;flex-direction:column!important;width:100vw!important;height:100vh!important;border-radius:0!important}.panel.bulkBusy>*{display:none!important}.panel.bulkBusy>.status{display:block!important;flex:0 0 auto!important;min-height:0!important;padding:10px 12px!important;background:#412436!important;color:#f4d18f!important;font-size:14px!important;font-weight:700!important;text-align:center!important}.panel.bulkBusy>.settings{display:flex!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow:hidden!important;padding:0!important;border:0!important}.panel.bulkBusy .settings>*{display:none!important}.panel.bulkBusy .settings>.cacheBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important}.panel.bulkBusy .cacheBox>*{display:none!important}.panel.bulkBusy .cacheBox>.translationLogBox{display:flex!important;flex:1 1 auto!important;flex-direction:column!important;min-height:0!important;margin:0!important;border-width:1px 0!important;border-radius:0!important}.panel.bulkBusy .translationLogBox summary{flex:0 0 auto!important;padding:10px 12px!important;font-size:14px!important}.panel.bulkBusy .translationLogToolbar{display:none!important}.panel.bulkBusy .translationLogEmpty{flex:0 0 auto!important;padding:10px 12px!important}.panel.bulkBusy .translationLogEntries{display:block!important;flex:1 1 auto!important;min-height:0!important;max-height:none!important;overflow-y:auto!important;font-size:13px!important}.panel.bulkBusy .cacheBox>.bulkActionRow.activeBulkAction{display:flex!important;flex:0 0 auto!important;margin:0!important;padding:10px 12px!important;background:#241720!important}.panel.bulkBusy .activeBulkAction>button{width:100%!important;min-height:48px!important;font-size:16px!important}
       .site{display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap}.siteLabel{white-space:nowrap}.contacts{display:inline-flex;align-items:center;gap:5px}.site .contactIcon{display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;border:1px solid #6e4d56;border-radius:6px;background:#2c1b26;text-decoration:none}.site .contactIcon:hover{border-color:#c69b55;background:#412436;text-decoration:none}.contactIcon svg{display:block;width:15px;height:15px;fill:currentColor}.site .discord{color:#8c9eff}.site .telegram{color:#55bde9}.site .email{color:#9b87f5}
     </style>
     <div class="panel">
       <div class="bar"><span class="barTitle">${PRODUCT_NAME} ${VERSION}</span><button class="collapseToggle" type="button" title="Collapse translator" aria-label="Collapse translator">−</button></div>
-      <div class="row"><button class="secondary mode modeToggle" type="button" aria-label="Translation mode"><span class="modeChoice translationChoice">Translation</span><span class="modeChoice originalChoice">Original</span></button></div>
+      <div class="row"><button class="secondary mode modeToggle" type="button" aria-label="Dialogue display"><span class="modeChoice translationChoice">Translation</span><span class="modeChoice originalChoice">Original</span></button></div>
       <div class="status">Ready</div>
       <div class="updateStatus">Checking for updates…</div>
       <ul class="updateChanges" hidden></ul>
@@ -2337,6 +2185,14 @@
         <div class="privacyActions"><button class="primary allowBulk">Allow bulk upload</button><button class="secondary cancelBulk">Cancel</button></div>
       </div>
       <div class="settings open">
+        <div class="translationScope" role="group" aria-label="Translation mode">
+          <div class="translationScopeLabel">Translation mode</div>
+          <div class="scopeChoices">
+            <div class="scopeChoice storyTranslationScope active" aria-current="true"><span class="scopeName">Story Translation</span><span class="scopeState">Stable · dialogue windows</span></div>
+            <div class="scopeChoice fullTranslationScope disabled" aria-disabled="true"><span class="scopeName">Full Translation</span><span class="scopeState">Coming soon</span></div>
+          </div>
+          <div class="scopeHint">Story Translation changes only dialogue windows for reliable, consistent presentation. Full interface translation is not enabled yet.</div>
+        </div>
         <label class="title">Bulk translation service</label><select class="provider"></select>
         <div class="providerHint"></div>
         <label class="title">Target Language</label><select class="language"></select>
@@ -2381,9 +2237,6 @@
           <input type="file" class="cacheFile" accept=".jsonl,.json" style="display:none">
           <div class="row bulkActionRow" style="padding:7px 0 0">
             <button class="primary bulkTranslate" style="background:#4a69bd">Bulk Translate All Assets</button>
-          </div>
-          <div class="row bulkActionRow" style="padding:5px 0 0">
-            <button class="primary superBulkTranslate" style="background:#7b3fb4">Super Bulk Translation · 17 languages</button>
           </div>
           <div class="row bulkActionRow" style="padding:5px 0 0">
             <button class="primary testPhraseTranslate" style="background:#287c68">Test Phrase · All Languages</button>
@@ -2473,7 +2326,6 @@
   const importButton = shadow.querySelector(".importCache");
   const exportButton = shadow.querySelector(".exportCache");
   const bulkButton = shadow.querySelector(".bulkTranslate");
-  const superBulkButton = shadow.querySelector(".superBulkTranslate");
   const testPhraseButton = shadow.querySelector(".testPhraseTranslate");
   const translationLogBox = shadow.querySelector(".translationLogBox");
   const translationLogEntries = shadow.querySelector(".translationLogEntries");
@@ -2499,18 +2351,6 @@
     bulkButton.classList.remove("working");
     bulkButton.textContent = "Bulk Translate All Assets";
     bulkButton.disabled = false;
-  }
-
-  function setSuperBulkButtonWorking(label) {
-    superBulkButton.classList.add("working");
-    superBulkButton.textContent = label;
-    superBulkButton.disabled = false;
-  }
-
-  function setSuperBulkButtonIdle() {
-    superBulkButton.classList.remove("working");
-    superBulkButton.textContent = "Super Bulk Translation · 17 languages";
-    superBulkButton.disabled = false;
   }
 
   function setTestPhraseButtonWorking(label) {
@@ -2540,9 +2380,7 @@
   function setBulkUiBusy(busy) {
     panel.classList.toggle("bulkBusy", busy);
     host.classList.toggle("bulkBusyHost", busy);
-    const cancelButton = activeOperation === "super-bulk"
-      ? superBulkButton
-      : (activeOperation === "test-phrase" ? testPhraseButton : bulkButton);
+    const cancelButton = activeOperation === "test-phrase" ? testPhraseButton : bulkButton;
     for (const row of shadow.querySelectorAll(".bulkActionRow")) {
       row.classList.toggle("activeBulkAction", busy && row.contains(cancelButton));
     }
@@ -3223,7 +3061,6 @@
   exportButton.addEventListener("click", exportCache);
   importButton.addEventListener("click", () => cacheFileInput.click());
   bulkButton.addEventListener("click", bulkTranslateAll);
-  superBulkButton.addEventListener("click", superBulkTranslateAll);
   testPhraseButton.addEventListener("click", translateTestPhraseAllLanguages);
   translationLogViewButton.addEventListener("click", viewSavedTranslationLog);
   translationLogSaveButton.addEventListener("click", saveTranslationLog);
@@ -3569,7 +3406,7 @@
     if (document.hidden) {
       clearTimeout(scanTimer);
       scanTimer = 0;
-      if (activeOperation !== "bulk" && activeOperation !== "super-bulk" && activeOperation !== "test-phrase") {
+      if (activeOperation !== "bulk" && activeOperation !== "test-phrase") {
         abortActiveOperation("game window was hidden");
       }
       return;

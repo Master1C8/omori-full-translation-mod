@@ -22,8 +22,8 @@
       localStorage.setItem("omori-translator.settings.v2", JSON.stringify({
         language: "ru", provider: "google", autoTranslate: false, mode: "translated", privacyAccepted: true
       }));
-      localStorage.setItem("omori-translator.cache-meta.v1", JSON.stringify({ version: 1, records: 99, bytes: 99, languages: { ar: { records: 99, bytes: 99 } } }));
-      localStorage.setItem("omori-translator.cache-meta-dirty.v1", "1");
+      localStorage.setItem("omori-translator.cache-meta.v3", JSON.stringify({ version: 3, records: 99, bytes: 99, languages: { ar: { records: 99, bytes: 99 } } }));
+      localStorage.setItem("omori-translator.cache-meta-dirty.v3", "1");
       function request(result) {
         let success = null;
         const value = { result, error: null };
@@ -37,14 +37,14 @@
       const cache = new Map();
       cache.set("v1\nar\n811c9dc5\nLegacy line", "سطر قديم");
       cache.set(
-        "v3\nomori\ngoogle\nar\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
+        "v4\nomori\ngoogle\nar\n5d464bcd\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
         "ترى VRCTXSEP1X امرأة جميلة VRCTXSEP2X بالقرب من الباب."
       );
-      cache.set("v3\nomori\ngoogle\nar\nYou see", "ترى");
-      cache.set("v3\nomori\ngoogle\nar\na beautiful woman", "امرأة جميلة");
-      cache.set("v3\nomori\ngoogle\nar\nnear the door.", "بالقرب من الباب.");
-      cache.set("v3\nomori\ngoogle\nar\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
-      cache.set("v3\nomori\ngoogle\nar\nA later paragraph appears after scrolling.", "ترجمة");
+      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nYou see", "ترى");
+      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\na beautiful woman", "امرأة جميلة");
+      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nnear the door.", "بالقرب من الباب.");
+      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
+      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA later paragraph appears after scrolling.", "ترجمة");
       window.smokeCache = cache;
       const transaction = () => {
         let complete = null;
@@ -52,7 +52,7 @@
         Object.defineProperty(value, "oncomplete", {
           configurable: true,
           get() { return complete; },
-          set(callback) { complete = callback; if (callback) setTimeout(callback, 0); }
+          set(callback) { complete = callback; if (callback) setTimeout(callback, 10); }
         });
         return value;
       };
@@ -135,7 +135,7 @@
         }
         if (url.pathname === "/v1/update/check") {
           return { ok: true, json: async () => ({
-            ok: true, latestVersion: "0.9.38", cacheCompatibility: "keep", cacheSchema: 3,
+            ok: true, latestVersion: "0.9.43", cacheCompatibility: "keep", cacheSchema: 3,
             changes: ["Placeholder improvement", "Placeholder bug fix"]
           }) };
         }
@@ -212,8 +212,11 @@
       const autosavedSettings = JSON.parse(localStorage.getItem("omori-translator.settings.v2") || "null");
       const autoApplyForcedOn = window.__vnRevivalTranslator.settings().autoTranslate === true;
       const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey");
-      const superBulkButtonPresent = shadow.querySelector(".superBulkTranslate")?.textContent
-        === "Super Bulk Translation · 17 languages";
+      const superBulkButtonRemoved = !shadow.querySelector(".superBulkTranslate");
+      const translationScopesPresent = shadow.querySelector(".storyTranslationScope")?.getAttribute("aria-current") === "true"
+        && shadow.querySelector(".storyTranslationScope")?.textContent.includes("Stable · dialogue windows")
+        && shadow.querySelector(".fullTranslationScope")?.getAttribute("aria-disabled") === "true"
+        && shadow.querySelector(".fullTranslationScope")?.textContent.includes("Coming soon");
       const liveTranslationLogPresent = shadow.querySelector(".translationLogBox")?.textContent
         .includes("New translations will appear here.")
         && shadow.querySelector(".translationLogEntries")?.getAttribute("aria-live") === "polite";
@@ -292,8 +295,8 @@
       const scrolledTranslation = later.textContent.trim();
 
       await new Promise((resolve) => setTimeout(resolve, 700));
-      const repairedMetadata = JSON.parse(localStorage.getItem("omori-translator.cache-meta.v1") || "null");
-      const metadataDirty = localStorage.getItem("omori-translator.cache-meta-dirty.v1");
+      const repairedMetadata = JSON.parse(localStorage.getItem("omori-translator.cache-meta.v3") || "null");
+      const metadataDirty = localStorage.getItem("omori-translator.cache-meta-dirty.v3");
 
       const legacyMigrated = true;
       const legacyGlobalsScopedToCoC2 = Boolean(window.__vnRevivalTranslator);
@@ -333,7 +336,8 @@
         && openCodeReferralPresent
         && autoApplyForcedOn
         && obsoleteControlsRemoved
-        && superBulkButtonPresent
+        && superBulkButtonRemoved
+        && translationScopesPresent
         && liveTranslationLogPresent
         && activeTranslationWorkspace
         && translationWorkspaceRestored
@@ -377,7 +381,8 @@
         openCodeReferralPresent,
         autoApplyForcedOn,
         obsoleteControlsRemoved,
-        superBulkButtonPresent,
+        superBulkButtonRemoved,
+        translationScopesPresent,
         liveTranslationLogPresent,
         activeTranslationWorkspace,
         activeTranslationWorkspaceState,

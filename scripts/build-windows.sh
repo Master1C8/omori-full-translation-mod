@@ -102,6 +102,7 @@ print -r -- "$RUNTIME_BYTES" > "$SITE_PACKAGES/.vnrevival-runtime-bytes"
 
 cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
 cp "$ROOT/src/argos_service.py" "$RESOURCE_DIR/argos_service.py"
+cp "$ROOT/src/requirements-runtime-macos.txt" "$RESOURCE_DIR/requirements-runtime-macos.txt"
 cp -R "$ROOT/src/bergamot-web" "$RESOURCE_DIR/bergamot-web"
 cp "$GAME_MANIFEST" "$RESOURCE_DIR/game.json"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" \

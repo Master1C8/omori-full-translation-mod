@@ -9,7 +9,7 @@
       id: "google",
       label: "Google Translate",
       concurrency: 1,
-      delay: 5000,
+      delay: 1000,
       retries: 3,
       contextLimit: 3200,
       requiresPrivacy: true,

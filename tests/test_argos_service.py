@@ -150,6 +150,25 @@ class ArgosServiceTests(unittest.TestCase):
             self.assertIn("zh-TW", status["supportedLanguages"])
             self.assertNotIn("ab", status["supportedLanguages"])
 
+    def test_runtime_install_uses_hash_locked_binary_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            requirements = root / "requirements-runtime-macos.txt"
+            requirements.write_text(
+                "example-runtime==1.0 --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            bridge = argos_service.ArgosBridge(root / "data")
+            completed = mock.Mock(returncode=0, stdout="installed\n")
+            with mock.patch.object(argos_service, "RUNTIME_REQUIREMENTS_PATH", requirements), \
+                    mock.patch.object(argos_service.subprocess, "run", return_value=completed) as run:
+                bridge._pip_install_runtime()
+            command = run.call_args.args[0]
+            self.assertIn("--require-hashes", command)
+            self.assertIn("--no-deps", command)
+            self.assertIn("--only-binary=:all:", command)
+            self.assertEqual(command[command.index("--requirement") + 1], str(requirements))
+
     def test_bergamot_model_install_verifies_archive_and_builds_local_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
