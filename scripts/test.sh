@@ -94,12 +94,17 @@ if grep -Eq 'SUPER_BULK_LANGUAGES|superBulkTranslateAll|superBulkTranslate|super
   exit 1
 fi
 
+if rg -n -i 'mymemory' src/translation-core.js src/providers.js src/translator-runtime.js; then
+  echo "Removed MyMemory provider is still present in browser product code" >&2
+  exit 1
+fi
+
 grep -Fq 'const MEMORY_CACHE_LIMIT = 50000;' src/translator-runtime.js || {
   echo "RAM cache must retain 50000 recent translations" >&2
   exit 1
 }
 
-for REQUIRED in 'google' 'gemini' 'mymemory' 'argos' 'ctranslate2-opus' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
+for REQUIRED in 'google' 'gemini' 'argos' 'ctranslate2-opus' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
   grep -Fq "$REQUIRED" src/providers.js || {
     echo "Missing provider feature: $REQUIRED" >&2
     exit 1

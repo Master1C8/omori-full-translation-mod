@@ -6,7 +6,6 @@
   "use strict";
 
   const GOOGLE_MAX_CHARS = 3500;
-  const MYMEMORY_MAX_BYTES = 480;
   const RTL_LANGUAGES = new Set([
     "ar", "bal", "bm-Nkoo", "ckb", "dv", "fa", "fa-AF", "iw", "he",
     "ms-Arab", "pa-Arab", "ps", "sd", "ug", "ur", "yi"
@@ -19,10 +18,9 @@
   const CJK_LANGUAGES = new Set(["ja", "ko", "yue", "zh-CN", "zh-TW"]);
   const CONTEXT_MARKER_PREFIX = "VRCTXSEP";
   const CONTEXT_MARKER_SUFFIX = "X";
-  const PROTECTED_MARKUP_VERSION = "omori-markup-v2";
-  const PROTECTED_MARKER_PREFIX = "ZXQOMORI";
+  const PROTECTED_MARKUP_VERSION = "omori-markup-v3";
   const OMORI_BARE_COMMANDS = [
-    "itemget", "leclear", "sxbf", "spxh", "shaw", "oooo",
+    "itemget", "leclear", "sxbf", "spxh", "shaw", "oooo", "art", "ber",
     "red-glasses lady", "old hobo", "kel-mom",
     "omori", "ren", "kel", "aub", "her", "bas", "mar", "smm", "cap", "ms", "plu", "kim", "van", "po"
   ].sort((left, right) => right.length - left.length);
@@ -102,13 +100,7 @@
   }
 
   function providerLanguageCode(provider, language) {
-    const selected = String(provider || "google");
     const code = String(language || "");
-    if (!code) return "";
-    if (selected === "mymemory") {
-      const aliases = { iw: "he", jw: "jv", tl: "fil" };
-      return aliases[code] || code;
-    }
     return code;
   }
 
@@ -117,7 +109,7 @@
     const code = providerLanguageCode(selected, language);
     if (!code) return false;
     if (selected === "argos") return Array.isArray(argosLanguages) && argosLanguages.includes(code);
-    return selected === "google" || selected === "mymemory";
+    return selected === "google";
   }
 
   function normalizeText(value) {
@@ -134,7 +126,7 @@
       .replace(/^\s*(?:<wordwrap(?:\s*:[^>]*)?>\s*)+/i, "")
       .replace(/<br\s*\/?\s*>/gi, "\n"))
       .replace(/^\\n<[^>]+>/i, "")
-      .replace(/^\\(ren|kel|aub|her|bas|mar|omori|smm|cap|ms|plu|kim|van|kel-mom|red-glasses lady|old hobo|po)/i, "")
+      .replace(/^\\(ren|kel|aub|her|bas|mar|omori|smm|cap|ms|plu|kim|van|art|ber|kel-mom|red-glasses lady|old hobo|po)/i, "")
       .trim();
   }
 
@@ -148,6 +140,35 @@
     if (/^[A-Za-z0-9_.-]+\.(png|jpe?g|gif|webp|svg|js|css|json|ogg|m4a|mp3|rpgmvp|rpgmvo)$/i.test(text)) return false;
     if (/^[A-F0-9]{8,}$/i.test(text)) return false;
     return true;
+  }
+
+  function plainProtectedText(value) {
+    return tokenizeProtectedMarkup(value)
+      .filter((segment) => segment.type === "text")
+      .map((segment) => segment.value)
+      .join(" ");
+  }
+
+  function isOpaqueEncodedText(value) {
+    const source = String(value == null ? "" : value);
+    if (!/\\n<ROBOHEART>/i.test(source)) return false;
+    const encoded = source
+      .replace(/<br\s*\/?\s*>/gi, "")
+      .replace(/\\n<ROBOHEART>[\s\S]*$/i, "")
+      .replace(/\s+/g, "");
+    return encoded.length >= 16 && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded);
+  }
+
+  function isFontCoverageText(value) {
+    const text = plainProtectedText(value).replace(/\s+/g, " ");
+    return /ABCDEFGHIJKLMNOPQRSTUVWXYZ/.test(text) && /abcdefghijklmnopqrstuvwxyz/.test(text);
+  }
+
+  function hasTranslatableText(value) {
+    if (isOpaqueEncodedText(value) || isFontCoverageText(value)) return false;
+    return tokenizeProtectedMarkup(value).some((segment) =>
+      segment.type === "text" && (hasEnglishText(segment.value) || /^[AIai]$/.test(segment.value.trim()))
+    );
   }
 
   function protectedTokenAt(text, offset) {
@@ -170,7 +191,10 @@
     match = rest.match(/^<[^<>\r\n]{1,240}>/);
     if (match) return match[0];
     match = rest.match(/^\[[^\]\r\n]{1,240}\]/);
-    return match ? match[0] : "";
+    if (match) return match[0];
+    match = rest.match(/^[☐□■◆◇★☆♥♡♠♣♦]+/u);
+    if (match) return match[0];
+    return "";
   }
 
   function tokenizeProtectedMarkup(value) {
@@ -179,7 +203,12 @@
     let textStart = 0;
     let offset = 0;
     while (offset < text.length) {
-      const token = protectedTokenAt(text, offset);
+      let token = protectedTokenAt(text, offset);
+      const previous = segments.length ? segments[segments.length - 1] : null;
+      if (!token && previous && previous.type === "token" && isWhitespaceRigidToken(previous.value)) {
+        const boundary = text.slice(offset).match(/^[!?…]+(?=\s)/u);
+        if (boundary) token = boundary[0];
+      }
       if (!token) {
         offset += 1;
         continue;
@@ -233,14 +262,6 @@
     return (String(value || "").match(/\s*$/) || [""])[0];
   }
 
-  function replaceLeadingWhitespace(value, whitespace) {
-    return String(value || "").replace(/^\s*/, whitespace);
-  }
-
-  function replaceTrailingWhitespace(value, whitespace) {
-    return String(value || "").replace(/\s*$/, whitespace);
-  }
-
   function protectedMarkupLayoutMatches(source, translation) {
     if (!protectedMarkupMatches(source, translation)) return false;
     const sourceParts = protectedMarkupParts(source);
@@ -263,109 +284,136 @@
     return true;
   }
 
-  function repairProtectedMarkupLayout(source, translation) {
-    if (!protectedMarkupMatches(source, translation)) return null;
-    const sourceParts = protectedMarkupParts(source);
-    const targetParts = protectedMarkupParts(translation);
-    for (let index = 0; index < sourceParts.tokens.length; index += 1) {
-      const token = sourceParts.tokens[index];
-      const sourceHasTextBefore = sourceParts.textParts.slice(0, index + 1).some((part) => part.trim());
-      const targetHasTextBefore = targetParts.textParts.slice(0, index + 1).some((part) => part.trim());
-      const sourceHasTextAfter = sourceParts.textParts.slice(index + 1).some((part) => part.trim());
-      const targetHasTextAfter = targetParts.textParts.slice(index + 1).some((part) => part.trim());
-      if (!sourceHasTextBefore && targetHasTextBefore) return null;
-      if (!sourceHasTextAfter && targetHasTextAfter) return null;
-      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
-        targetParts.textParts[index] = replaceTrailingWhitespace(
-          targetParts.textParts[index], trailingWhitespace(sourceParts.textParts[index])
-        );
-      }
-      if (isWhitespaceRigidToken(token) || !sourceHasTextBefore || !sourceHasTextAfter) {
-        targetParts.textParts[index + 1] = replaceLeadingWhitespace(
-          targetParts.textParts[index + 1], leadingWhitespace(sourceParts.textParts[index + 1])
-        );
-      }
-    }
-    let repaired = targetParts.textParts[0];
-    for (let index = 0; index < targetParts.tokens.length; index += 1) {
-      repaired += targetParts.tokens[index] + targetParts.textParts[index + 1];
-    }
-    return protectedMarkupLayoutMatches(source, repaired) ? repaired : null;
-  }
-
-  function createProtectedTranslationPlan(value, nonce) {
-    const source = String(value == null ? "" : value);
-    const segments = tokenizeProtectedMarkup(source);
-    const tokens = segments.filter((segment) => segment.type === "token").map((segment) => segment.value);
-    let markerNonce = String(nonce || fingerprint(source)).replace(/[^A-Za-z0-9]/g, "").slice(0, 24) || "0";
-    while (source.toUpperCase().includes(`${PROTECTED_MARKER_PREFIX}${markerNonce}`.toUpperCase())) {
-      markerNonce += "X";
-    }
-    const markers = tokens.map((_, index) => `${PROTECTED_MARKER_PREFIX}${markerNonce}T${index}QXZ`);
-    let tokenIndex = 0;
-    const masked = segments.map((segment) => segment.type === "token"
-      ? markers[tokenIndex++]
-      : segment.value).join("");
-
-    function restore(valueToRestore) {
-      let restored = String(valueToRestore == null ? "" : valueToRestore);
-      let searchOffset = 0;
-      for (let index = 0; index < markers.length; index += 1) {
-        const marker = markers[index];
-        const found = restored.indexOf(marker, searchOffset);
-        if (found < 0 || restored.indexOf(marker, found + marker.length) >= 0) return null;
-        searchOffset = found + marker.length;
-      }
-      if ((restored.toUpperCase().match(new RegExp(PROTECTED_MARKER_PREFIX, "g")) || []).length !== markers.length) return null;
-      for (let index = 0; index < markers.length; index += 1) {
-        restored = restored.replace(markers[index], tokens[index]);
-      }
-      return repairProtectedMarkupLayout(source, restored);
-    }
-
-    return { source, segments, tokens, markers, masked, restore };
-  }
-
   function protectedMarkupError() {
     const error = new Error("Translation changed protected OMORI markup");
     error.code = "markup_format_invalid";
     return error;
   }
 
-  async function translateProtectedText(value, translatePlain, nonce) {
+  function translationQualityError() {
+    const error = new Error("Translation lost or duplicated visible source text");
+    error.code = "translation_quality_invalid";
+    return error;
+  }
+
+  function visibleLetterCount(value) {
+    return (plainProtectedText(value).match(/\p{L}/gu) || []).length;
+  }
+
+  function visibleWordCount(value) {
+    return (plainProtectedText(value).match(/\p{L}+(?:['’\-]\p{L}+)*/gu) || []).length;
+  }
+
+  function visibleSentenceCount(value) {
+    const text = plainProtectedText(value).replace(/\.{2,}/g, "…");
+    return (text.match(/[!?！？]+|[.。]+(?=\s|$)/g) || []).length;
+  }
+
+  function translationQualityMatches(source, translation) {
+    if (!protectedMarkupLayoutMatches(source, translation)) return false;
+    const sourceLetters = visibleLetterCount(source);
+    const targetLetters = visibleLetterCount(translation);
+    if (!sourceLetters || !targetLetters) return sourceLetters === targetLetters;
+    const ratio = targetLetters / sourceLetters;
+    const compactTarget = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(plainProtectedText(translation));
+    const sourceNumbers = String(source).match(/\d+/g) || [];
+    const targetNumbers = String(translation).match(/\d+/g) || [];
+    if (sourceNumbers.length !== targetNumbers.length
+      || sourceNumbers.some((number, index) => number !== targetNumbers[index])) return false;
+    const sourceCurrency = String(source).match(/[$€£¥₽]/gu) || [];
+    const targetCurrency = String(translation).match(/[$€£¥₽]/gu) || [];
+    if (sourceCurrency.join("") !== targetCurrency.join("")) return false;
+    const repeatedTarget = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(translation));
+    const repeatedSource = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(source));
+    if (repeatedTarget && !repeatedSource) return false;
+    if (sourceLetters >= 15 && ratio > 2.5) return false;
+    if (visibleWordCount(source) >= 8 && ratio < (compactTarget ? 0.15 : 0.32)) return false;
+    const sourceSentences = visibleSentenceCount(source);
+    const targetSentences = visibleSentenceCount(translation);
+    if (sourceSentences >= 2 && targetSentences < sourceSentences && ratio < (compactTarget ? 0.35 : 0.62)) return false;
+    return true;
+  }
+
+  function prepareProviderText(value) {
+    const source = String(value == null ? "" : value);
+    const letters = source.match(/[A-Za-z]/g) || [];
+    const allCaps = letters.length >= 2 && letters.every((letter) => letter === letter.toUpperCase());
+    const text = source.replace(/[A-Z][A-Z'’-]*/g, (word) => {
+      const wordLetters = word.replace(/[^A-Z]/g, "");
+      if (!allCaps && wordLetters.length < 3) return word;
+      return word.charAt(0) + word.slice(1).toLowerCase();
+    });
+    return {
+      text,
+      restore(translated) {
+        const result = String(translated == null ? "" : translated);
+        return allCaps ? result.toLocaleUpperCase() : result;
+      }
+    };
+  }
+
+  function splitAdjacentLiterals(value, previousToken, nextToken) {
+    let text = String(value == null ? "" : value);
+    let prefix = (text.match(/^\s*/) || [""])[0];
+    let suffix = (text.match(/\s*$/) || [""])[0];
+    text = text.slice(prefix.length, Math.max(prefix.length, text.length - suffix.length));
+    if (previousToken) {
+      const numericPrefix = text.match(/^[.,]\d+\s*/);
+      if (numericPrefix) {
+        prefix += numericPrefix[0];
+        text = text.slice(numericPrefix[0].length);
+      }
+    }
+    if (nextToken) {
+      const currencySuffix = text.match(/\s*[$€£¥₽]$/u);
+      if (currencySuffix) {
+        suffix = currencySuffix[0] + suffix;
+        text = text.slice(0, text.length - currencySuffix[0].length);
+      }
+    }
+    return { prefix, body: text, suffix };
+  }
+
+  async function translateProtectedText(value, translatePlain) {
     if (typeof translatePlain !== "function") throw new TypeError("translatePlain must be a function");
-    const plan = createProtectedTranslationPlan(value, nonce);
-    if (!plan.tokens.length) {
-      const translated = String(await translatePlain(plan.source) || "").trim();
-      if (!translated || !protectedMarkupLayoutMatches(plan.source, translated)) throw protectedMarkupError();
-      return { text: translated, usedFallback: false };
+    const source = String(value == null ? "" : value);
+    if (!hasTranslatableText(source)) return { text: source, segmented: true, skipped: true };
+    const segments = tokenizeProtectedMarkup(source);
+    const hasProtectedTokens = segments.some((segment) => segment.type === "token");
+    if (!hasProtectedTokens) {
+      const prepared = prepareProviderText(source);
+      const translated = prepared.restore(String(await translatePlain(prepared.text) || "").trim());
+      if (!translated || !protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
+      if (!translationQualityMatches(source, translated)) throw translationQualityError();
+      return { text: translated, segmented: false };
     }
 
-    const optimistic = String(await translatePlain(plan.masked) || "").trim();
-    const restored = plan.restore(optimistic);
-    if (restored) return { text: restored, usedFallback: false };
-
     const parts = [];
-    for (const segment of plan.segments) {
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
       if (segment.type === "token") {
         parts.push(segment.value);
         continue;
       }
-      const leading = (segment.value.match(/^\s*/) || [""])[0];
-      const trailing = (segment.value.match(/\s*$/) || [""])[0];
-      const bodyEnd = Math.max(leading.length, segment.value.length - trailing.length);
-      const body = segment.value.slice(leading.length, bodyEnd);
-      if (!hasEnglishText(body)) {
+      const adjacent = splitAdjacentLiterals(
+        segment.value,
+        index > 0 && segments[index - 1].type === "token" ? segments[index - 1].value : "",
+        index + 1 < segments.length && segments[index + 1].type === "token" ? segments[index + 1].value : ""
+      );
+      const body = adjacent.body;
+      if (!hasEnglishText(body) && !/^[AIai]$/.test(body)) {
         parts.push(segment.value);
         continue;
       }
-      const translated = String(await translatePlain(body) || "").trim();
+      const prepared = prepareProviderText(body);
+      const translated = prepared.restore(String(await translatePlain(prepared.text) || "").trim());
       if (!translated) throw protectedMarkupError();
-      parts.push(leading + translated + trailing);
+      parts.push(adjacent.prefix + translated + adjacent.suffix);
     }
-    const fallback = parts.join("");
-    if (!protectedMarkupLayoutMatches(plan.source, fallback)) throw protectedMarkupError();
-    return { text: fallback, usedFallback: true };
+    const translated = parts.join("");
+    if (!protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
+    if (!translationQualityMatches(source, translated)) throw translationQualityError();
+    return { text: translated, segmented: true };
   }
 
   function fingerprint(value) {
@@ -465,28 +513,6 @@
     return unescape(encodeURIComponent(String(value || ""))).length;
   }
 
-  function splitUtf8Text(value, maxBytes) {
-    const text = String(value || "");
-    const limit = Math.max(64, Number(maxBytes) || MYMEMORY_MAX_BYTES);
-    if (utf8Length(text) <= limit) return [text];
-    const chunks = [];
-    let rest = text;
-    while (rest && utf8Length(rest) > limit) {
-      let low = 1;
-      let high = Math.min(rest.length, limit);
-      while (low < high) {
-        const mid = Math.ceil((low + high) / 2);
-        if (utf8Length(rest.slice(0, safeCut(rest, mid))) <= limit) low = mid;
-        else high = mid - 1;
-      }
-      const cut = preferredCut(rest, Math.max(1, low));
-      chunks.push(rest.slice(0, cut).trimEnd());
-      rest = rest.slice(cut).trimStart();
-    }
-    if (rest) chunks.push(rest);
-    return chunks;
-  }
-
   function buildGoogleUrl(text, targetLanguage, sourceLanguage) {
     const params = new URLSearchParams({ client: "gtx", sl: sourceLanguage || "en", tl: targetLanguage, dt: "t", q: text });
     return "https://translate.googleapis.com/translate_a/single?" + params.toString();
@@ -495,18 +521,6 @@
   function parseGoogleResponse(payload) {
     if (!Array.isArray(payload) || !Array.isArray(payload[0])) throw new Error("Unexpected Google response");
     return payload[0].map((part) => Array.isArray(part) ? String(part[0] || "") : "").join("");
-  }
-
-  function buildMyMemoryUrl(text, targetLanguage, sourceLanguage) {
-    const params = new URLSearchParams({ q: text, langpair: (sourceLanguage || "en") + "|" + targetLanguage, mt: "1" });
-    return "https://api.mymemory.translated.net/get?" + params.toString();
-  }
-
-  function parseMyMemoryResponse(payload) {
-    const translated = payload && payload.responseData && payload.responseData.translatedText;
-    if (typeof translated !== "string" || !translated.trim()) throw new Error("Unexpected MyMemory response");
-    if (Number(payload.responseStatus || 200) >= 400) throw new Error(String(payload.responseDetails || "MyMemory error"));
-    return translated;
   }
 
   function normalizeRateLimitDelay(value, initialDelay, maximumDelay) {
@@ -627,7 +641,6 @@
 
   return {
     GOOGLE_MAX_CHARS,
-    MYMEMORY_MAX_BYTES,
     isRtlLanguage,
     isTallScriptLanguage,
     isCjkLanguage,
@@ -638,22 +651,22 @@
     PROTECTED_MARKUP_VERSION,
     normalizeText,
     hasEnglishText,
+    hasTranslatableText,
+    isOpaqueEncodedText,
+    isFontCoverageText,
     tokenizeProtectedMarkup,
     protectedMarkupTokens,
     protectedMarkupMatches,
     protectedMarkupLayoutMatches,
-    repairProtectedMarkupLayout,
-    createProtectedTranslationPlan,
+    translationQualityMatches,
+    prepareProviderText,
     translateProtectedText,
     fingerprint,
     splitGraphemes,
     splitLongText,
     utf8Length,
-    splitUtf8Text,
     buildGoogleUrl,
     parseGoogleResponse,
-    buildMyMemoryUrl,
-    parseMyMemoryResponse,
     parseRateLimitState,
     createRateLimitState,
     buildContextSource,

@@ -37,14 +37,14 @@
       const cache = new Map();
       cache.set("v1\nar\n811c9dc5\nLegacy line", "سطر قديم");
       cache.set(
-        "v4\nomori\ngoogle\nar\n5d464bcd\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
+        "v4\nomori\ngoogle\nar\n5c464a3a\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
         "ترى VRCTXSEP1X امرأة جميلة VRCTXSEP2X بالقرب من الباب."
       );
-      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nYou see", "ترى");
-      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\na beautiful woman", "امرأة جميلة");
-      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nnear the door.", "بالقرب من الباب.");
-      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
-      cache.set("v4\nomori\ngoogle\nar\n5d464bcd\nA later paragraph appears after scrolling.", "ترجمة");
+      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nYou see", "ترى");
+      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\na beautiful woman", "امرأة جميلة");
+      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nnear the door.", "بالقرب من الباب.");
+      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
+      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nA later paragraph appears after scrolling.", "ترجمة");
       window.smokeCache = cache;
       const packCache = new Map();
       window.smokePackCache = packCache;
@@ -175,7 +175,9 @@
         }
         if (url.pathname === "/v1/game/strings") {
           await new Promise((resolve) => setTimeout(resolve, 120));
-          return { ok: true, json: async () => ({ ok: true, strings: ["A smoke-test translation phrase."] }) };
+          return { ok: true, json: async () => ({
+            ok: true, strings: window.smokeBulkStrings || ["A smoke-test translation phrase."]
+          }) };
         }
         return { ok: true, json: async () => ({ ok: true, reselectOnNextLaunch: true }) };
       }
@@ -269,22 +271,77 @@
         && shadow.querySelector(".translationLogEntries")?.getAttribute("aria-live") === "polite";
       const translationLogEntries = shadow.querySelector(".translationLogEntries");
       const translationLogEmpty = shadow.querySelector(".translationLogEmpty");
+      window.smokeBulkStrings = Array.from({ length: 180 }, (_, index) =>
+        `Smoke bulk line ${String(index).padStart(3, "0")}.`
+      );
+      for (const [index, source] of window.smokeBulkStrings.entries()) {
+        const key = window.VNRevivalTranslationCore.makeCacheKey(
+          source, "ar", "google", "omori", window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION
+        );
+        window.smokeCache.set(key, `ترجمة ${index}`);
+      }
       const staleLogEntry = document.createElement("div");
       staleLogEntry.textContent = "Stale result from a previous language";
       translationLogEntries.append(staleLogEntry);
       translationLogEmpty.hidden = true;
       const bulkButton = shadow.querySelector(".bulkTranslate");
       const bulkCancelButton = shadow.querySelector(".bulkCancel");
+      const translationLogHoldButton = shadow.querySelector(".translationLogHold");
+      const waitForNewestBulkLine = async (minimum) => {
+        for (let attempt = 0; attempt < 600; attempt += 1) {
+          const text = translationLogEntries.firstElementChild?.textContent || "";
+          const match = text.match(/Smoke bulk line (\d+)/);
+          if (match && Number(match[1]) >= minimum) return true;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        return false;
+      };
+      const firstVisibleLogEntry = () => {
+        const viewportTop = translationLogEntries.getBoundingClientRect().top;
+        return Array.from(translationLogEntries.children).find((child) =>
+          child.getBoundingClientRect().bottom > viewportTop
+        ) || null;
+      };
+      const logEntryViewportOffset = (entry) => entry
+        ? entry.getBoundingClientRect().top - translationLogEntries.getBoundingClientRect().top : null;
       bulkButton.click();
       await new Promise((resolve) => setTimeout(resolve, 35));
+      const previousRunLogClearedBeforeEntries = translationLogEntries.children.length === 0
+        && !translationLogEmpty.hidden
+        && translationLogEmpty.textContent.includes("Saved history remains on disk");
+      const firstPauseReady = await waitForNewestBulkLine(8);
+      translationLogHoldButton.click();
+      const translationLogPaused = translationLogHoldButton.getAttribute("aria-pressed") === "true"
+        && translationLogHoldButton.textContent === "Resume scroll";
+      const firstPauseAnchor = firstVisibleLogEntry();
+      const firstPauseOffset = logEntryViewportOffset(firstPauseAnchor);
+      const firstPauseFilled = await waitForNewestBulkLine(65);
+      const firstPauseFinalOffset = logEntryViewportOffset(firstPauseAnchor);
+      const firstPauseStable = firstPauseAnchor?.isConnected
+        && Math.abs(firstPauseFinalOffset - firstPauseOffset) <= 1;
+      translationLogHoldButton.click();
+      const firstResumeWorked = translationLogHoldButton.getAttribute("aria-pressed") === "false"
+        && translationLogHoldButton.textContent === "Stop scroll";
+      const secondPauseReady = await waitForNewestBulkLine(75);
+      translationLogHoldButton.click();
+      const secondPauseAnchor = firstVisibleLogEntry();
+      const secondPauseOffset = logEntryViewportOffset(secondPauseAnchor);
+      const secondPauseFilled = await waitForNewestBulkLine(135);
+      const secondPauseFinalOffset = logEntryViewportOffset(secondPauseAnchor);
+      const secondPauseStable = translationLogHoldButton.getAttribute("aria-pressed") === "true"
+        && secondPauseAnchor?.isConnected
+        && Math.abs(secondPauseFinalOffset - secondPauseOffset) <= 1;
+      translationLogHoldButton.click();
+      const translationLogResumed = translationLogHoldButton.getAttribute("aria-pressed") === "false"
+        && translationLogHoldButton.textContent === "Stop scroll";
+      const translationLogViewportStableTwice = firstPauseReady && firstPauseFilled && firstPauseStable
+        && firstResumeWorked && secondPauseReady && secondPauseFilled && secondPauseStable;
       const bulkCancelRect = bulkCancelButton.getBoundingClientRect();
       const activeTranslationWorkspaceState = {
         hostBusy: host.classList.contains("bulkBusyHost"),
         panelBusy: shadow.querySelector(".panel").classList.contains("bulkBusy"),
         logOpen: shadow.querySelector(".translationLogBox").open,
-        previousRunLogCleared: translationLogEntries.children.length === 0
-          && !translationLogEmpty.hidden
-          && translationLogEmpty.textContent.includes("Saved history remains on disk"),
+        previousRunLogCleared: previousRunLogClearedBeforeEntries,
         interruptLabel: bulkButton.textContent === "Interrupt translation (progress will be saved)"
           && bulkCancelButton.textContent === "Interrupt translation (progress will be saved)",
         interruptColorMatches: getComputedStyle(bulkCancelButton).backgroundColor
@@ -296,11 +353,17 @@
           && bulkCancelRect.bottom <= innerHeight,
         wordStatus: shadow.querySelector(".status").textContent.includes("Words:"),
         logFillsSpace: getComputedStyle(shadow.querySelector(".translationLogBox")).display === "flex",
+        logScrollControlVisible: getComputedStyle(translationLogHoldButton).display !== "none"
+          && !translationLogHoldButton.disabled,
+        logScrollCanPauseAndResume: translationLogPaused && translationLogResumed
+          && translationLogViewportStableTwice,
         collapseHidden: getComputedStyle(shadow.querySelector(".bar")).display === "none"
       };
       const activeTranslationWorkspace = Object.values(activeTranslationWorkspaceState).every(Boolean);
       bulkCancelButton.click();
-      await new Promise((resolve) => setTimeout(resolve, 160));
+      for (let attempt = 0; attempt < 200 && host.classList.contains("bulkBusyHost"); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       const translationWorkspaceRestored = !host.classList.contains("bulkBusyHost")
         && !shadow.querySelector(".panel").classList.contains("bulkBusy")
         && getComputedStyle(shadow.querySelector(".bulkCancelBar")).display === "none"
@@ -407,13 +470,20 @@
         && window.smokePackCache.size === 0;
       await selectSharedFile();
       shadow.querySelector(".packConfirm").click();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      for (let attempt = 0; attempt < 400 && shadow.querySelector(".removeTranslationPack").hidden; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       const importedPackTakesPriority = window.__vnRevivalTranslator.getLanguage() === "ru"
         && window.__vnRevivalTranslator.queryMemoryCache(sharedSource) === importedTranslation
         && !shadow.querySelector(".removeTranslationPack").hidden
         && shadow.querySelector(".translationPackStatus").textContent.includes("friend-russian-cache.jsonl");
       shadow.querySelector(".removeTranslationPack").click();
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        if (!window.smokePackCache.size
+          && shadow.querySelector(".removeTranslationPack").hidden
+          && window.__vnRevivalTranslator.queryMemoryCache(sharedSource) !== importedTranslation) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       const removingPackRestoresOwnCache = window.__vnRevivalTranslator.queryMemoryCache(sharedSource) === ownTranslation
         && shadow.querySelector(".removeTranslationPack").hidden
         && window.smokePackCache.size === 0;
@@ -498,6 +568,18 @@
         liveTranslationLogPresent,
         activeTranslationWorkspace,
         activeTranslationWorkspaceState,
+        translationLogViewportStableTwice,
+        firstPauseReady,
+        firstPauseFilled,
+        firstPauseStable,
+        firstPauseOffset,
+        firstPauseFinalOffset,
+        firstResumeWorked,
+        secondPauseReady,
+        secondPauseFilled,
+        secondPauseStable,
+        secondPauseOffset,
+        secondPauseFinalOffset,
         translationWorkspaceRestored,
         projectSiteOpenedExternally,
         autosavedSettings,

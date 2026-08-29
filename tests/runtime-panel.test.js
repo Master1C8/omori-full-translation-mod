@@ -23,5 +23,6 @@ test("runtime panel renders product-owned labels and links", () => {
   assert.match(html, /href="https:\/\/example\.test\/"/);
   assert.match(html, />VN Revival<\/a>/);
   assert.match(html, /class="panel"/);
+  assert.match(html, /class="secondary translationLogHold"[^>]+aria-pressed="false"[^>]*>Stop scroll<\/button>/);
   assert.match(html, /class="packModal" role="dialog"/);
 });

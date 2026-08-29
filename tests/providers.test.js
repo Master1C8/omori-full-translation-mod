@@ -9,7 +9,7 @@ const registry = globalThis.VNRevivalTranslationProviders;
 test("provider registry exposes a stable extension contract", () => {
   assert.equal(registry.contractVersion, 1);
   assert.deepEqual(registry.list.map(({ id }) => id), [
-    "google", "gemini", "mymemory", "argos", "ctranslate2-opus", "lmstudio", "openai-compatible"
+    "google", "gemini", "argos", "ctranslate2-opus", "lmstudio", "openai-compatible"
   ]);
   for (const provider of registry.list) {
     assert.equal(typeof provider.supportsLanguage, "function");
@@ -37,6 +37,10 @@ test("CTranslate2 OPUS provider stays behind its local engine contract", async (
 
 test("removed Bergamot provider is absent", () => {
   assert.equal(registry.byId.bergamot, undefined);
+});
+
+test("removed MyMemory provider is absent", () => {
+  assert.equal(registry.byId.mymemory, undefined);
 });
 
 test("online providers own URL construction and response parsing", async () => {

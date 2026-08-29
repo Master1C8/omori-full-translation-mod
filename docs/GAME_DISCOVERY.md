@@ -35,7 +35,7 @@ OMORI использует RPG Maker и отрисовывает диалоги 
 - кэш переводов: IndexedDB origin игры;
 - Argos: Application Support на macOS или LocalAppData на Windows;
 - Gemini API key: Keychain или Credential Manager, отдельно для `omori`;
-- Google, Gemini, MyMemory и удалённые OpenAI-compatible профили получают извлечённые строки `.HERO` только во время подтверждённого массового перевода;
+- Google, Gemini и удалённые OpenAI-compatible профили получают извлечённые строки `.HERO` только во время подтверждённого массового перевода;
 - Argos, CTranslate2, LM Studio и OpenAI-compatible endpoint на loopback-адресе выполняют перевод локально после подготовки нужного runtime/модели.
 
 ## Непроверенные сценарии

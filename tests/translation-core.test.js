@@ -23,12 +23,10 @@ test("recognizes right-to-left target languages and normalizes Hebrew for HTML",
 
 test("maps provider language codes and filters Argos to its model catalog", () => {
   assert.equal(core.providerLanguageCode("google", "iw"), "iw");
-  assert.equal(core.providerLanguageCode("mymemory", "iw"), "he");
-  assert.equal(core.providerLanguageCode("mymemory", "tl"), "fil");
   assert.equal(core.providerSupportsLanguage("google", "ab"), true);
-  assert.equal(core.providerSupportsLanguage("mymemory", "zh-TW"), true);
   assert.equal(core.providerSupportsLanguage("argos", "ru", ["de", "ru"]), true);
   assert.equal(core.providerSupportsLanguage("argos", "ab", ["de", "ru"]), false);
+  assert.equal(core.providerSupportsLanguage("mymemory", "zh-TW"), false);
 });
 
 test("selects script-aware font fallbacks without dropping universal fonts", () => {
@@ -73,6 +71,14 @@ test("detects natural English and rejects paths, assets, hashes, and numbers", (
   assert.equal(core.hasEnglishText("A04F99BB11"), false);
 });
 
+test("filters markup-only, font coverage, and encoded ROBOHEART assets before providers", () => {
+  assert.equal(core.hasTranslatableText("\\aub"), false);
+  assert.equal(core.hasTranslatableText("\\bas...\\| ..."), false);
+  assert.equal(core.hasTranslatableText("\\\\fs[30]ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789\\n"), false);
+  assert.equal(core.hasTranslatableText("V2lsbCB5b3UgbG92ZSBtZT8=\\n<ROBOHEART>"), false);
+  assert.equal(core.hasTranslatableText("\\artThe piece is finally done!"), true);
+});
+
 test("normalizes OMORI HTML and runtime line breaks to the same fuzzy source", () => {
   const asset = 'What\'s the rush, OMORI?\\!<br>We should say "hello" first!\\aub';
   const runtime = '<WordWrap>What\'s the rush, OMORI?\\!\nWe should say "hello" first!\\aub';
@@ -91,71 +97,175 @@ test("lexes OMORI controls and metadata without consuming dialogue text", () => 
     core.protectedMarkupTokens('A \\"FOR SALE\\" sign.\\sxbf\\spxh\\shaw\\itemget\\LECLEAR\\OOOO'),
     ['\\"', '\\"', "\\sxbf", "\\spxh", "\\shaw", "\\itemget", "\\LECLEAR", "\\OOOO"]
   );
+  assert.deepEqual(core.protectedMarkupTokens("\\artThe piece is done.\\ber"), ["\\art", "\\ber"]);
+  assert.equal(core.stripOmoriPrefixes("\\artThe piece is done."), "The piece is done.");
+  assert.equal(core.stripOmoriPrefixes("\\berAUBREY!"), "AUBREY!");
 });
 
-test("masks and restores protected OMORI markup exactly", () => {
+test("keeps ARTIST and BERLY speaker controls outside every provider request", async () => {
+  const calls = [];
+  const source = "\\artThe piece is finally done!\\!<br>About time!\\ber";
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    assert.equal(/\\(?:art|ber)/i.test(text), false);
+    if (text === "The piece is finally done!") return "Картина наконец-то закончена!";
+    if (text === "About time!") return "Давно пора!";
+    return text;
+  });
+  assert.deepEqual(calls, ["The piece is finally done!", "About time!"]);
+  assert.equal(result.text, "\\artКартина наконец-то закончена!\\!<br>Давно пора!\\ber");
+  assert.equal(core.protectedMarkupLayoutMatches(source, result.text), true);
+});
+
+test("translates only text segments and never exposes protected OMORI markup", async () => {
   const source = "Hmph...\\! You kids are pretty strong.\\!<br>Now.\\jaw [TRASH]";
-  const plan = core.createProtectedTranslationPlan(source, "TEST");
-  assert.equal(plan.tokens.length, 5);
-  const translated = plan.masked
-    .replace("Hmph...", "Хмм...")
-    .replace("You kids are pretty strong.", "Вы, дети, очень сильны.")
-    .replace("Now.", "Сейчас.");
-  assert.equal(plan.restore(translated), "Хмм...\\! Вы, дети, очень сильны.\\!<br>Сейчас.\\jaw [TRASH]");
-  assert.equal(plan.restore(translated.replace(plan.markers[1], "")), null);
+  const calls = [];
+  const translations = new Map([
+    ["Hmph...", "Хмм..."],
+    ["You kids are pretty strong.", "Вы, дети, очень сильны."],
+    ["Now.", "Сейчас."]
+  ]);
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    assert.deepEqual(core.protectedMarkupTokens(text), []);
+    return translations.get(text) || text;
+  });
+  assert.equal(result.segmented, true);
+  assert.equal(result.text, "Хмм...\\! Вы, дети, очень сильны.\\!<br>Сейчас.\\jaw [TRASH]");
+  assert.deepEqual(calls, ["Hmph...", "You kids are pretty strong.", "Now."]);
   assert.equal(core.protectedMarkupMatches(source, "Хмм...\\! Дети.\\!<br>Сейчас.\\jaw [TRASH]"), true);
   assert.equal(core.protectedMarkupMatches(source, "Хмм...\\！ Дети.<br>Сейчас. [мусор]"), false);
 });
 
-test("falls back to translating text segments when a model damages mask markers", async () => {
+test("uses the same protected segment pipeline for weak models", async () => {
   const source = "Hmph!\\! Took you long enough!\\aub";
   const calls = [];
   const result = await core.translateProtectedText(source, async (text) => {
     calls.push(text);
-    if (text.includes("ZXQOMORI")) return text.replace(/ZXQOMORI\w+/g, "");
     if (text === "Hmph!") return "Хмм!";
     if (text === "Took you long enough!") return "Долго же вы!";
     return text;
-  }, "FALLBACK");
-  assert.equal(result.usedFallback, true);
+  });
+  assert.equal(result.segmented, true);
   assert.equal(result.text, "Хмм!\\! Долго же вы!\\aub");
   assert.deepEqual(core.protectedMarkupTokens(result.text), ["\\!", "\\aub"]);
-  assert.equal(calls.length, 3);
+  assert.deepEqual(calls, ["Hmph!", "Took you long enough!"]);
 });
 
-test("repairs provider whitespace around rigid controls without moving formatting codes", () => {
+test("preserves the original skeleton whitespace around rigid controls", async () => {
   const source = "Fine...\\! Next<br>Line\\her";
-  const plan = core.createProtectedTranslationPlan(source, "LAYOUT");
-  const providerText = `Ладно... ${plan.markers[0]} Дальше${plan.markers[1]} Строка ${plan.markers[2]}`;
-  assert.equal(plan.restore(providerText), "Ладно...\\! Дальше<br>Строка\\her");
+  const translations = new Map([["Fine...", "Ладно..."], ["Next", "Дальше"], ["Line", "Строка"]]);
+  const result = await core.translateProtectedText(source, async (text) => translations.get(text));
+  assert.equal(result.text, "Ладно...\\! Дальше<br>Строка\\her");
   assert.equal(core.protectedMarkupLayoutMatches(source, "Ладно... \\! Дальше<br> Строка \\her"), false);
-
-  const colored = "BASIL's \\c[4]PHOTO ALBUM\\c[0].";
-  const colorPlan = core.createProtectedTranslationPlan(colored, "COLOR");
-  assert.equal(
-    colorPlan.restore(`${colorPlan.markers[0]}ФОТОАЛЬБОМ БЭЗИЛА${colorPlan.markers[1]}.`),
-    "\\c[4]ФОТОАЛЬБОМ БЭЗИЛА\\c[0]."
-  );
 });
 
-test("uses segment fallback when punctuation moves past a terminal command", async () => {
+test("keeps terminal commands outside the provider request", async () => {
   const source = "All done.\\her";
+  const calls = [];
   const result = await core.translateProtectedText(source, async (text) => {
-    if (text.includes("ZXQOMORI")) return text.replace(/(ZXQOMORI\w+)/, "$1.").replace("All done.", "Готово");
+    calls.push(text);
     if (text === "All done.") return "Всё готово.";
     return text;
-  }, "TERMINAL");
-  assert.equal(result.usedFallback, true);
+  });
+  assert.equal(result.segmented, true);
   assert.equal(result.text, "Всё готово.\\her");
+  assert.deepEqual(calls, ["All done."]);
 });
 
-test("preserves escaped quotes as markup instead of letting providers rewrite them", () => {
+test("preserves escaped quotes without sending them to providers", async () => {
   const source = 'A \\"FOR SALE\\" sign.';
-  const plan = core.createProtectedTranslationPlan(source, "QUOTES");
-  assert.equal(
-    plan.restore(`Табличка ${plan.markers[0]}ПРОДАЕТСЯ${plan.markers[1]}.`),
-    'Табличка \\"ПРОДАЕТСЯ\\".'
+  const translations = new Map([["A", "Табличка"], ["For Sale", "Продается"], ["sign.", "."]]);
+  const result = await core.translateProtectedText(source, async (text) => {
+    assert.equal(text.includes('\\"'), false);
+    return translations.get(text);
+  });
+  assert.equal(result.text, 'Табличка \\"ПРОДАЕТСЯ\\" .');
+});
+
+test("normalizes all-caps source terms locally and restores their display case", async () => {
+  const calls = [];
+  const source = "You got a \\c[4]COOL KEY CARD\\c[0]!";
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    if (text === "You got a") return "Ты получил";
+    if (text === "Cool Key Card") return "крутая ключ-карта";
+    return text;
+  });
+  assert.deepEqual(calls, ["You got a", "Cool Key Card"]);
+  assert.equal(result.text, "Ты получил \\c[4]КРУТАЯ КЛЮЧ-КАРТА\\c[0]!");
+});
+
+test("protects placeholders, currency, numbers, and punctuation beside flow controls", async () => {
+  const source = "\\kelOh, whoa\\!! I found $\\v[604].00.\\!<br>The password is ☐☐☐☐☐☐☐.";
+  const calls = [];
+  const translations = new Map([
+    ["Oh, whoa", "Ого"],
+    ["I found", "Я нашёл"],
+    ["The password is", "Пароль"]
+  ]);
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    return translations.get(text) || text;
+  });
+  assert.deepEqual(calls, ["Oh, whoa", "I found", "The password is"]);
+  assert.equal(result.text, "\\kelОго\\!! Я нашёл $\\v[604].00.\\!<br>Пароль ☐☐☐☐☐☐☐.");
+  assert.equal(core.protectedMarkupLayoutMatches(source, result.text), true);
+});
+
+test("rejects obvious truncation and runaway expansion before caching", async () => {
+  const source = "Come on, let's go! Everyone's waiting for us!";
+  assert.equal(core.translationQualityMatches(source, "Пошли! Все нас ждут!"), true);
+  assert.equal(core.translationQualityMatches(source, "行こう！みんなが待っている！"), true);
+  assert.equal(core.translationQualityMatches(source, "Все нас ждут!"), false);
+  assert.equal(core.translationQualityMatches("Uh-oh... It's SWEETHEART!", "О-о-о-о-о-о-о-о-о-о-о-о-о-о-о!"), false);
+  await assert.rejects(
+    core.translateProtectedText(source, async () => "Все нас ждут!"),
+    (error) => error && error.code === "translation_quality_invalid"
   );
+});
+
+test("validates numbers and currency without fixing their word position", () => {
+  assert.equal(
+    core.translationQualityMatches("There are 10 KEYS left.", "Осталось 10 ключей."),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches("It costs $10.00.", "Это стоит $10.00."),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches("It costs $10.00.", "Это стоит 10 долларов."),
+    false
+  );
+});
+
+test("returns opaque technical text unchanged without making a provider request", async () => {
+  let calls = 0;
+  const source = "V2lsbCB5b3UgbG92ZSBtZT8=\\n<ROBOHEART>";
+  const result = await core.translateProtectedText(source, async () => { calls += 1; return "broken"; });
+  assert.equal(calls, 0);
+  assert.equal(result.text, source);
+  assert.equal(result.skipped, true);
+});
+
+test("keeps contextual separators local while translating every part", async () => {
+  const source = core.buildContextSource(["You see", "a beautiful woman", "near the door."]);
+  const translations = new Map([
+    ["You see", "Вы видите"],
+    ["a beautiful woman", "красивую женщину"],
+    ["near the door.", "возле двери."]
+  ]);
+  const calls = [];
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    assert.equal(text.includes("VRCTXSEP"), false);
+    return translations.get(text);
+  });
+  assert.deepEqual(calls, ["You see", "a beautiful woman", "near the door."]);
+  assert.deepEqual(core.parseContextTranslation(result.text, 3), [
+    "Вы видите", "красивую женщину", "возле двери."
+  ]);
 });
 
 test("rejects markup invented by a provider even when the source has no controls", async () => {
@@ -173,14 +283,6 @@ test("splits long Google text on Unicode-safe boundaries", () => {
   assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk)));
 });
 
-test("splits MyMemory text by UTF-8 byte count", () => {
-  const text = "English 😀 Кириллица. ".repeat(80);
-  const chunks = core.splitUtf8Text(text, 480);
-  assert.ok(chunks.length > 1);
-  assert.ok(chunks.every((chunk) => core.utf8Length(chunk) <= 480));
-  assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk)));
-});
-
 test("builds and parses Google requests", () => {
   const url = new URL(core.buildGoogleUrl("Hello & goodbye", "ru"));
   assert.equal(url.hostname, "translate.googleapis.com");
@@ -190,16 +292,6 @@ test("builds and parses Google requests", () => {
   assert.equal(new URL(core.buildGoogleUrl("Bonjour", "de", "fr")).searchParams.get("sl"), "fr");
   assert.equal(core.parseGoogleResponse([[['Привет ', 'Hello '], ['мир', 'world']]]), "Привет мир");
   assert.throws(() => core.parseGoogleResponse({ nope: true }));
-});
-
-test("builds and parses MyMemory requests", () => {
-  const url = new URL(core.buildMyMemoryUrl("Hello world", "de"));
-  assert.equal(url.hostname, "api.mymemory.translated.net");
-  assert.equal(url.searchParams.get("langpair"), "en|de");
-  assert.equal(url.searchParams.get("q"), "Hello world");
-  assert.equal(new URL(core.buildMyMemoryUrl("Bonjour", "de", "fr")).searchParams.get("langpair"), "fr|de");
-  assert.equal(core.parseMyMemoryResponse({ responseStatus: 200, responseData: { translatedText: "Hallo Welt" } }), "Hallo Welt");
-  assert.throws(() => core.parseMyMemoryResponse({ responseStatus: 403, responseDetails: "limit" }));
 });
 
 test("persists bounded rate-limit backoff state across restarts", () => {
@@ -229,13 +321,13 @@ test("persists bounded rate-limit backoff state across restarts", () => {
 test("cache separates providers and languages while retaining legacy Google keys", () => {
   const googleRu = core.makeCacheKey("Hello", "ru", "google");
   const googleDe = core.makeCacheKey("Hello", "de", "google");
-  const memoryRu = core.makeCacheKey("Hello", "ru", "mymemory");
+  const argosRu = core.makeCacheKey("Hello", "ru", "argos");
   assert.notEqual(googleRu, googleDe);
-  assert.notEqual(googleRu, memoryRu);
+  assert.notEqual(googleRu, argosRu);
   assert.equal(core.cacheKeyLanguage(googleRu), "ru");
   assert.equal(core.cacheKeyProvider(googleRu), "google");
-  assert.equal(core.cacheKeyLanguage(memoryRu), "ru");
-  assert.equal(core.cacheKeyProvider(memoryRu), "mymemory");
+  assert.equal(core.cacheKeyLanguage(argosRu), "ru");
+  assert.equal(core.cacheKeyProvider(argosRu), "argos");
   assert.equal(googleRu.split("\n")[0], "v1");
 });
 

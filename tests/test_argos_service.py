@@ -431,6 +431,9 @@ class ArgosServiceTests(unittest.TestCase):
             self.assertEqual(result["model"], argos_service.GEMINI_MODEL)
             request_body = json.loads(captured["request"].data.decode("utf-8"))
             self.assertEqual(request_body["generationConfig"]["responseMimeType"], "application/json")
+            instruction = request_body["systemInstruction"]["parts"][0]["text"]
+            self.assertNotIn("RPG Maker", instruction)
+            self.assertNotIn("VRCTXSEP", instruction)
             self.assertTrue(all(setting["threshold"] == "OFF" for setting in request_body["safetySettings"]))
             self.assertEqual(captured["request"].get_header("X-goog-api-key"), store.value)
             self.assertNotIn(store.value, captured["request"].full_url)
@@ -515,6 +518,8 @@ class ArgosServiceTests(unittest.TestCase):
             self.assertFalse(request_body["stream"])
             self.assertEqual(request_body["response_format"]["type"], "json_schema")
             self.assertEqual(request_body["messages"][1]["content"], source)
+            self.assertNotIn("RPG Maker", request_body["messages"][0]["content"])
+            self.assertNotIn("VRCTXSEP", request_body["messages"][0]["content"])
             self.assertEqual(captured["timeout"], 300)
 
     def test_lmstudio_rejects_changed_game_control_codes(self):
@@ -601,6 +606,8 @@ class ArgosServiceTests(unittest.TestCase):
             request_body = json.loads(captured["request"].data.decode("utf-8"))
             self.assertEqual(request_body["model"], "kimi-k3")
             self.assertEqual(request_body["response_format"]["type"], "json_schema")
+            self.assertNotIn("RPG Maker", request_body["messages"][0]["content"])
+            self.assertNotIn("VRCTXSEP", request_body["messages"][0]["content"])
             self.assertEqual(captured["request"].get_header("Authorization"), "Bearer secret-key-123456")
 
     def test_openai_compatible_remote_provider_requires_saved_key(self):

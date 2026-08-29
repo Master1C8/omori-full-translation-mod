@@ -395,11 +395,11 @@
   function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 4);
+      const request = indexedDB.open(DB_NAME, 5);
       request.onupgradeneeded = (event) => {
         if (!request.result.objectStoreNames.contains(STORE_NAME)) {
           request.result.createObjectStore(STORE_NAME);
-        } else if (event.oldVersion < 3) {
+        } else if (event.oldVersion < 5) {
           request.transaction.objectStore(STORE_NAME).clear();
         }
         if (!request.result.objectStoreNames.contains(TRANSLATION_PACK_STORE_NAME)) {
@@ -850,6 +850,7 @@
     if (code === "openai_model_missing" || code === "openai_model_unavailable") return "Select an available OpenAI-compatible model";
     if (code === "openai_format_invalid") return "The provider changed a protected game control code";
     if (code === "markup_format_invalid") return "The provider changed protected OMORI markup";
+    if (code === "translation_quality_invalid") return "The provider lost or duplicated visible source text";
     if (code === "openai_rate_limited") return "The provider rate limit was reached";
     if (code === "openai_unavailable") return "The OpenAI-compatible provider is unavailable";
     const message = String(error && error.message || "").trim();
@@ -966,11 +967,9 @@
   }
 
   async function translateWithProtectedMarkup(source, language, provider, signal, request) {
-    const markerNonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     return core.translateProtectedText(
       source,
-      (text) => translateProviderText(provider, text, language, signal, (chunk) => request(chunk)),
-      markerNonce
+      (text) => translateProviderText(provider, text, language, signal, (chunk) => request(chunk))
     );
   }
 
@@ -979,7 +978,7 @@
 
     // Source assets are English. Avoid re-translating an already translated value,
     // while leaving path and identifier detection to the shared source-text filter.
-    if (/[\u0410-\u044F\u0401\u0451]/.test(source) || !core.hasEnglishText(source)) {
+    if (/[\u0410-\u044F\u0401\u0451]/.test(source) || !core.hasTranslatableText(source)) {
       return { text: source, cached: true };
     }
 
@@ -2074,7 +2073,7 @@
       const payload = await requestLocalHelper(`/v1/game/strings?gameId=${game.id}`, { signal: abortController.signal });
       if (!payload || !Array.isArray(payload.strings)) throw new Error("Could not extract strings");
 
-      const strings = payload.strings;
+      const strings = payload.strings.filter((source) => core.hasTranslatableText(source));
       if (!strings.length) {
         setStatus("No strings found in game assets");
         return;
@@ -2413,6 +2412,7 @@
   const translationLogEntries = shadow.querySelector(".translationLogEntries");
   const translationLogEmpty = shadow.querySelector(".translationLogEmpty");
   const translationLogNote = shadow.querySelector(".translationLogNote");
+  const translationLogHoldButton = shadow.querySelector(".translationLogHold");
   const translationLogViewButton = shadow.querySelector(".translationLogView");
   const translationLogSaveButton = shadow.querySelector(".translationLogSave");
   const translationLogClearButton = shadow.querySelector(".translationLogClear");
@@ -2432,6 +2432,8 @@
   const bulkControlState = new Map();
   let pendingPackInspection = null;
   let pendingPackDialogResolve = null;
+  let translationLogScrollPaused = false;
+  let translationLogPausedViewport = null;
 
   function setBulkButtonWorking(label) {
     runtimeUI.setButtonState(bulkButton, { working: true, label, disabled: false });
@@ -2596,7 +2598,7 @@
     }
     if (busy) translationLogBox.open = true;
     for (const control of shadow.querySelectorAll("button, select, input")) {
-      if (busy && (control === cancelButton || control === bulkCancelButton)) continue;
+      if (busy && (control === cancelButton || control === bulkCancelButton || control === translationLogHoldButton)) continue;
       if (busy) {
         if (!bulkControlState.has(control)) bulkControlState.set(control, control.disabled);
         control.disabled = true;
@@ -2607,6 +2609,7 @@
     }
     if (busy) {
       cancelButton.disabled = false;
+      translationLogHoldButton.disabled = false;
       bulkCancelButton.textContent = INTERRUPT_TRANSLATION_LABEL;
       bulkCancelButton.style.background = cancelButton.style.background;
       bulkCancelButton.classList.add("working");
@@ -2723,18 +2726,73 @@
     entry.append(meta, sourceLine, arrow, targetLine);
     return entry;
   }
+  function setTranslationLogScrollPaused(paused) {
+    translationLogScrollPaused = paused === true;
+    translationLogPausedViewport = translationLogScrollPaused ? captureTranslationLogViewport() : null;
+    translationLogHoldButton.setAttribute("aria-pressed", translationLogScrollPaused ? "true" : "false");
+    translationLogHoldButton.textContent = translationLogScrollPaused ? "Resume scroll" : "Stop scroll";
+    if (!translationLogScrollPaused) {
+      pruneTranslationLogEntries(null);
+      translationLogEntries.scrollTop = 0;
+    }
+  }
+  function captureTranslationLogViewport() {
+    const viewportRect = translationLogEntries.getBoundingClientRect();
+    const anchor = Array.from(translationLogEntries.children).find((child) =>
+      child.getBoundingClientRect().bottom > viewportRect.top
+    ) || null;
+    return {
+      anchor,
+      offset: anchor ? anchor.getBoundingClientRect().top - viewportRect.top : 0,
+      bottomDistance: translationLogEntries.scrollHeight - translationLogEntries.scrollTop
+    };
+  }
+  function restoreTranslationLogViewport(viewport) {
+    if (!viewport) {
+      translationLogEntries.scrollTop = 0;
+      return;
+    }
+    if (viewport.anchor && viewport.anchor.isConnected) {
+      const viewportTop = translationLogEntries.getBoundingClientRect().top;
+      const currentOffset = viewport.anchor.getBoundingClientRect().top - viewportTop;
+      translationLogEntries.scrollTop += currentOffset - viewport.offset;
+      return;
+    }
+    translationLogEntries.scrollTop = Math.max(0, translationLogEntries.scrollHeight - viewport.bottomDistance);
+  }
+  function pruneTranslationLogEntries(viewport) {
+    const children = Array.from(translationLogEntries.children);
+    const anchorIndex = viewport && viewport.anchor && viewport.anchor.isConnected
+      ? children.indexOf(viewport.anchor) : -1;
+    if (!translationLogScrollPaused || anchorIndex < 0) {
+      while (translationLogEntries.children.length > TRANSLATION_LOG_LIMIT) {
+        translationLogEntries.lastElementChild.remove();
+      }
+      return;
+    }
+    const retained = new Set(children.slice(0, TRANSLATION_LOG_LIMIT).concat(
+      children.slice(anchorIndex, anchorIndex + TRANSLATION_LOG_LIMIT)
+    ));
+    for (const child of children) {
+      if (!retained.has(child)) child.remove();
+    }
+  }
   function appendTranslationLog(source, translation, language, provider, cached) {
     if (!translationLogEntries || !source || !translation) return;
+    const viewport = translationLogScrollPaused ? translationLogPausedViewport : null;
     const entry = createTranslationLogEntry(source, translation, language, provider, new Date().toLocaleString(), cached === true);
     translationLogEntries.prepend(entry);
-    while (translationLogEntries.children.length > TRANSLATION_LOG_LIMIT) {
-      translationLogEntries.lastElementChild.remove();
-    }
+    pruneTranslationLogEntries(viewport);
     translationLogEmpty.hidden = true;
     translationLogNote.textContent = "Live · saved without duplicates · newest first";
     translationLogBox.open = true;
+    restoreTranslationLogViewport(viewport);
+    if (translationLogScrollPaused && (!viewport || !viewport.anchor || !viewport.anchor.isConnected)) {
+      translationLogPausedViewport = captureTranslationLogViewport();
+    }
   }
   function clearTranslationLog() {
+    setTranslationLogScrollPaused(false);
     translationLogEntries.replaceChildren();
     translationLogEmpty.textContent = "No entries in this view. Saved history remains on disk.";
     translationLogEmpty.hidden = false;
@@ -3327,6 +3385,18 @@
   translationLogViewButton.addEventListener("click", viewSavedTranslationLog);
   translationLogSaveButton.addEventListener("click", saveTranslationLog);
   translationLogClearButton.addEventListener("click", clearTranslationLog);
+  translationLogHoldButton.addEventListener("click", () => {
+    setTranslationLogScrollPaused(!translationLogScrollPaused);
+  });
+  function rememberManuallyScrolledLogViewport() {
+    requestAnimationFrame(() => {
+      if (translationLogScrollPaused) translationLogPausedViewport = captureTranslationLogViewport();
+    });
+  }
+  translationLogEntries.addEventListener("wheel", rememberManuallyScrolledLogViewport, { passive: true });
+  translationLogEntries.addEventListener("pointerup", rememberManuallyScrolledLogViewport);
+  translationLogEntries.addEventListener("touchend", rememberManuallyScrolledLogViewport, { passive: true });
+  translationLogEntries.addEventListener("keyup", rememberManuallyScrolledLogViewport);
   cacheFileInput.addEventListener("change", () => {
     if (cacheFileInput.files && cacheFileInput.files[0]) {
       void loadTranslationFile(cacheFileInput.files[0]);

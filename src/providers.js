@@ -66,33 +66,6 @@
       }
     },
     {
-      id: "mymemory",
-      label: "MyMemory",
-      concurrency: 2,
-      delay: 120,
-      retries: 3,
-      contextLimit: 420,
-      requiresPrivacy: true,
-      supportsLanguage(code) {
-        return core.providerSupportsLanguage("mymemory", code);
-      },
-      splitText(text) {
-        return core.splitUtf8Text(text, core.MYMEMORY_MAX_BYTES);
-      },
-      hint(languageCount) {
-        return `MyMemory: ${languageCount} language codes can be selected, but the service does not guarantee machine translation for every pair. Poor quality, but fast. Need Internet for work.`;
-      },
-      async translateChunk(context) {
-        const target = core.providerLanguageCode("mymemory", context.language);
-        if (!target) throw new Error("The selected language is not supported by this service");
-        const response = await context.fetch(core.buildMyMemoryUrl(context.text, target, context.sourceLanguage), {
-          signal: context.signal, cache: "no-store"
-        });
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return context.decodeHtmlEntities(core.parseMyMemoryResponse(await response.json()));
-      }
-    },
-    {
       id: "argos",
       label: "Argos Offline",
       concurrency: 1,

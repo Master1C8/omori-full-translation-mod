@@ -77,7 +77,7 @@ test("full-translation mode keeps gameplay cache-only and gates bulk uploads", (
 test("natural OMORI dialogue is not rejected by broad code punctuation heuristics", () => {
   assert.doesNotMatch(runtimeSource, /source\.includes\("this\."\)/);
   assert.doesNotMatch(runtimeSource, /\/\[\\\+\\\*\\\/\]\/\.test\(source\)/);
-  assert.match(runtimeSource, /!core\.hasEnglishText\(source\)/);
+  assert.match(runtimeSource, /!core\.hasTranslatableText\(source\)/);
 });
 
 test("cache mutations wait for IndexedDB commit before updating in-memory state", () => {
@@ -104,8 +104,8 @@ test("every provider path protects OMORI markup and rejects unsafe cached output
   assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, cached\)/);
   assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(text, hit\)/);
   assert.match(runtimeSource, /core\.PROTECTED_MARKUP_VERSION/);
-  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 4\)/);
-  assert.match(runtimeSource, /event\.oldVersion < 3/);
+  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 5\)/);
+  assert.match(runtimeSource, /event\.oldVersion < 5/);
 });
 
 test("translator panel uses always-on cache application without obsolete manual controls", () => {
@@ -202,6 +202,19 @@ test("live translation log shows new source and target pairs without unbounded g
   assert.match(runtimeSource, /const TRANSLATION_LOG_LIMIT = 40/);
   assert.match(runtimeSource, /translationLogEntries\.children\.length > TRANSLATION_LOG_LIMIT/);
   assert.match(runtimeSource, /translationLogBox\.open = true/);
+  assert.match(runtimeSource, /class="secondary translationLogHold"[^>]+aria-pressed="false"/);
+  assert.match(runtimeSource, /setTranslationLogScrollPaused\(!translationLogScrollPaused\)/);
+  assert.match(runtimeSource, /control === translationLogHoldButton/);
+  assert.match(runtimeSource, /const viewport = translationLogScrollPaused \? translationLogPausedViewport : null/);
+  assert.match(runtimeSource, /translationLogPausedViewport = translationLogScrollPaused \? captureTranslationLogViewport\(\) : null/);
+  assert.match(runtimeSource, /addEventListener\("wheel", rememberManuallyScrolledLogViewport/);
+  assert.doesNotMatch(runtimeSource, /translationLogEntries\.addEventListener\("scroll"/);
+  assert.match(runtimeSource, /viewport\.anchor\.getBoundingClientRect\(\)\.top - viewportTop/);
+  assert.match(runtimeSource, /children\.slice\(anchorIndex, anchorIndex \+ TRANSLATION_LOG_LIMIT\)/);
+  assert.match(runtimeSource, /if \(!retained\.has\(child\)\) child\.remove\(\)/);
+  assert.match(runtimeSource, /pruneTranslationLogEntries\(null\);\s*translationLogEntries\.scrollTop = 0/);
+  assert.match(runtimeSource, /translationLogEntries\.scrollTop = 0/);
+  assert.match(runtimeSource, /overflow-anchor:none/);
   assert.match(runtimeSource, /translationLogClearButton\.addEventListener\("click", clearTranslationLog\)/);
   assert.match(runtimeSource, /activeOperation = "bulk";[\s\S]{0,300}setBulkUiBusy\(true\);\s*clearTranslationLog\(\)/);
   assert.match(runtimeSource, /activeOperation = "test-phrase";[\s\S]{0,300}setBulkUiBusy\(true\);\s*clearTranslationLog\(\)/);
@@ -225,7 +238,7 @@ test("translation history persists locally and can be viewed or saved", () => {
 
 test("shared translation files are inspected, confirmed, and stored as a reversible overlay", () => {
   assert.match(runtimeSource, /const TRANSLATION_PACK_STORE_NAME = "translationPackEntries"/);
-  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 4\)/);
+  assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 5\)/);
   assert.match(runtimeSource, /createObjectStore\(TRANSLATION_PACK_STORE_NAME, \{ keyPath: "key" \}\)/);
   assert.match(runtimeSource, /async function inspectTranslationFile\(file\)/);
   assert.match(runtimeSource, /core\.cacheKeyLanguage\(entry\[0\]\)/);
