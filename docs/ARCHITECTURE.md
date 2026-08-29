@@ -8,7 +8,7 @@ OMORI Translator.app / OMORI Translator.exe
   → запускает Steam AppID 1150690 нативно или в бутылке CrossOver
   → Electron открывает локальный debugging port на 127.0.0.1
   → универсальный нативный контроллер подключается только к странице, совпавшей с target matchers
-  → translator.bundle.js = core + languages + providers + generated game config + OMORI adapter + runtime
+  → translator.bundle.js = core + languages + providers + runtime helpers/panel + generated game config + OMORI adapter + runtime
   → адаптер задаёт DOM-правила, runtime создаёт изолированную панель в Shadow DOM
   → Bulk Translate читает атомарный asset index или расшифровывает изменившиеся .HERO рядом с выбранной копией игры
   → Google, Gemini, MyMemory, Argos, CTranslate2 + OPUS-MT, LM Studio или OpenAI-compatible API → постоянный кэш по языку/провайдеру/endpoint/модели
@@ -27,13 +27,15 @@ OMORI Translator.app / OMORI Translator.exe
 
 Архитектура разделена на четыре слоя:
 
-- `src/translation-core.js`, `src/languages.js`, `src/providers.js`, `src/translator-runtime.js` и `src/argos_service.py` — общее ядро VN Revival;
+- `src/translation-core.js`, `src/languages.js`, `src/providers.js`, `src/runtime-ui.js`, `src/runtime-progress.js`, `src/runtime-panel.js`, `src/translator-runtime.js`, `src/argos_service.py` и `src/service_router.py` — общее ядро VN Revival; `runtime-ui` централизует рабочие/заблокированные состояния элементов управления, `runtime-progress` изолирует подсчёт защищённых слов, ETA и cooldown-текст, а `runtime-panel` содержит только Shadow DOM-разметку и CSS. Эти браузерные модули загружаются до основного runtime;
 - `src/games/<game-id>/game.json` — идентичность, язык источника, проверенные версии, ресурсы, данные сборки и запуска конкретной игры;
 - `src/games/<game-id>/adapter.js` — правила игрового DOM, canvas и API отрисовки;
 - `src/games/<game-id>/tests/` — обязательные проверки конкретного адаптера;
 - `src/controller/main.swift` и платформенные лаунчеры — универсальное внедрение, получающее идентичность игры из манифеста.
 
 Сборщик проверяет схему и безопасные пути манифеста, генерирует из него браузерную конфигурацию, а затем включает DOM-адаптер перед runtime. В адаптере больше нет копий названия, `id`, языка и namespace. Детальный контракт находится в `docs/ADAPTER_CONTRACT.md`.
+
+Для локального цикла `docs/DEV_MAP.md` связывает каждую область с минимальным набором исходников и тестов. `scripts/test-runtime.sh` и `scripts/test-service.sh` дают краткие адресные проверки; полный `scripts/test-omori.sh` остаётся обязательной межслойной и релизной проверкой. Корневой `AGENTS.md` хранит только инварианты и границы модулей, поэтому handoff-промт не повторяет README, changelog и QA-отчёт.
 
 `launchStrategy` отделяет технологию запуска от DOM-адаптера. Сейчас реализована стратегия `electron-cdp`; неизвестное значение останавливает сборку. Это оставляет явную точку расширения для другой технологии новелл без ложного запуска через Electron.
 
@@ -76,6 +78,8 @@ Google имеет concurrency `1` и выдерживает 1 секунду м�
 Соседние текстовые узлы одного логического блока отправляются вместе с устойчивыми маркерами `VRCTXSEP…X`. Ответ разбирается обратно по исходным узлам, поэтому теги и обработчики DOM не заменяются. Если переводчик удалил или переставил маркеры недопустимым способом, мод автоматически повторяет перевод отдельных фрагментов.
 
 `src/argos_service.py` — общий локальный HTTP-мост. Он слушает только `127.0.0.1`, защищён одноразовым ключом запуска и предоставляет Argos, CTranslate2, Gemini, LM Studio, OpenAI-compatible AI и служебные команды лаунчера. Общий provider имеет профили OpenCode Go, OpenRouter, DeepSeek, LM Studio и Custom, читает `/models` и вызывает `/chat/completions`. Удалённый Custom URL обязан использовать HTTPS, локальный HTTP ограничен loopback; API-ключ хранится в системном credential vault отдельно по Base URL. Ответ запрашивается по JSON Schema с текстовым fallback и принимается только после проверки RPG Maker-кодов и `VRCTXSEP`-маркеров. Для Argos мост устанавливает фиксированную версию движка только из бинарных пакетов, потоково скачивает прямые модели English → target и ограничивает размер входных данных. Служебный batch endpoint остаётся покрыт unit-тестом, но штатный provider его не использует после измеренной регрессии. CPU/INT8 сохраняются, `interThreads=1`, `intraThreads` ограничен четырьмя, CTranslate2 batch size равен `32`. Beam size берётся из стандартных настроек Argos (сейчас `4`) и не меняется. Используется встроенное разбиение английских предложений без Torch, spaCy, Stanza и ONNX.
+
+POST-маршруты локального моста описаны декларативно в отдельном `src/service_router.py`: `ArgosPostRouter` связывает неизменные URL с методами bridge и именами входных полей, а подтверждения удаления ключей/смены executable и семантика журналов проверяются до вызова сервисов. `ArgosRequestHandler` отвечает только за авторизацию, JSON-обрамление и преобразование ошибок в HTTP-ответы. Сборщики macOS и Windows всегда кладут router рядом с `argos_service.py`, поэтому Python embeddable и системный runtime импортируют один и тот же код.
 
 При старте runtime один раз вызывает авторизованный `/v1/update/check`. Helper с 10-секундным тайм-аутом получает только фиксированный HTTPS URL `https://vnrevival.fun/downloads/omori/latest.json`, запрещает смену host при redirect, ограничивает ответ 64 KiB и валидирует `schemaVersion`, `product`, SemVer-подобную версию, `cacheCompatibility` (`keep`/`rebuild`), положительный `cacheSchema` и до пяти непустых строк `changes` длиной не более 200 символов. Runtime дополнительно ограничивает всю операцию 12 секундами, сравнивает три числовых компонента версии и выводит результат в отдельный DOM-узел. Для доступного релиза безопасными `textContent`-элементами показываются первые три изменения; пустой список заменяется встроенной заглушкой до подключения реального источника описаний. Сбой проверки не влияет на запуск и не скрывается общим статусом Bulk. Контракт манифеста:
 

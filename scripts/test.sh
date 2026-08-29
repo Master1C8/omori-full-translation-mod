@@ -19,7 +19,7 @@ DATA_DIRECTORY_WINDOWS=$(python3 -c 'import sys; print(sys.argv[1].replace("/", 
 DEBUG_TARGET_TITLE=$(manifest_value debugTargetTitleContains)
 DEBUG_TARGET_URL=$(manifest_value debugTargetUrlContains)
 
-NODE_TESTS=(tests/translation-core.test.js tests/providers.test.js tests/game-adapter.test.js)
+NODE_TESTS=(tests/translation-core.test.js tests/providers.test.js tests/runtime-ui.test.js tests/runtime-progress.test.js tests/runtime-panel.test.js tests/game-adapter.test.js)
 GAME_TESTS=("$GAME_DIR"/tests/*.test.js(N))
 (( ${#GAME_TESTS} > 0 )) || { echo "No game-specific tests found for $GAME_ID" >&2; exit 1; }
 NODE_TESTS+=("${GAME_TESTS[@]}")
@@ -27,11 +27,15 @@ VNREVIVAL_GAME="$GAME_ID" node --test "${NODE_TESTS[@]}"
 node --check src/translation-core.js
 node --check src/languages.js
 node --check src/providers.js
+node --check src/runtime-ui.js
+node --check src/runtime-progress.js
+node --check src/runtime-panel.js
 node --check "src/games/$GAME_ID/adapter.js"
 node --check src/translator-runtime.js
 node --check launcher/macos/steam-compat.js
 node --check scripts/browser-smoke-cdp.js
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
+[[ -s "$ROOT/src/runtime-ui.js" && -s "$ROOT/src/runtime-progress.js" && -s "$ROOT/src/runtime-panel.js" && -s "$ROOT/src/service_router.py" ]]
 mkdir -p "$ROOT/.build"
 python3 scripts/generate-game-config.py "$GAME_MANIFEST" "$ROOT/.build/game-config.js"
 node --check "$ROOT/.build/game-config.js"
@@ -65,14 +69,14 @@ if grep -RIniE "glossary|словар" src launcher/macos launcher/windows; then
 fi
 
 if grep -RIniE "coc2|corruption of champions" \
-  src/translation-core.js src/languages.js src/providers.js src/translator-runtime.js \
+  src/translation-core.js src/languages.js src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js \
   src/argos_service.py src/controller launcher/macos launcher/windows/launcher.c; then
   echo "Found a CoC2-specific identity in the shared runtime" >&2
   exit 1
 fi
 
 if grep -RInE '[А-Яа-яЁё]' \
-  src/translator-runtime.js src/argos_service.py \
+  src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/argos_service.py src/service_router.py \
   src/providers.js launcher/macos/launch.sh launcher/windows/launcher.c launcher/windows/README-Windows.txt "src/games/$GAME_ID/adapter.js"; then
   echo "The mod interface must remain English-only" >&2
   exit 1
@@ -109,26 +113,36 @@ for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXEC
   }
 done
 
-for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'translate_batch' 'adaptive_argos_cpu_settings' 'ASSET_INDEX_SCHEMA' 'assetCache' 'install_ctranslate2_model' 'ctranslate2_translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'game_language_candidates' '_aes256_encrypt_block' '/v1/translate/batch' '/v1/ctranslate2/status' '/v1/gemini/status' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/status' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/game/strings' 'request_game_executable_change' '/v1/launcher/reselect-executable'; do
+for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'translate_batch' 'adaptive_argos_cpu_settings' 'ASSET_INDEX_SCHEMA' 'assetCache' 'install_ctranslate2_model' 'ctranslate2_translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'ArgosPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/ctranslate2/status' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings'; do
   grep -Eq "$REQUIRED" src/argos_service.py || {
     echo "Missing Argos bridge feature: $REQUIRED" >&2
     exit 1
   }
 done
 
-if rg -n -i 'bergamot' src/providers.js src/translator-runtime.js src/argos_service.py; then
+for REQUIRED in '/v1/translate/batch' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/launcher/reselect-executable'; do
+  grep -Fq "$REQUIRED" src/service_router.py || {
+    echo "Missing local service route: $REQUIRED" >&2
+    exit 1
+  }
+done
+
+if rg -n -i 'bergamot' src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/argos_service.py src/service_router.py; then
   echo "Removed Bergamot provider is still present in product code" >&2
   exit 1
 fi
 
 grep -Eq 'SITE_NAME = "VN Revival"' src/translator-runtime.js
 grep -Eq 'SITE_URL = "https://vnrevival.fun/"' src/translator-runtime.js
-grep -Fq 'https://discord.gg/QgyeWW3Jg' src/translator-runtime.js
-grep -Fq 'https://t.me/VnRevival' src/translator-runtime.js
-grep -Fq 'mailto:master1c8@proton.me' src/translator-runtime.js
+grep -Fq 'https://discord.gg/QgyeWW3Jg' src/runtime-panel.js
+grep -Fq 'https://t.me/VnRevival' src/runtime-panel.js
+grep -Fq 'mailto:master1c8@proton.me' src/runtime-panel.js
 grep -Eq 'VNRevivalGameAdapter' "src/games/$GAME_ID/adapter.js"
 grep -Eq 'VNRevivalTranslationCore' src/translation-core.js
 grep -Eq 'VNRevivalTranslationProviders' src/providers.js
+grep -Eq 'VNRevivalRuntimeUI' src/runtime-ui.js
+grep -Eq 'VNRevivalRuntimeProgress' src/runtime-progress.js
+grep -Eq 'VNRevivalRuntimePanel' src/runtime-panel.js
 grep -Eq 'VNRevivalGameConfig' "$ROOT/.build/game-config.js"
 grep -Eq 'choose_game_executable' launcher/macos/launch.sh
 grep -Eq 'valid_game_target' launcher/macos/launch.sh
@@ -137,6 +151,8 @@ grep -Fq 'not a Steam desktop shortcut' launcher/macos/launch.sh
 grep -Fq 'NWJS Runtime.app' launcher/macos/launch.sh
 grep -Fq 'hw.optional.arm64' launcher/macos/launch.sh
 grep -Fq 'vnrevival-omori-runtime.' launcher/macos/launch.sh
+grep -Fq 'GAME_ICON="$GAME_TARGET/Contents/Resources/app.icns"' launcher/macos/launch.sh
+grep -Fq '/bin/cp "$GAME_ICON" "$RUNTIME_APP/Contents/Resources/app.icns"' launcher/macos/launch.sh
 grep -Fq 'capture_steam_argument' launcher/macos/launch.sh
 grep -Fq 'VNREVIVAL_STEAM_ARGUMENT="$STEAM_ARGUMENT"' launcher/macos/launch.sh
 grep -Fq 'TRACKED_GAME_PID="$GAME_PID"' launcher/macos/launch.sh
@@ -150,6 +166,10 @@ if grep -Eq 'console\.|writeFile|appendFile' launcher/macos/steam-compat.js; the
   exit 1
 fi
 grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
+grep -Fq 'cat "$ROOT/src/runtime-progress.js"' scripts/build.sh
+grep -Fq 'cat "$ROOT/src/runtime-panel.js"' scripts/build.sh
+grep -Fq 'cp "$ROOT/src/service_router.py" "$APP/Contents/Resources/"' scripts/build.sh
+grep -Fq 'cp "$ROOT/src/service_router.py" "$RESOURCE_DIR/service_router.py"' scripts/build-windows.sh
 grep -Fq 'ROOT_APP_STAGING="$BUILD_DIR/root-app-staging.app"' scripts/build.sh
 grep -Fq 'ROOT_APP_PREVIOUS="$BUILD_DIR/root-app-previous.app"' scripts/build.sh
 grep -Fq 'DEFAULT_NWJS_SHA256="d601cb05998c2ff69c0400d38af58dc7ba068c536f8e744aa3347e8b66a61483"' scripts/prepare-nwjs-macos.sh
@@ -163,7 +183,7 @@ grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh
 grep -Fq -- '--credential-id "$GAME_ID"' launcher/macos/launch.sh
 grep -Fq -- '--game-path "$GAME_TARGET"' launcher/macos/launch.sh
 grep -Eq 'persistControlSettings' src/translator-runtime.js
-if grep -Eq 'class="(cacheActions|launcherActions|settingsActions|clearLanguage|export|import|changeExecutable|save|reset)"' src/translator-runtime.js; then
+if grep -Eq 'class="(cacheActions|launcherActions|settingsActions|clearLanguage|export|import|changeExecutable|save|reset)"' src/runtime-panel.js; then
   echo "Removed settings actions are still present in the panel" >&2
   exit 1
 fi

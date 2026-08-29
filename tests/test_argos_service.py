@@ -47,6 +47,42 @@ class FakeHTTPResponse:
 
 
 class ArgosServiceTests(unittest.TestCase):
+    def test_post_router_dispatches_declared_bridge_arguments(self):
+        bridge = mock.Mock()
+        bridge.ctranslate2_translate.return_value = {"translatedText": "Привет"}
+        router = argos_service.ArgosPostRouter(bridge)
+        result = router.dispatch("/v1/ctranslate2/translate", {"target": "ru", "text": "Hello"})
+        self.assertEqual(result, {"translatedText": "Привет"})
+        bridge.ctranslate2_translate.assert_called_once_with("ru", "Hello")
+
+    def test_post_router_preserves_confirmation_and_log_semantics(self):
+        bridge = mock.Mock()
+        router = argos_service.ArgosPostRouter(bridge)
+        with self.assertRaises(argos_service.ServiceRouteError) as caught:
+            router.dispatch("/v1/gemini/key/remove", {})
+        self.assertEqual(caught.exception.code, "confirmation_required")
+        bridge.remove_gemini_key.assert_not_called()
+
+        bridge.remove_gemini_key.return_value = {"configured": False}
+        self.assertEqual(
+            router.dispatch("/v1/gemini/key/remove", {"accepted": True}),
+            {"configured": False},
+        )
+        bridge.log_translation.return_value = True
+        result = router.dispatch("/v1/log/translation", {
+            "provider": "google", "language": "ru", "source": "Hello",
+            "translation": "Привет", "cached": True,
+        })
+        self.assertEqual(result, {"ok": True, "appended": True})
+        bridge.log_translation.assert_called_once_with("google", "ru", "Hello", "Привет", True)
+
+    def test_post_router_rejects_unknown_paths(self):
+        router = argos_service.ArgosPostRouter(mock.Mock())
+        with self.assertRaises(argos_service.ServiceRouteError) as caught:
+            router.dispatch("/v1/unknown", {})
+        self.assertEqual(caught.exception.code, "not_found")
+        self.assertEqual(caught.exception.status, 404)
+
     def test_pure_python_aes256_matches_nist_ctr_vector(self):
         key = bytes.fromhex(
             "603deb1015ca71be2b73aef0857d7781"

@@ -11,7 +11,11 @@ const gameDirectory = path.join(__dirname, "..", "src", "games", gameId);
 const manifest = JSON.parse(fs.readFileSync(path.join(gameDirectory, "game.json"), "utf8"));
 require(path.join(gameDirectory, "adapter.js"));
 const adapter = globalThis.VNRevivalGameAdapter;
-const runtimeSource = fs.readFileSync(path.join(__dirname, "..", "src", "translator-runtime.js"), "utf8");
+const runtimeSource = ["translator-runtime.js", "runtime-panel.js"]
+  .map((file) => fs.readFileSync(path.join(__dirname, "..", "src", file), "utf8"))
+  .join("\n");
+const runtimeUISource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-ui.js"), "utf8");
+const runtimeProgressSource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-progress.js"), "utf8");
 
 test("selected game manifest supplies universal runtime identity", () => {
   assert.equal(manifest.id, gameId);
@@ -138,7 +142,8 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.ok(bulkButtonIndex > 0 && bulkButtonIndex < testPhraseButtonIndex
     && testPhraseButtonIndex < importButtonIndex && importButtonIndex < exportButtonIndex);
   assert.match(runtimeSource, /setBulkButtonWorking\("Starting…"\)/);
-  assert.match(runtimeSource, /bulkButton\.classList\.add\("working"\)/);
+  assert.match(runtimeSource, /runtimeUI\.setButtonState\(bulkButton, \{ working: true, label, disabled: false \}\)/);
+  assert.match(runtimeUISource, /button\.classList\.toggle\("working", working\)/);
   assert.match(runtimeSource, /\.bulkTranslate\.working::before/);
   assert.match(runtimeSource, /\.bulkCancel\.working::before/);
   assert.match(runtimeSource, /Interrupt translation \(progress will be saved\)/);
@@ -155,14 +160,15 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /bulkCancelButton\.addEventListener\("click"/);
   assert.match(runtimeSource, /bulkCancelButton\.style\.background = cancelButton\.style\.background/);
   assert.match(runtimeSource, /function countTranslationWords\(value\)/);
-  assert.match(runtimeSource, /core\.tokenizeProtectedMarkup\(String\(value \|\| ""\)\)/);
+  assert.match(runtimeSource, /runtimeProgress\.countTranslationWords\(value, core\.tokenizeProtectedMarkup\)/);
   assert.match(runtimeSource, /function createTranslationEtaTracker\(\)/);
-  assert.match(runtimeSource, /points\.length > 12 \|\| activeTime - points\[0\]\.time > 90000/);
-  assert.match(runtimeSource, /lastEstimate \* 0\.65/);
+  assert.match(runtimeSource, /runtimeProgress\.createEtaTracker\(\(\) => performance\.now\(\)\)/);
+  assert.match(runtimeProgressSource, /points\.length > 12 \|\| activeTime - points\[0\]\.time > 90000/);
+  assert.match(runtimeProgressSource, /lastEstimate \* 0\.65/);
   assert.match(runtimeSource, /function translationProgressText\(completedWords, totalWords, remainingMs, waitSeconds, provider\)/);
-  assert.match(runtimeSource, /`Words: \$\{completed\.toLocaleString\("en-US"\)\}\/\$\{total\.toLocaleString\("en-US"\)\}`/);
-  assert.match(runtimeSource, /Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}/);
-  assert.match(runtimeSource, /Time left: about \$\{Math\.ceil\(remainingMs \/ 60000\)\} min/);
+  assert.match(runtimeProgressSource, /`Words: \$\{completed\.toLocaleString\("en-US"\)\}\/\$\{total\.toLocaleString\("en-US"\)\}`/);
+  assert.match(runtimeProgressSource, /Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(options\.waitSeconds\)\)\}/);
+  assert.match(runtimeProgressSource, /Time left: about \$\{Math\.ceil\(options\.remainingMs \/ 60000\)\} min/);
   assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, translated, language, provider, false\)/);
   assert.match(runtimeSource, /appendTranslationLog\(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, existingImported \? "Imported translation" : provider, true\)/);
 });
@@ -179,8 +185,7 @@ test("ETA throughput uses only fresh translations from the current operation", (
 test("reset all data shows activity until cache deletion finishes", () => {
   assert.match(runtimeSource, /\.reset\.working::before/);
   assert.match(runtimeSource, /function setResetButtonWorking\(\)/);
-  assert.match(runtimeSource, /resetButton\.textContent = "Resetting…"/);
-  assert.match(runtimeSource, /resetButton\.disabled = true/);
+  assert.match(runtimeSource, /runtimeUI\.setButtonState\(resetButton, \{ working: true, label: "Resetting…", disabled: true \}\)/);
   assert.match(runtimeSource, /resetButton\.addEventListener\("click", async \(\) =>/);
   assert.match(runtimeSource, /await deleteAllTranslatorData\(\)/);
   assert.match(runtimeSource, /finally \{\s*setResetButtonIdle\(\)/);
@@ -289,7 +294,7 @@ test("Bulk pauses and retries the current request when a provider rate-limits", 
   assert.match(runtimeSource, /done, completedWords, totalWords, newlyTranslated, failed, rateLimitSeconds: seconds/);
   assert.match(runtimeSource, /providerConfig\.batchSize \|\| 3/);
   assert.match(runtimeSource, /etaTracker\.pause\(\);\s*setStatus\(translationProgressText\(\s*completedWords, totalWords, etaTracker\.current\(\), rateLimitSeconds/);
-  assert.match(runtimeSource, /return `\$\{wordProgress\} · Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(waitSeconds\)\)\}`/);
+  assert.match(runtimeProgressSource, /return `\$\{wordProgress\} · Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(options\.waitSeconds\)\)\}`/);
 });
 
 test("Argos test phrase installs every missing model before translating", () => {
@@ -311,6 +316,8 @@ test("managed offline UI supports Argos and CTranslate2 OPUS without Bergamot", 
   assert.match(runtimeSource, /\.argosAction\.working::before/);
   assert.match(runtimeSource, /setArgosBusy\(true, argosActionButton\)/);
   assert.match(runtimeSource, /setArgosBusy\(true, argosRemoveButton\)/);
+  assert.match(runtimeSource, /runtimeUI\.setBusyGroup\(\[argosActionButton, argosRemoveButton\]/);
+  assert.match(runtimeUISource, /function setBusyGroup\(controls, busy, activeControl = null\)/);
 });
 
 test("project website opens through the operating system browser", () => {

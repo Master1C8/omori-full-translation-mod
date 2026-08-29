@@ -190,6 +190,8 @@ uv sync
 `VNREVIVAL_HOST_PYTHON` и `VNREVIVAL_ICON_PYTHON`.
 
 ```bash
+./scripts/test-runtime.sh   # browser/runtime unit checks, concise output
+./scripts/test-service.sh   # local helper/provider checks, concise output
 ./scripts/test-omori.sh
 ./scripts/build-omori.sh
 ```
@@ -222,9 +224,10 @@ git push origin main
 в системном хранилище учётных данных текущего пользователя и не переносится на
 другой компьютер автоматически.
 
-Готовый контекст для продолжения разработки в новом чате находится в
-[`docs/NEW_CHAT_PROMPT.md`](docs/NEW_CHAT_PROMPT.md). Перед использованием замените
-последнюю строку промта своей новой задачей.
+Короткая карта разработки находится в [`docs/DEV_MAP.md`](docs/DEV_MAP.md), а
+готовый минимальный контекст для нового чата — в
+[`docs/NEW_CHAT_PROMPT.md`](docs/NEW_CHAT_PROMPT.md). Актуальные ограничения
+хранятся в корневом `AGENTS.md` и не дублируются в каждом запросе.
 
 Проект не связан с OMOCAT, Steam, CodeWeavers, Google/Gemini или Translated/MyMemory.
 

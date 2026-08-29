@@ -28,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from service_router import ArgosPostRouter, ServiceRouteError
+
 
 ARGOS_VERSION = "1.11.0"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
@@ -1919,83 +1921,11 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
         try:
             self._require_auth()
             payload = self._read_json()
-            if self.path == "/v1/runtime/install":
-                result = self.bridge.install_runtime()
-            elif self.path == "/v1/models/install":
-                result = self.bridge.install_model(payload.get("target"))
-            elif self.path == "/v1/models/uninstall":
-                result = self.bridge.uninstall_model(payload.get("target"))
-            elif self.path == "/v1/translate":
-                result = self.bridge.translate(payload.get("target"), payload.get("text"))
-            elif self.path == "/v1/translate/batch":
-                result = self.bridge.translate_batch(payload.get("target"), payload.get("texts"))
-            elif self.path == "/v1/ctranslate2/runtime/install":
-                result = self.bridge.install_ctranslate2_runtime()
-            elif self.path == "/v1/ctranslate2/models/install":
-                result = self.bridge.install_ctranslate2_model(payload.get("target"))
-            elif self.path == "/v1/ctranslate2/models/uninstall":
-                result = self.bridge.uninstall_ctranslate2_model(payload.get("target"))
-            elif self.path == "/v1/ctranslate2/translate":
-                result = self.bridge.ctranslate2_translate(payload.get("target"), payload.get("text"))
-            elif self.path == "/v1/gemini/key":
-                result = self.bridge.set_gemini_key(payload.get("apiKey"))
-            elif self.path == "/v1/gemini/key/remove":
-                if payload.get("accepted") is not True:
-                    raise BridgeError("confirmation_required", "Explicit confirmation is required", 400)
-                result = self.bridge.remove_gemini_key()
-            elif self.path == "/v1/gemini/translate":
-                result = self.bridge.gemini_translate(
-                    payload.get("target"), payload.get("targetName"), payload.get("text")
-                )
-            elif self.path == "/v1/lmstudio/translate":
-                result = self.bridge.lmstudio_translate(
-                    payload.get("target"), payload.get("targetName"),
-                    payload.get("text"), payload.get("model")
-                )
-            elif self.path == "/v1/openai-compatible/status":
-                result = self.bridge.openai_compatible_status(
-                    payload.get("preset"), payload.get("baseURL")
-                )
-            elif self.path == "/v1/openai-compatible/key":
-                result = self.bridge.set_openai_compatible_key(
-                    payload.get("preset"), payload.get("baseURL"), payload.get("apiKey")
-                )
-            elif self.path == "/v1/openai-compatible/key/remove":
-                if payload.get("accepted") is not True:
-                    raise BridgeError("confirmation_required", "Explicit confirmation is required", 400)
-                result = self.bridge.remove_openai_compatible_key(
-                    payload.get("preset"), payload.get("baseURL")
-                )
-            elif self.path == "/v1/openai-compatible/translate":
-                result = self.bridge.openai_compatible_translate(
-                    payload.get("target"), payload.get("targetName"), payload.get("text"),
-                    payload.get("model"), payload.get("preset"), payload.get("baseURL")
-                )
-            elif self.path == "/v1/launcher/reselect-executable":
-                if payload.get("accepted") is not True:
-                    raise BridgeError("confirmation_required", "Explicit confirmation is required", 400)
-                result = self.bridge.request_game_executable_change()
-            elif self.path == "/v1/log/activity":
-                self.bridge.log_activity(
-                    payload.get("provider", "unknown"),
-                    payload.get("source", ""),
-                    payload.get("translation", ""),
-                    payload.get("cached", False)
-                )
-                result = {"ok": True}
-            elif self.path == "/v1/log/translation":
-                appended = self.bridge.log_translation(
-                    payload.get("provider", "unknown"),
-                    payload.get("language", ""),
-                    payload.get("source", ""),
-                    payload.get("translation", ""),
-                    payload.get("cached") is True
-                )
-                result = {"ok": True, "appended": appended}
-            else:
-                raise BridgeError("not_found", "Unknown endpoint", 404)
+            result = ArgosPostRouter(self.bridge).dispatch(self.path, payload)
             self._write_json(result)
         except BridgeError as error:
+            self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
+        except ServiceRouteError as error:
             self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
         except subprocess.TimeoutExpired:
             self._write_json({"ok": False, "error": "timeout", "message": "Installation took too long"}, 504)

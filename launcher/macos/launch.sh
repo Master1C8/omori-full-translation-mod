@@ -209,6 +209,12 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
       show_error "Could not copy the compatible Apple Silicon game runtime."
       exit 1
     }
+    GAME_ICON="$GAME_TARGET/Contents/Resources/app.icns"
+    [[ -s "$GAME_ICON" ]] || GAME_ICON="$RESOURCE_DIR/AppIcon.icns"
+    /bin/cp "$GAME_ICON" "$RUNTIME_APP/Contents/Resources/app.icns" || {
+      show_error "Could not apply the $GAME_TITLE icon to the compatible game runtime."
+      exit 1
+    }
     GAME_PACKAGE="$GAME_TARGET/Contents/Resources/app.nw"
     COMPAT_PACKAGE="$RUNTIME_SESSION_DIR/app.nw"
     /bin/mkdir -p "$COMPAT_PACKAGE"
