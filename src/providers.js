@@ -10,9 +10,11 @@
       label: "Google Translate",
       concurrency: 1,
       delay: 1000,
+      bulkDelay: 5000,
+      bulkMaxItems: 12,
+      bulkConsecutiveFailureLimit: 3,
       retries: 3,
       contextLimit: 3200,
-      requiresPrivacy: true,
       supportsLanguage(code) {
         return core.providerSupportsLanguage("google", code);
       },
@@ -39,7 +41,6 @@
       delay: 250,
       retries: 3,
       contextLimit: 6000,
-      requiresPrivacy: true,
       credentialManager: "gemini",
       supportsLanguage(code) {
         return core.providerSupportsLanguage("google", code);
@@ -66,70 +67,12 @@
       }
     },
     {
-      id: "argos",
-      label: "Argos Offline",
-      concurrency: 1,
-      batchSize: 1,
-      delay: 0,
-      retries: 1,
-      contextLimit: 3200,
-      requiresPrivacy: false,
-      modelManager: "argos",
-      supportsLanguage(code, context) {
-        return core.providerSupportsLanguage("argos", code, context && context.localLanguages);
-      },
-      splitText(text) {
-        return [text];
-      },
-      hint() {
-        return "Argos: translation runs on this computer and does not send text online. Mediocre quality and slow. Support limited amount of language";
-      },
-      async translateChunk(context) {
-        const payload = await context.localRequest("/v1/translate", {
-          body: { text: context.text, target: context.language }, signal: context.signal
-        });
-        if (typeof payload.translatedText !== "string" || !payload.translatedText.trim()) {
-          throw new Error("Argos returned an empty translation");
-        }
-        return payload.translatedText;
-      }
-    },
-    {
-      id: "ctranslate2-opus",
-      label: "CTranslate2 + OPUS-MT",
-      concurrency: 1,
-      delay: 0,
-      retries: 1,
-      contextLimit: 3200,
-      requiresPrivacy: false,
-      modelManager: "ctranslate2-opus",
-      supportsLanguage(code, context) {
-        return core.providerSupportsLanguage("argos", code, context && context.localLanguages);
-      },
-      splitText(text) {
-        return core.splitLongText(text, 800);
-      },
-      hint() {
-        return "CTranslate2 + OPUS-MT: optimized INT8 neural translation runs locally. Models are larger and conversion during the first install can take several minutes.";
-      },
-      async translateChunk(context) {
-        const payload = await context.localRequest("/v1/ctranslate2/translate", {
-          body: { text: context.text, target: context.language }, signal: context.signal
-        });
-        if (typeof payload.translatedText !== "string" || !payload.translatedText.trim()) {
-          throw new Error("CTranslate2 returned an empty translation");
-        }
-        return payload.translatedText;
-      }
-    },
-    {
       id: "lmstudio",
       label: "LM Studio Local AI",
       concurrency: 1,
       delay: 0,
       retries: 2,
       contextLimit: 6000,
-      requiresPrivacy: false,
       modelManager: "lmstudio",
       supportsLanguage(code) {
         return !!String(code || "");
@@ -163,7 +106,6 @@
       delay: 100,
       retries: 3,
       contextLimit: 6000,
-      requiresPrivacy: true,
       credentialManager: "openai-compatible",
       modelManager: "openai-compatible",
       supportsLanguage(code) {

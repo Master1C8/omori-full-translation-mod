@@ -12,17 +12,8 @@ class ServiceRouteError(Exception):
         self.status = status
 
 
-class ArgosPostRouter:
+class LocalPostRouter:
     ROUTES = {
-        "/v1/runtime/install": ("install_runtime", ()),
-        "/v1/models/install": ("install_model", ("target",)),
-        "/v1/models/uninstall": ("uninstall_model", ("target",)),
-        "/v1/translate": ("translate", ("target", "text")),
-        "/v1/translate/batch": ("translate_batch", ("target", "texts")),
-        "/v1/ctranslate2/runtime/install": ("install_ctranslate2_runtime", ()),
-        "/v1/ctranslate2/models/install": ("install_ctranslate2_model", ("target",)),
-        "/v1/ctranslate2/models/uninstall": ("uninstall_ctranslate2_model", ("target",)),
-        "/v1/ctranslate2/translate": ("ctranslate2_translate", ("target", "text")),
         "/v1/gemini/key": ("set_gemini_key", ("apiKey",)),
         "/v1/gemini/key/remove": ("remove_gemini_key", ()),
         "/v1/gemini/translate": ("gemini_translate", ("target", "targetName", "text")),
@@ -33,11 +24,13 @@ class ArgosPostRouter:
         "/v1/openai-compatible/translate": (
             "openai_compatible_translate", ("target", "targetName", "text", "model", "preset", "baseURL")
         ),
+        "/v1/reset": ("reset_all_data", ("openAIBaseURLs",)),
         "/v1/launcher/reselect-executable": ("request_game_executable_change", ()),
     }
     CONFIRMATION_REQUIRED = frozenset({
         "/v1/gemini/key/remove",
         "/v1/openai-compatible/key/remove",
+        "/v1/reset",
         "/v1/launcher/reselect-executable",
     })
 

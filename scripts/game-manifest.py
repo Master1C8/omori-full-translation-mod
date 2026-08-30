@@ -36,7 +36,6 @@ REQUIRED = {
 
 LEGACY_COMPATIBILITY_FIELDS = {
     "cacheFormats": list,
-    "argosBridgeGlobal": str,
     "coreGlobal": str,
     "languagesGlobal": str,
     "translatorGlobal": str,
@@ -100,7 +99,7 @@ def load_manifest(path: Path) -> dict:
             for item in compatibility["cacheFormats"]
         ):
             raise ValueError("legacyCompatibility.cacheFormats must contain legacy format names")
-        for key in ("argosBridgeGlobal", "coreGlobal", "languagesGlobal", "translatorGlobal"):
+        for key in ("coreGlobal", "languagesGlobal", "translatorGlobal"):
             if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", compatibility[key]):
                 raise ValueError(f"invalid JavaScript global name: {key}")
     return value

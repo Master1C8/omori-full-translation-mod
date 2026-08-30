@@ -20,7 +20,7 @@
   <script>
     (function () {
       localStorage.setItem("omori-translator.settings.v2", JSON.stringify({
-        language: "ru", provider: "google", autoTranslate: false, mode: "translated", privacyAccepted: true
+        language: "ru", provider: "google", autoTranslate: false, mode: "translated"
       }));
       localStorage.setItem("omori-translator.cache-meta.v3", JSON.stringify({ version: 3, records: 99, bytes: 99, languages: { ar: { records: 99, bytes: 99 } } }));
       localStorage.setItem("omori-translator.cache-meta-dirty.v3", "1");
@@ -37,14 +37,14 @@
       const cache = new Map();
       cache.set("v1\nar\n811c9dc5\nLegacy line", "سطر قديم");
       cache.set(
-        "v4\nomori\ngoogle\nar\n5c464a3a\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
+        "v4\nomori\ngoogle\nar\nd875c351\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
         "ترى VRCTXSEP1X امرأة جميلة VRCTXSEP2X بالقرب من الباب."
       );
-      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nYou see", "ترى");
-      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\na beautiful woman", "امرأة جميلة");
-      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nnear the door.", "بالقرب من الباب.");
-      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
-      cache.set("v4\nomori\ngoogle\nar\n5c464a3a\nA later paragraph appears after scrolling.", "ترجمة");
+      cache.set("v4\nomori\ngoogle\nar\nd875c351\nYou see", "ترى");
+      cache.set("v4\nomori\ngoogle\nar\nd875c351\na beautiful woman", "امرأة جميلة");
+      cache.set("v4\nomori\ngoogle\nar\nd875c351\nnear the door.", "بالقرب من الباب.");
+      cache.set("v4\nomori\ngoogle\nar\nd875c351\nA very short button", "زر طويل جداً لاختبار التفاف النص داخل الواجهة");
+      cache.set("v4\nomori\ngoogle\nar\nd875c351\nA later paragraph appears after scrolling.", "ترجمة");
       window.smokeCache = cache;
       const packCache = new Map();
       window.smokePackCache = packCache;
@@ -249,14 +249,21 @@
       shadow.querySelector(".provider").dispatchEvent(new Event("change"));
       await new Promise((resolve) => setTimeout(resolve, 200));
       const autoApplyForcedOn = window.__vnRevivalTranslator.settings().autoTranslate === true;
-      const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey");
+      const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey")
+        && shadow.querySelector(".screenTranslate")?.getAttribute("aria-keyshortcuts") === "Control+Shift+T"
+        && shadow.querySelector(".screenTranslate")?.textContent.includes("Ctrl+Shift+T");
       const superBulkButtonRemoved = !shadow.querySelector(".superBulkTranslate");
       const storyScopeButton = shadow.querySelector(".storyTranslationScope");
       const fullScopeButton = shadow.querySelector(".fullTranslationScope");
+      const screenScopeButton = shadow.querySelector(".screenTranslationScope");
       const translationScopesPresent = storyScopeButton?.getAttribute("aria-pressed") === "true"
         && storyScopeButton?.textContent.includes("Stable · dialogue windows")
         && fullScopeButton?.getAttribute("aria-pressed") === "false"
-        && fullScopeButton?.textContent.includes("Experimental · menus + dialogue");
+        && fullScopeButton?.textContent.includes("Experimental · menus + dialogue")
+        && screenScopeButton?.getAttribute("aria-pressed") === "false"
+        && screenScopeButton?.textContent.includes("Manual · visible text only")
+        && shadow.querySelector(".screenAuto")?.checked === false
+        && shadow.querySelector(".screenAutoOption")?.textContent.includes("Automatically translate completed dialogue");
       fullScopeButton.click();
       await new Promise((resolve) => setTimeout(resolve, 20));
       const fullTranslationScopeSwitch = window.__vnRevivalTranslator.getTranslationScope() === "full"
@@ -276,7 +283,8 @@
       );
       for (const [index, source] of window.smokeBulkStrings.entries()) {
         const key = window.VNRevivalTranslationCore.makeCacheKey(
-          source, "ar", "google", "omori", window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION
+          source, "ar", "google", "omori",
+          `google-context-v1\n${window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION}`
         );
         window.smokeCache.set(key, `ترجمة ${index}`);
       }
@@ -361,6 +369,20 @@
       };
       const activeTranslationWorkspace = Object.values(activeTranslationWorkspaceState).every(Boolean);
       bulkCancelButton.click();
+      for (let attempt = 0; attempt < 200 && bulkCancelButton.textContent !== "Back to translator"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const stoppedTranslationWorkspace = host.classList.contains("bulkBusyHost")
+        && shadow.querySelector(".panel").classList.contains("bulkBusy")
+        && bulkCancelButton.textContent === "Back to translator"
+        && !bulkCancelButton.classList.contains("working")
+        && !bulkCancelButton.disabled
+        && shadow.querySelector(".status").textContent.includes("Bulk stopped at");
+      const stoppedStatus = shadow.querySelector(".status").textContent;
+      window.__vnRevivalTranslator.showTranslations();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const stoppedStatusPreserved = shadow.querySelector(".status").textContent === stoppedStatus;
+      bulkCancelButton.click();
       for (let attempt = 0; attempt < 200 && host.classList.contains("bulkBusyHost"); attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
@@ -444,7 +466,8 @@
       const ownTranslation = "Собственный перевод";
       const importedTranslation = "Импортированный перевод";
       const sharedKey = window.VNRevivalTranslationCore.makeCacheKey(
-        sharedSource, "ru", "google", "omori", window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION
+        sharedSource, "ru", "google", "omori",
+        `google-context-v1\n${window.VNRevivalTranslationCore.PROTECTED_MARKUP_VERSION}`
       );
       window.smokeCache.set(sharedKey, ownTranslation);
       const sharedFile = new File([
@@ -519,6 +542,8 @@
         && fullTranslationScopeSwitch
         && liveTranslationLogPresent
         && activeTranslationWorkspace
+        && stoppedTranslationWorkspace
+        && stoppedStatusPreserved
         && translationWorkspaceRestored
         && projectSiteOpenedExternally
         && autosavedSettings.language === "ar"
@@ -568,6 +593,8 @@
         liveTranslationLogPresent,
         activeTranslationWorkspace,
         activeTranslationWorkspaceState,
+        stoppedTranslationWorkspace,
+        stoppedStatusPreserved,
         translationLogViewportStableTwice,
         firstPauseReady,
         firstPauseFilled,

@@ -21,11 +21,11 @@ test("recognizes right-to-left target languages and normalizes Hebrew for HTML",
   assert.equal(core.htmlLanguageCode("fa-AF"), "fa-AF");
 });
 
-test("maps provider language codes and filters Argos to its model catalog", () => {
+test("maps provider language codes and rejects removed providers", () => {
   assert.equal(core.providerLanguageCode("google", "iw"), "iw");
   assert.equal(core.providerSupportsLanguage("google", "ab"), true);
-  assert.equal(core.providerSupportsLanguage("argos", "ru", ["de", "ru"]), true);
-  assert.equal(core.providerSupportsLanguage("argos", "ab", ["de", "ru"]), false);
+  assert.equal(core.providerSupportsLanguage("argos", "ru"), false);
+  assert.equal(core.providerSupportsLanguage("ctranslate2-opus", "ru"), false);
   assert.equal(core.providerSupportsLanguage("mymemory", "zh-TW"), false);
 });
 
@@ -76,6 +76,9 @@ test("filters markup-only, font coverage, and encoded ROBOHEART assets before pr
   assert.equal(core.hasTranslatableText("\\bas...\\| ..."), false);
   assert.equal(core.hasTranslatableText("\\\\fs[30]ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789\\n"), false);
   assert.equal(core.hasTranslatableText("V2lsbCB5b3UgbG92ZSBtZT8=\\n<ROBOHEART>"), false);
+  assert.equal(core.hasTranslatableText("1F"), false);
+  assert.equal(core.hasTranslatableText("DW itemBuyingPromptMessage"), false);
+  assert.equal(core.hasTranslatableText("DW onItemListSellOkMessage"), false);
   assert.equal(core.hasTranslatableText("\\artThe piece is finally done!"), true);
 });
 
@@ -150,6 +153,35 @@ test("uses the same protected segment pipeline for weak models", async () => {
   assert.equal(result.text, "Хмм!\\! Долго же вы!\\aub");
   assert.deepEqual(core.protectedMarkupTokens(result.text), ["\\!", "\\aub"]);
   assert.deepEqual(calls, ["Hmph!", "Took you long enough!"]);
+});
+
+test("uses one markup-free context request when segment markers survive", async () => {
+  const calls = [];
+  const source = "Delicious \\c[3]COOKIES\\c[0]!";
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    assert.equal(text.includes("\\c["), false);
+    return "Вкусное VRCTXSEP1X печенье";
+  }, { language: "ru", contextual: true });
+  assert.deepEqual(calls, ["Delicious VRCTXSEP1X Cookies"]);
+  assert.equal(result.text, "Вкусное \\c[3]ПЕЧЕНЬЕ\\c[0]!");
+  assert.equal(result.contextual, true);
+});
+
+test("falls back to isolated segments when a weak model damages context markers", async () => {
+  const calls = [];
+  const source = "Hmph!\\! Took you long enough!\\aub";
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    assert.equal(/\\(?:!|aub)/.test(text), false);
+    if (text.includes("VRCTXSEP")) return "Хмм! разделитель Долго же вы!";
+    if (text === "Hmph!") return "Хмм!";
+    if (text === "Took you long enough!") return "Долго же вы!";
+    return text;
+  }, { language: "ru", contextual: true });
+  assert.deepEqual(calls, ["Hmph! VRCTXSEP1X Took you long enough!", "Hmph!", "Took you long enough!"]);
+  assert.equal(result.text, "Хмм!\\! Долго же вы!\\aub");
+  assert.equal(result.contextual, undefined);
 });
 
 test("preserves the original skeleton whitespace around rigid controls", async () => {
@@ -240,6 +272,29 @@ test("validates numbers and currency without fixing their word position", () => 
   );
 });
 
+test("rejects substantial untranslated English carryover for Cyrillic targets", () => {
+  assert.equal(
+    core.translationQualityMatches("Delicious COOKIES!", "Вкусный ФАЙЛЫ COOKIE!", "ru"),
+    false
+  );
+  assert.equal(
+    core.translationQualityMatches("A plant nursery full of VEGGIE KIDS!", "Питомник, полный Veggie Kids!", "ru"),
+    false
+  );
+  assert.equal(core.translationQualityMatches("Chock-full of DVDs.", "Полно DVD.", "ru"), true);
+  assert.equal(core.translationQualityMatches("Sweetheart doll.", "Muñeca Sweetheart.", "es"), true);
+});
+
+test("keeps stylized repeated product names and elongated vocalizations", () => {
+  const vocalization = "...\\! Ah...\\! Ahhh...\\! \\sinv[1]Ahhhhhh...";
+  const translatedVocalization = "...\\! Ах...\\! Ahhh...\\! \\sinv[1]Ahhhhhh...";
+  assert.equal(core.translationQualityMatches(vocalization, translatedVocalization, "ru"), true);
+
+  const product = "A \\c[3]SNO-CONE\\c[0] machine.\\!<br>Would you like to use a \\c[4]SNO-CONE TICKET\\c[0]?";
+  const translatedProduct = "Автомат \\c[3]SNO-CONE\\c[0].\\!<br>Использовать \\c[4]БИЛЕТ SNO-CONE\\c[0]?";
+  assert.equal(core.translationQualityMatches(product, translatedProduct, "ru"), true);
+});
+
 test("returns opaque technical text unchanged without making a provider request", async () => {
   let calls = 0;
   const source = "V2lsbCB5b3UgbG92ZSBtZT8=\\n<ROBOHEART>";
@@ -266,6 +321,46 @@ test("keeps contextual separators local while translating every part", async () 
   assert.deepEqual(core.parseContextTranslation(result.text, 3), [
     "Вы видите", "красивую женщину", "возле двери."
   ]);
+});
+
+test("lets Bulk validate contextual parts individually without starting a hidden fallback", async () => {
+  const sources = [
+    "OMORI walks through the beautiful garden together with all his friends.",
+    "OMORI quietly waits beside the old house until everyone comes home."
+  ];
+  const translations = [
+    "OMORI гуляет по прекрасному саду вместе со всеми своими друзьями.",
+    "OMORI тихо ждёт возле старого дома, пока все не вернутся."
+  ];
+  const source = core.buildContextSource(sources);
+  const translated = core.buildContextSource(translations);
+  assert.equal(core.translationQualityMatches(source, translated, "ru"), false);
+  assert.deepEqual(
+    translations.map((value, index) => core.translationQualityMatches(sources[index], value, "ru")),
+    [true, true]
+  );
+  let calls = 0;
+  const result = await core.translateProtectedText(source, async () => {
+    calls += 1;
+    return translated;
+  }, {
+    language: "ru", contextual: true, contextFallback: false, contextualQuality: false
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(core.parseContextTranslation(result.text, sources.length), translations);
+});
+
+test("can reject a damaged contextual block without post-request segment retries", async () => {
+  const source = core.buildContextSource(["One complete line.", "Another complete line."]);
+  let calls = 0;
+  await assert.rejects(
+    core.translateProtectedText(source, async () => {
+      calls += 1;
+      return "Google removed the separator";
+    }, { language: "ru", contextual: true, contextFallback: false }),
+    (error) => error && error.code === "markup_format_invalid"
+  );
+  assert.equal(calls, 1);
 });
 
 test("rejects markup invented by a provider even when the source has no controls", async () => {
@@ -321,13 +416,13 @@ test("persists bounded rate-limit backoff state across restarts", () => {
 test("cache separates providers and languages while retaining legacy Google keys", () => {
   const googleRu = core.makeCacheKey("Hello", "ru", "google");
   const googleDe = core.makeCacheKey("Hello", "de", "google");
-  const argosRu = core.makeCacheKey("Hello", "ru", "argos");
+  const geminiRu = core.makeCacheKey("Hello", "ru", "gemini");
   assert.notEqual(googleRu, googleDe);
-  assert.notEqual(googleRu, argosRu);
+  assert.notEqual(googleRu, geminiRu);
   assert.equal(core.cacheKeyLanguage(googleRu), "ru");
   assert.equal(core.cacheKeyProvider(googleRu), "google");
-  assert.equal(core.cacheKeyLanguage(argosRu), "ru");
-  assert.equal(core.cacheKeyProvider(argosRu), "argos");
+  assert.equal(core.cacheKeyLanguage(geminiRu), "ru");
+  assert.equal(core.cacheKeyProvider(geminiRu), "gemini");
   assert.equal(googleRu.split("\n")[0], "v1");
 });
 

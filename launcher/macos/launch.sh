@@ -21,7 +21,7 @@ DEBUG_TARGET_URL=$(plist_value VNRevivalDebugTargetURL)
 
 CONTROLLER="$RESOURCE_DIR/VNRevivalTranslatorController"
 TRANSLATOR="$RESOURCE_DIR/translator.bundle.js"
-ARGOS_SERVICE="$RESOURCE_DIR/argos_service.py"
+LOCAL_SERVICE="$RESOURCE_DIR/local_service.py"
 CROSSOVER_APP="${VNREVIVAL_CROSSOVER_APP:-/Applications/CrossOver.app}"
 BOTTLE="${VNREVIVAL_CROSSOVER_BOTTLE:-$DEFAULT_BOTTLE}"
 WINE="$CROSSOVER_APP/Contents/SharedSupport/CrossOver/bin/wine"
@@ -30,10 +30,10 @@ STEAM_EXE="$BOTTLE_DIR/drive_c/Program Files (x86)/Steam/steam.exe"
 CROSSOVER_GAME_EXE="$BOTTLE_DIR/$CROSSOVER_GAME_PATH"
 GAME_PATH_DIR="$HOME/Library/Application Support/VN Revival/Translator Paths"
 GAME_PATH_FILE="$GAME_PATH_DIR/$GAME_ID.txt"
-ARGOS_DATA_DIR="${VNREVIVAL_ARGOS_DATA_DIR:-$HOME/Library/Application Support/$DATA_DIRECTORY}"
-ARGOS_LOG="$ARGOS_DATA_DIR/argos-service.log"
-RESELECT_MARKER="$ARGOS_DATA_DIR/.reselect-game-executable"
-ARGOS_PID=""
+LOCAL_DATA_DIR="${VNREVIVAL_LOCAL_DATA_DIR:-$HOME/Library/Application Support/$DATA_DIRECTORY}"
+LOCAL_SERVICE_LOG="$LOCAL_DATA_DIR/local-service.log"
+RESELECT_MARKER="$LOCAL_DATA_DIR/.reselect-game-executable"
+LOCAL_SERVICE_PID=""
 GAME_PID=""
 TRACKED_GAME_PID=""
 RUNTIME_SESSION_DIR=""
@@ -41,8 +41,8 @@ APPLE_SILICON_COMPAT=0
 STEAM_ARGUMENT=""
 
 cleanup() {
-  if [[ -n "$ARGOS_PID" ]] && kill -0 "$ARGOS_PID" >/dev/null 2>&1; then
-    kill "$ARGOS_PID" >/dev/null 2>&1 || true
+  if [[ -n "$LOCAL_SERVICE_PID" ]] && kill -0 "$LOCAL_SERVICE_PID" >/dev/null 2>&1; then
+    kill "$LOCAL_SERVICE_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "$GAME_PID" ]] && kill -0 "$GAME_PID" >/dev/null 2>&1; then
     kill "$GAME_PID" >/dev/null 2>&1 || true
@@ -292,7 +292,7 @@ game_main_running() {
   return 1
 }
 
-if [[ ! -x "$CONTROLLER" || ! -f "$TRANSLATOR" || ! -f "$ARGOS_SERVICE" ]]; then
+if [[ ! -x "$CONTROLLER" || ! -f "$TRANSLATOR" || ! -f "$LOCAL_SERVICE" ]]; then
   show_error "The translator files are incomplete. Reinstall the application."
   exit 1
 fi
@@ -318,16 +318,16 @@ while /usr/bin/nc -z 127.0.0.1 "$PORT" >/dev/null 2>&1; do
   fi
 done
 
-ARGOS_PORT=$((PORT + 1))
-while /usr/bin/nc -z 127.0.0.1 "$ARGOS_PORT" >/dev/null 2>&1; do
-  ARGOS_PORT=$((ARGOS_PORT + 1))
-  if (( ARGOS_PORT > 9499 )); then
-    ARGOS_PORT=""
+LOCAL_SERVICE_PORT=$((PORT + 1))
+while /usr/bin/nc -z 127.0.0.1 "$LOCAL_SERVICE_PORT" >/dev/null 2>&1; do
+  LOCAL_SERVICE_PORT=$((LOCAL_SERVICE_PORT + 1))
+  if (( LOCAL_SERVICE_PORT > 9499 )); then
+    LOCAL_SERVICE_PORT=""
     break
   fi
 done
 
-PYTHON="${VNREVIVAL_ARGOS_PYTHON:-}"
+PYTHON="${VNREVIVAL_LOCAL_SERVICE_PYTHON:-}"
 if [[ -z "$PYTHON" ]]; then
   for CANDIDATE in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
     if [[ -x "$CANDIDATE" ]]; then
@@ -337,28 +337,28 @@ if [[ -z "$PYTHON" ]]; then
   done
 fi
 
-ARGOS_URL=""
-ARGOS_TOKEN=""
-if [[ -n "$ARGOS_PORT" && -x "$PYTHON" ]]; then
-  mkdir -p "$ARGOS_DATA_DIR"
-  ARGOS_TOKEN=$(/usr/bin/uuidgen | tr -d '-')
-  "$PYTHON" -s "$ARGOS_SERVICE" --port "$ARGOS_PORT" --token "$ARGOS_TOKEN" \
-    --data-dir "$ARGOS_DATA_DIR" --credential-id "$GAME_ID" --game-path "$GAME_TARGET" \
-    >>"$ARGOS_LOG" 2>&1 &
-  ARGOS_PID=$!
+LOCAL_SERVICE_URL=""
+LOCAL_SERVICE_TOKEN=""
+if [[ -n "$LOCAL_SERVICE_PORT" && -x "$PYTHON" ]]; then
+  mkdir -p "$LOCAL_DATA_DIR"
+  LOCAL_SERVICE_TOKEN=$(/usr/bin/uuidgen | tr -d '-')
+  "$PYTHON" -s "$LOCAL_SERVICE" --port "$LOCAL_SERVICE_PORT" --token "$LOCAL_SERVICE_TOKEN" \
+    --data-dir "$LOCAL_DATA_DIR" --credential-id "$GAME_ID" --game-path "$GAME_TARGET" \
+    >>"$LOCAL_SERVICE_LOG" 2>&1 &
+  LOCAL_SERVICE_PID=$!
   for _ in {1..40}; do
-    /usr/bin/nc -z 127.0.0.1 "$ARGOS_PORT" >/dev/null 2>&1 && break
-    kill -0 "$ARGOS_PID" >/dev/null 2>&1 || break
+    /usr/bin/nc -z 127.0.0.1 "$LOCAL_SERVICE_PORT" >/dev/null 2>&1 && break
+    kill -0 "$LOCAL_SERVICE_PID" >/dev/null 2>&1 || break
     sleep 0.1
   done
-  if /usr/bin/nc -z 127.0.0.1 "$ARGOS_PORT" >/dev/null 2>&1; then
-    ARGOS_URL="http://127.0.0.1:$ARGOS_PORT"
+  if /usr/bin/nc -z 127.0.0.1 "$LOCAL_SERVICE_PORT" >/dev/null 2>&1; then
+    LOCAL_SERVICE_URL="http://127.0.0.1:$LOCAL_SERVICE_PORT"
   else
-    if [[ -n "$ARGOS_PID" ]] && kill -0 "$ARGOS_PID" >/dev/null 2>&1; then
-      kill "$ARGOS_PID" >/dev/null 2>&1 || true
+    if [[ -n "$LOCAL_SERVICE_PID" ]] && kill -0 "$LOCAL_SERVICE_PID" >/dev/null 2>&1; then
+      kill "$LOCAL_SERVICE_PID" >/dev/null 2>&1 || true
     fi
-    ARGOS_PID=""
-    ARGOS_TOKEN=""
+    LOCAL_SERVICE_PID=""
+    LOCAL_SERVICE_TOKEN=""
   fi
 fi
 
@@ -405,8 +405,8 @@ if ! game_main_running; then
   exit 1
 fi
 
-if [[ -n "$ARGOS_URL" ]]; then
-  CONTROLLER_OUTPUT=$(VNREVIVAL_PRODUCT_NAME="$PRODUCT_NAME" VNREVIVAL_TARGET_TITLE_HINT="$DEBUG_TARGET_TITLE" VNREVIVAL_TARGET_URL_HINT="$DEBUG_TARGET_URL" VNREVIVAL_SOURCE_LABEL="$GAME_ID-translator.bundle.js" "$CONTROLLER" "$PORT" "$TRANSLATOR" "$ARGOS_URL" "$ARGOS_TOKEN" 2>&1)
+if [[ -n "$LOCAL_SERVICE_URL" ]]; then
+  CONTROLLER_OUTPUT=$(VNREVIVAL_PRODUCT_NAME="$PRODUCT_NAME" VNREVIVAL_TARGET_TITLE_HINT="$DEBUG_TARGET_TITLE" VNREVIVAL_TARGET_URL_HINT="$DEBUG_TARGET_URL" VNREVIVAL_SOURCE_LABEL="$GAME_ID-translator.bundle.js" "$CONTROLLER" "$PORT" "$TRANSLATOR" "$LOCAL_SERVICE_URL" "$LOCAL_SERVICE_TOKEN" 2>&1)
 else
   CONTROLLER_OUTPUT=$(VNREVIVAL_PRODUCT_NAME="$PRODUCT_NAME" VNREVIVAL_TARGET_TITLE_HINT="$DEBUG_TARGET_TITLE" VNREVIVAL_TARGET_URL_HINT="$DEBUG_TARGET_URL" VNREVIVAL_SOURCE_LABEL="$GAME_ID-translator.bundle.js" "$CONTROLLER" "$PORT" "$TRANSLATOR" 2>&1)
 fi
@@ -419,7 +419,7 @@ fi
 # Injection succeeded, so cleanup must leave the user-owned game process alive.
 GAME_PID=""
 
-# Keep the local Argos bridge alive for as long as the game is running.
+# Keep the local translator service alive for as long as the game is running.
 while game_main_running; do
   sleep 2
 done

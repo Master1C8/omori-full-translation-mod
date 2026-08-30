@@ -25,4 +25,7 @@ test("runtime panel renders product-owned labels and links", () => {
   assert.match(html, /class="panel"/);
   assert.match(html, /class="secondary translationLogHold"[^>]+aria-pressed="false"[^>]*>Stop scroll<\/button>/);
   assert.match(html, /class="packModal" role="dialog"/);
+  assert.match(html, /class="screenAuto" type="checkbox"/);
+  assert.match(html, /Automatically translate completed dialogue/);
+  assert.doesNotMatch(html, /Allow online translation|allowBulk|cancelBulk|class="privacy"/);
 });

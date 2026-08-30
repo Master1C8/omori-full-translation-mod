@@ -54,7 +54,6 @@ class GameManifestTests(unittest.TestCase):
             value = copy.deepcopy(self.valid)
             value["legacyCompatibility"] = {
                 "cacheFormats": ["omori-legacy-cache"],
-                "argosBridgeGlobal": "__omoriArgosBridge",
                 "coreGlobal": "OMORITranslationCore",
                 "languagesGlobal": "OMORITranslatorLanguages",
                 "translatorGlobal": "__omoriTranslator"

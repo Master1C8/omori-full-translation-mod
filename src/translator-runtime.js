@@ -40,6 +40,7 @@
   const OPENCODE_GO_REFERRAL_URL = "https://opencode.ai/go?ref=SS6M8DKPP0";
   const LM_STUDIO_PROMPT_VERSION = "omori-translation-v1";
   const OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v1";
+  const GOOGLE_CONTEXT_VERSION = "google-context-v1";
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
     "opencode-go": Object.freeze({ name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresKey: true }),
     openrouter: Object.freeze({ name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", requiresKey: true }),
@@ -81,13 +82,14 @@
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY = 60 * 60 * 1000;
   const INTERRUPT_TRANSLATION_LABEL = "Interrupt translation (progress will be saved)";
+  const SCREEN_TRANSLATION_LABEL = "Translate current screen (Ctrl+Shift+T)";
+  const SCREEN_TRANSLATION_CANCEL_LABEL = "Cancel current screen (Ctrl+Shift+T)";
   const GOOGLE_RATE_LIMIT_STATE_KEY = `${game.storageNamespace}.google-rate-limit-state.v2`;
   const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
-  const injectedLocalBridge = window.__vnRevivalLocalBridge || window.__vnRevivalArgosBridge
-    || (legacyCompatibility.argosBridgeGlobal ? window[legacyCompatibility.argosBridgeGlobal] : null);
+  const injectedLocalBridge = window.__vnRevivalLocalBridge;
   const LOCAL_BRIDGE = injectedLocalBridge
     && /^http:\/\/127\.0\.0\.1:\d+$/.test(String(injectedLocalBridge.baseURL || ""))
     && /^[A-Za-z0-9-]{16,}$/.test(String(injectedLocalBridge.token || ""))
@@ -97,9 +99,9 @@
     language: "ru",
     provider: "google",
     autoTranslate: AUTO_APPLY_TRANSLATIONS,
-    privacyAccepted: false,
     mode: "translated",
     translationScope: "story",
+    autoScreenTranslation: false,
     lmStudioModel: "",
     openAICompatiblePreset: "opencode-go",
     openAICompatibleBaseURL: OPENAI_COMPATIBLE_PRESETS["opencode-go"].baseURL,
@@ -124,8 +126,11 @@
   let selfMutation = false;
   let scanTimer = 0;
   let pendingAutoRun = false;
+  let autoScreenTimer = 0;
+  let autoScreenPreparing = false;
   let translationVisibilityObserver = null;
   let lastFailedJobs = [];
+  let lastFailedJobsAllowNetwork = false;
   let dbPromise = null;
   let cacheMetadata = loadCacheMetadata();
   let cacheMetadataPromise = null;
@@ -133,10 +138,6 @@
   let cacheMetadataSaveTimer = 0;
   let translationPackMetadata = loadTranslationPackMetadata();
   let importedPackLanguage = "";
-  let argosStatus = null;
-  let argosBusy = false;
-  let argosSupportedLanguages = null;
-  let managedOfflineProvider = "";
   let geminiStatus = null;
   let geminiBusy = false;
   let lmStudioStatus = null;
@@ -161,6 +162,7 @@
   const visibleTranslationContainers = new Set();
   const pendingTranslationRoots = new Set();
   const pendingAdapterTexts = new Set();
+  const pendingCompletedScreenTexts = new Set();
 
   function emptyCacheMetadata() {
     return { version: 1, records: 0, bytes: 0, languages: {} };
@@ -282,12 +284,10 @@
 
   function loadSettings() {
     let parsed = null;
-    let migratedLegacy = false;
     try { parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null"); } catch (_) {}
     if (!parsed) {
       try {
         parsed = JSON.parse(localStorage.getItem(LEGACY_SETTINGS_KEY) || "null");
-        migratedLegacy = !!parsed;
       } catch (_) {}
     }
     const source = parsed || {};
@@ -303,9 +303,10 @@
       // Retain this field only for settings compatibility. Cache application is
       // intentionally always enabled and is no longer a user-facing option.
       autoTranslate: AUTO_APPLY_TRANSLATIONS,
-      privacyAccepted: typeof source.privacyAccepted === "boolean" ? source.privacyAccepted : migratedLegacy,
       mode: source.mode === "source" ? "source" : defaults.mode,
-      translationScope: source.translationScope === "full" ? "full" : defaults.translationScope,
+      translationScope: ["story", "full", "screen"].includes(source.translationScope)
+        ? source.translationScope : defaults.translationScope,
+      autoScreenTranslation: source.autoScreenTranslation === true,
       lmStudioModel: typeof source.lmStudioModel === "string" && source.lmStudioModel.length <= 512
         ? source.lmStudioModel : defaults.lmStudioModel,
       openAICompatiblePreset,
@@ -345,6 +346,7 @@
 
   function providerCacheVariant(provider) {
     let providerVariant = "";
+    if (provider === "google") providerVariant = GOOGLE_CONTEXT_VERSION;
     if (providerUsesLMStudio(provider) && settings.lmStudioModel) {
       providerVariant = `${settings.lmStudioModel}\n${LM_STUDIO_PROMPT_VERSION}`;
     }
@@ -733,6 +735,46 @@
     saveCacheMetadata(metadata);
   }
 
+  async function clearLegacyGoogleSegmentCache(language) {
+    const db = await openDb();
+    const legacyVariant = core.fingerprint(core.PROTECTED_MARKUP_VERSION);
+    let removed = 0;
+    markCacheMetadataDirty();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      const request = transaction.objectStore(STORE_NAME).openCursor();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (core.cacheKeyGame(cursor.key) === game.id
+          && core.cacheKeyProvider(cursor.key) === "google"
+          && core.cacheKeyLanguage(cursor.key) === language
+          && core.cacheKeyVariant(cursor.key) === legacyVariant) {
+          cursor.delete();
+          removed += 1;
+        }
+        cursor.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Legacy Google cache deletion failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("Legacy Google cache deletion was aborted"));
+    });
+    memoryCache.clear();
+    fuzzyMemoryCache.clear();
+    await rebuildCacheMetadata();
+    return removed;
+  }
+
+  async function migrateLegacyGoogleSegmentCache() {
+    const language = settings.language;
+    const migrationKey = `${game.storageNamespace}.google-context-cache-cleared.v1.${language}`;
+    if (localStorage.getItem(migrationKey) === "1") return 0;
+    const removed = await clearLegacyGoogleSegmentCache(language);
+    localStorage.setItem(migrationKey, "1");
+    return removed;
+  }
+
   async function clearAllCache() {
     const db = await openDb();
     markCacheMetadataDirty();
@@ -744,6 +786,7 @@
       transaction.objectStore(STORE_NAME).clear();
     });
     memoryCache.clear();
+    fuzzyMemoryCache.clear();
     cacheMetadata = emptyCacheMetadata();
     cacheMetadataVerified = true;
     saveCacheMetadata(cacheMetadata);
@@ -950,14 +993,17 @@
     throw new DOMException("Aborted", "AbortError");
   }
 
-  async function translateProviderText(provider, text, language, signal, request) {
+  async function translateProviderText(provider, text, language, signal, request, delayOverride) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) throw new Error("Unknown translation service");
     const chunks = selectedProvider.splitText(text);
     const parts = [];
+    const delay = Number.isFinite(delayOverride)
+      ? Math.max(0, delayOverride)
+      : selectedProvider.delay;
     for (const chunk of chunks) {
       parts.push(await request(chunk));
-      await sleep(selectedProvider.delay, signal);
+      if (delay) await sleep(delay, signal);
     }
     const translated = parts.join(" ").replace(/ +\n/g, "\n").trim();
     if (translated.toLowerCase().includes("undefined") && !text.toLowerCase().includes("undefined")) {
@@ -966,10 +1012,15 @@
     return translated;
   }
 
-  async function translateWithProtectedMarkup(source, language, provider, signal, request) {
+  async function translateWithProtectedMarkup(
+    source, language, provider, signal, request, delayOverride, protectedOptions
+  ) {
     return core.translateProtectedText(
       source,
-      (text) => translateProviderText(provider, text, language, signal, (chunk) => request(chunk))
+      (text) => translateProviderText(
+        provider, text, language, signal, (chunk) => request(chunk), delayOverride
+      ),
+      Object.assign({ language, contextual: true }, protectedOptions || {})
     );
   }
 
@@ -1291,6 +1342,8 @@
 
   function showOriginal() {
     settings.mode = "source";
+    clearCompletedScreenTranslationQueue();
+    if (activeOperation === "screen-auto") abortActiveOperation("showing original text");
     pruneAppliedNodes();
     for (const node of appliedNodes) {
       const record = applied.get(node);
@@ -1394,18 +1447,78 @@
     return jobs.sort((a, b) => priority[a.kind] - priority[b.kind]);
   }
 
-  async function applyJobTranslation(job, language, provider, signal, generation) {
-    const result = await translateText(job.source, language, provider, signal, false);
+  function queryMemoryTranslation(source, language = settings.language, provider = settings.provider) {
+    if (!core.normalizeText(source)) return null;
+    const imported = importedPackMemoryGet(source, language);
+    if (imported) return imported;
+    const key = makeTranslationCacheKey(source, language, provider);
+    let hit = memoryCache.get(key);
+    if (!hit) {
+      const fuzzySource = core.stripOmoriPrefixes(source);
+      if (fuzzySource) {
+        const fuzzyKey = `${game.id}\n${providerCacheScope(provider)}\n${language}\n${fuzzySource}`;
+        hit = fuzzyMemoryCache.get(fuzzyKey);
+      }
+    }
+    return hit && core.protectedMarkupLayoutMatches(source, hit) ? hit : null;
+  }
+
+  function buildScreenAdapterJobs(sources) {
+    const cachedJobs = [];
+    const freshSources = [];
+    for (const source of sources) {
+      const job = { source, nodes: [], kind: "ui", contextual: false, adapterOnly: true };
+      if (queryMemoryTranslation(source)) cachedJobs.push(job);
+      else freshSources.push(source);
+    }
+
+    const freshJobs = [];
+    const contextLimit = Number(PROVIDERS[settings.provider] && PROVIDERS[settings.provider].contextLimit) || 3200;
+    let offset = 0;
+    while (offset < freshSources.length) {
+      let size = Math.min(12, freshSources.length - offset);
+      let slice = freshSources.slice(offset, offset + size);
+      let contextSource = core.buildContextSource(slice);
+      while (size > 1 && (contextSource.length > contextLimit || core.utf8Length(contextSource) > contextLimit)) {
+        size -= 1;
+        slice = freshSources.slice(offset, offset + size);
+        contextSource = core.buildContextSource(slice);
+      }
+      if (size > 1) {
+        freshJobs.push({
+          source: contextSource,
+          nodes: [],
+          parts: slice.map((source) => ({ source, node: null, kind: "ui" })),
+          kind: "ui",
+          contextual: true,
+          adapterOnly: true
+        });
+      } else {
+        freshJobs.push({ source: slice[0], nodes: [], kind: "ui", contextual: false, adapterOnly: true });
+      }
+      offset += size;
+    }
+    return cachedJobs.concat(freshJobs);
+  }
+
+  async function applyJobTranslation(job, language, provider, signal, generation, allowNetwork, onRateLimitWait) {
+    const result = await translateText(
+      job.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait
+    );
     if (generation !== settingsGeneration) throw new DOMException("Settings changed", "AbortError");
     if (result.skipped) {
-      if (job.adapterOnly) pendingAdapterTexts.delete(job.source);
+      if (job.adapterOnly) {
+        if (job.contextual && Array.isArray(job.parts)) {
+          for (const part of job.parts) pendingAdapterTexts.delete(part.source);
+        } else pendingAdapterTexts.delete(job.source);
+      }
       return "missing";
     }
-    if (job.adapterOnly) {
-      pendingAdapterTexts.delete(job.source);
-      return result.cached ? "hit" : "updated";
-    }
     if (!job.contextual) {
+      if (job.adapterOnly) {
+        pendingAdapterTexts.delete(job.source);
+        return result.cached ? "hit" : "updated";
+      }
       for (const node of job.nodes) {
         if (node.isConnected && sourceForNode(node) === job.source) rememberTranslation(node, job.source, result.text, language, provider);
       }
@@ -1415,44 +1528,55 @@
     if (contextualParts) {
       for (let index = 0; index < job.parts.length; index += 1) {
         const part = job.parts[index];
-        if (!result.cached) {
+        if (!result.cached || job.adapterOnly) {
           await cachePut(makeTranslationCacheKey(part.source, language, provider), contextualParts[index]);
         }
-        if (part.node.isConnected && sourceForNode(part.node) === part.source) {
+        if (part.node && part.node.isConnected && sourceForNode(part.node) === part.source) {
           rememberTranslation(part.node, part.source, contextualParts[index], language, provider);
         }
+        if (job.adapterOnly) pendingAdapterTexts.delete(part.source);
       }
       return result.cached ? "hit" : "updated";
     }
     let allCached = true;
     for (const part of job.parts) {
-      const fallback = await translateText(part.source, language, provider, signal, false);
+      const fallback = await translateText(
+        part.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait
+      );
       allCached = allCached && fallback.cached;
-      if (part.node.isConnected && sourceForNode(part.node) === part.source) {
+      if (part.node && part.node.isConnected && sourceForNode(part.node) === part.source) {
         rememberTranslation(part.node, part.source, fallback.text, language, provider);
       }
+      if (job.adapterOnly) pendingAdapterTexts.delete(part.source);
     }
     return allCached ? "hit" : "updated";
   }
 
   async function runJobs(jobs, options) {
     const manual = !!(options && options.manual);
+    const allowNetwork = !!(options && options.allowNetwork);
+    const automaticScreen = !!(options && options.automaticScreen);
+    const providerReady = !!(options && options.providerReady);
     if (running) {
       if (manual) abortActiveOperation("cancelled by user");
       else pendingAutoRun = true;
       return;
     }
     if (!jobs.length) {
-      setStatus("Screen already translated");
+      setStatus(allowNetwork ? "No translatable text is visible on this screen" : "Screen already translated");
       return;
     }
+    if (allowNetwork && !providerReady
+      && !(await ensureTranslationProviderReady(automaticScreen ? "auto-screen" : "screen"))) return;
 
     running = true;
-    activeOperation = "screen";
+    activeOperation = automaticScreen ? "screen-auto" : allowNetwork ? "screen" : "screen-sync";
     activeAbortReason = "";
     abortController = new AbortController();
+    if (allowNetwork) setScreenButtonWorking();
     retryButton.hidden = true;
     lastFailedJobs = [];
+    lastFailedJobsAllowNetwork = allowNetwork;
     const language = settings.language;
     const provider = settings.provider;
     const generation = settingsGeneration;
@@ -1472,7 +1596,10 @@
         if (index >= jobs.length) return;
         const job = jobs[index];
         try {
-          const outcome = await applyJobTranslation(job, language, provider, abortController.signal, generation);
+          const outcome = await applyJobTranslation(
+            job, language, provider, abortController.signal, generation, allowNetwork,
+            (seconds) => setStatus(`Rate limited · retrying in ${Math.max(1, Number(seconds) || 1)} s`)
+          );
           if (outcome === "hit") cacheHits += 1;
           else if (outcome === "missing") cacheMisses += 1;
         } catch (error) {
@@ -1481,7 +1608,9 @@
           lastFailedJobs.push(job);
         }
         done += 1;
-        setStatus(`Syncing ${done}/${jobs.length}`);
+        setStatus(`${automaticScreen
+          ? "Translating completed dialogue"
+          : allowNetwork ? "Translating current screen" : "Syncing"} ${done}/${jobs.length}`);
       }
     }
 
@@ -1498,7 +1627,10 @@
         else setStatus(`Done: ${jobs.length - lastFailedJobs.length}, errors: ${lastFailedJobs.length}`);
         retryButton.hidden = false;
       } else {
-        setStatus(`Synced from cache: ${cacheHits}` + (cacheMisses ? ` · missing: ${cacheMisses}` : ""));
+        setStatus(allowNetwork
+          ? `${automaticScreen ? "Dialogue" : "Current screen"} translated: ${jobs.length}`
+            + (cacheHits ? ` · from cache: ${cacheHits}` : "")
+          : `Synced from cache: ${cacheHits}` + (cacheMisses ? ` · missing: ${cacheMisses}` : ""));
       }
     } catch (error) {
       setStatus(error && error.name === "AbortError"
@@ -1509,24 +1641,18 @@
       abortController = null;
       activeOperation = null;
       activeAbortReason = "";
+      if (allowNetwork) setScreenButtonIdle();
       refreshCacheStats();
       if (pendingAutoRun) {
         pendingAutoRun = false;
         scheduleAutoTranslation(250);
       }
+      if (pendingCompletedScreenTexts.size) scheduleCompletedScreenTranslation(250);
     }
   }
 
-  async function ensureBulkProviderReady() {
-    if (providerUsesManagedOffline(settings.provider)) {
-      const status = await refreshArgosStatus();
-      if (!status || !status.offlineReady) {
-        const engine = managedOfflineEngine(settings.provider);
-        setStatus(status && status.runtimeInstalled && status.sentenceModelInstalled
-          ? `Download the ${engine.name} model first` : `Install ${engine.name} first`);
-        return false;
-      }
-    } else if (providerUsesGemini(settings.provider)) {
+  async function ensureTranslationProviderReady(purpose) {
+    if (providerUsesGemini(settings.provider)) {
       const status = await refreshGeminiStatus();
       if (!status || !status.configured) {
         setStatus("Add a Gemini API key first");
@@ -1557,33 +1683,7 @@
         return false;
       }
     }
-    if (providerRequiresPrivacy(settings.provider) && !settings.privacyAccepted) {
-      privacyBox.hidden = false;
-      setStatus("Confirm bulk upload before translation");
-      return false;
-    }
     return true;
-  }
-
-  async function prepareManagedOfflineTestPhraseTarget(provider, language, name, signal, onProgress) {
-    const engine = managedOfflineEngine(provider);
-    const statusPath = engine.statusPath + "?target=" + encodeURIComponent(language);
-    let status = await requestLocalHelper(statusPath, { signal });
-    if (!status.supported) throw new Error(`${engine.name} has no English → ${name} model`);
-    let installed = false;
-    if (!status.runtimeInstalled || !status.sentenceModelInstalled) {
-      if (!engine.runtimeInstallPath) throw new Error(`The bundled ${engine.name} engine is unavailable`);
-      if (typeof onProgress === "function") onProgress(`installing the ${engine.name} engine for ${name}`);
-      await requestLocalHelper(engine.runtimeInstallPath, { body: { accepted: true }, signal });
-      status = await requestLocalHelper(statusPath, { signal });
-    }
-    if (!status.modelInstalled) {
-      if (typeof onProgress === "function") onProgress(`preparing the English → ${name} ${engine.name} model`);
-      status = await requestLocalHelper(engine.modelInstallPath, { body: { target: language }, signal });
-      installed = true;
-    }
-    if (!status.offlineReady) throw new Error(`${engine.name} could not prepare the English → ${name} model`);
-    return { installed, status };
   }
 
   async function translateAdapterText(source) {
@@ -1594,6 +1694,66 @@
     return result;
   }
 
+  function clearCompletedScreenTranslationQueue() {
+    clearTimeout(autoScreenTimer);
+    autoScreenTimer = 0;
+    pendingCompletedScreenTexts.clear();
+  }
+
+  function scheduleCompletedScreenTranslation(delay) {
+    if (autoScreenTimer || !pendingCompletedScreenTexts.size) return;
+    autoScreenTimer = setTimeout(() => {
+      autoScreenTimer = 0;
+      void translateCompletedScreenTexts();
+    }, Number(delay) || 250);
+  }
+
+  function registerCompletedScreenText(source) {
+    const text = String(source == null ? "" : source).trim();
+    if (!settings.autoScreenTranslation || settings.translationScope !== "screen"
+      || settings.mode !== "translated" || !hasSourceText(text)) return false;
+    pendingCompletedScreenTexts.add(text);
+    scheduleCompletedScreenTranslation(250);
+    return true;
+  }
+
+  async function translateCompletedScreenTexts() {
+    if (autoScreenPreparing || !pendingCompletedScreenTexts.size) return;
+    if (!settings.autoScreenTranslation || settings.translationScope !== "screen"
+      || settings.mode !== "translated") {
+      clearCompletedScreenTranslationQueue();
+      return;
+    }
+    if (running) {
+      scheduleCompletedScreenTranslation(250);
+      return;
+    }
+    autoScreenPreparing = true;
+    let providerWasReady = false;
+    try {
+      if (!(await ensureTranslationProviderReady("auto-screen"))) return;
+      providerWasReady = true;
+      if (running || !settings.autoScreenTranslation || settings.translationScope !== "screen"
+        || settings.mode !== "translated") {
+        if (running) scheduleCompletedScreenTranslation(250);
+        return;
+      }
+      const sources = Array.from(pendingCompletedScreenTexts);
+      pendingCompletedScreenTexts.clear();
+      await runJobs(buildScreenAdapterJobs(sources), {
+        manual: false,
+        allowNetwork: true,
+        automaticScreen: true,
+        providerReady: true
+      });
+    } finally {
+      autoScreenPreparing = false;
+      if (providerWasReady && pendingCompletedScreenTexts.size) {
+        scheduleCompletedScreenTranslation(250);
+      }
+    }
+  }
+
   function translateScreen(manual) {
     const isManual = manual !== false;
     if (running) {
@@ -1601,23 +1761,45 @@
       else pendingAutoRun = true;
       return;
     }
+    if (!isManual && settings.translationScope === "screen") {
+      takeAutoTranslationRoots();
+      pendingAdapterTexts.clear();
+      return Promise.resolve();
+    }
     const roots = isManual ? null : takeAutoTranslationRoots();
     if (!isManual && !roots.length && !pendingAdapterTexts.size) return Promise.resolve();
     const jobs = buildJobs(collectVisibleTextNodes(roots ? { roots } : null));
-    if (pendingAdapterTexts.size > 0) {
-      for (const source of pendingAdapterTexts) {
-        jobs.push({ source, nodes: [], kind: "ui", contextual: false, adapterOnly: true });
-      }
+    const manualScreen = isManual && settings.translationScope === "screen";
+    let adapterTexts = pendingAdapterTexts;
+    if (manualScreen && typeof adapter.collectVisibleTexts === "function") {
+      const collected = adapter.collectVisibleTexts();
+      adapterTexts = new Set(Array.isArray(collected) ? collected : []);
       pendingAdapterTexts.clear();
     }
+    if (adapterTexts.size > 0) {
+      const existingSources = new Set(jobs.map((job) => job.source));
+      const standaloneSources = [];
+      for (const source of adapterTexts) {
+        if (existingSources.has(source) || !hasSourceText(source)) continue;
+        standaloneSources.push(source);
+      }
+      jobs.push(...(manualScreen
+        ? buildScreenAdapterJobs(standaloneSources)
+        : standaloneSources.map((source) => ({ source, nodes: [], kind: "ui", contextual: false, adapterOnly: true }))));
+      if (adapterTexts === pendingAdapterTexts) pendingAdapterTexts.clear();
+    }
     if (!isManual && !jobs.length) return Promise.resolve();
-    return runJobs(jobs, { manual: isManual });
+    return runJobs(jobs, { manual: isManual, allowNetwork: manualScreen });
   }
 
   function retryFailed() {
-    const jobs = lastFailedJobs.filter((job) => job.nodes.some((node) => node.isConnected));
+    const jobs = lastFailedJobs.filter((job) => job.adapterOnly || job.nodes.some((node) => node.isConnected));
+    const allowNetwork = lastFailedJobsAllowNetwork;
     lastFailedJobs = [];
-    return runJobs(jobs.length ? jobs : buildJobs(collectVisibleTextNodes()), { manual: true });
+    lastFailedJobsAllowNetwork = false;
+    return runJobs(jobs.length ? jobs : buildJobs(collectVisibleTextNodes()), {
+      manual: true, allowNetwork
+    });
   }
 
   function reapplyKnownTranslations(roots) {
@@ -1650,6 +1832,10 @@
       }
       const roots = takeAutoTranslationRoots();
       if (!roots.length && !pendingAdapterTexts.size) return;
+      if (settings.translationScope === "screen") {
+        pendingAdapterTexts.clear();
+        return;
+      }
       reapplyKnownTranslations(roots);
       for (const root of roots) pendingTranslationRoots.add(root);
       if (settings.mode === "translated") translateScreen(false);
@@ -1987,7 +2173,279 @@
     }
   }
 
+  function buildGoogleBulkBlocks(entries, providerConfig) {
+    const maximumItems = Math.max(1, Number(providerConfig.bulkMaxItems) || 1);
+    const maximumSize = Math.max(64, Number(providerConfig.contextLimit) || core.GOOGLE_MAX_CHARS);
+    const blocks = [];
+    let block = [];
+    for (const entry of entries) {
+      const candidate = block.concat(entry);
+      const contextSource = core.buildContextSource(candidate.map((item) => item.source));
+      const candidateFits = candidate.length <= maximumItems
+        && contextSource.length <= maximumSize
+        && core.utf8Length(contextSource) <= maximumSize;
+      if (block.length && !candidateFits) {
+        blocks.push(block);
+        block = [entry];
+      } else {
+        block = candidate;
+      }
+    }
+    if (block.length) blocks.push(block);
+    return blocks;
+  }
+
+  function reducedGoogleBulkBlockSize(currentSize, blockLength, error) {
+    const current = Math.max(1, Number(currentSize) || 1);
+    const length = Math.max(1, Number(blockLength) || 1);
+    if (length < 3) return current;
+    const acceptedCount = Array.isArray(error && error.acceptedEntries)
+      ? error.acceptedEntries.length : 0;
+    return acceptedCount > 0
+      ? Math.max(3, current - 2)
+      : Math.max(3, Math.ceil(Math.min(current, length) / 2));
+  }
+
+  function googleBulkFormatError(message, code) {
+    const error = new Error(message);
+    error.code = code || "markup_format_invalid";
+    return error;
+  }
+
+  async function saveGoogleBulkTranslations(entries, translations, language, provider) {
+    if (!Array.isArray(translations) || translations.length !== entries.length) {
+      throw googleBulkFormatError("Google returned an incomplete translation block");
+    }
+    const acceptedEntries = [];
+    const rejectedEntries = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      if (!core.translationQualityMatches(entries[index].source, translations[index], language)) {
+        rejectedEntries.push(entries[index]);
+      } else {
+        acceptedEntries.push({ entry: entries[index], translation: translations[index] });
+      }
+    }
+    for (const accepted of acceptedEntries) {
+      const source = accepted.entry.source;
+      const translated = accepted.translation;
+      await cachePut(makeTranslationCacheKey(source, language, provider), translated);
+      appendTranslationLog(source, translated, language, provider, false);
+      logActivityToBridge(provider, source, translated, false);
+      await logTranslationToBridge(provider, language, source, translated, false);
+    }
+    return {
+      acceptedEntries: acceptedEntries.map((accepted) => accepted.entry),
+      rejectedEntries
+    };
+  }
+
+  async function translateGoogleBulkBlock(entries, language, provider, signal, request) {
+    const blockOptions = { contextFallback: false, contextualQuality: false };
+    if (entries.length === 1) {
+      const result = await translateWithProtectedMarkup(
+        entries[0].source, language, provider, signal, request, 0, blockOptions
+      );
+      const saved = await saveGoogleBulkTranslations(entries, [result.text], language, provider);
+      if (saved.rejectedEntries.length) {
+        const error = googleBulkFormatError(
+          "Google lost or duplicated text inside a translation block",
+          "translation_quality_invalid"
+        );
+        error.acceptedEntries = saved.acceptedEntries;
+        error.rejectedEntries = saved.rejectedEntries;
+        throw error;
+      }
+      return saved;
+    }
+    const contextSource = core.buildContextSource(entries.map((entry) => entry.source));
+    const result = await translateWithProtectedMarkup(
+      contextSource, language, provider, signal, request, 0, blockOptions
+    );
+    const translations = core.parseContextTranslation(result.text, entries.length);
+    if (!translations) throw googleBulkFormatError("Google changed the translation block separators");
+    const saved = await saveGoogleBulkTranslations(entries, translations, language, provider);
+    if (saved.rejectedEntries.length) {
+      const error = googleBulkFormatError(
+        "Google lost or duplicated text inside a translation block",
+        "translation_quality_invalid"
+      );
+      error.acceptedEntries = saved.acceptedEntries;
+      error.rejectedEntries = saved.rejectedEntries;
+      throw error;
+    }
+    return saved;
+  }
+
+  async function translateGoogleBulkLanguage(strings, language, provider, signal, onProgress) {
+    const providerConfig = PROVIDERS[provider];
+    const wordCounts = strings.map(countTranslationWords);
+    const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
+    let done = 0;
+    let completedWords = 0;
+    let newlyTranslated = 0;
+    let failed = 0;
+    const failureReasons = new Map();
+    const freshEntries = [];
+    let nextRequestAt = 0;
+
+    function reportProgress(rateLimitSeconds, force) {
+      if (onProgress && (force || done % 5 === 0 || done === strings.length)) {
+        onProgress({
+          done, completedWords, totalWords, newlyTranslated, failed,
+          rateLimitSeconds: rateLimitSeconds || 0
+        });
+      }
+    }
+
+    function recordFailure(error, entries) {
+      const reason = describeTranslationFailure(error, provider);
+      failed += entries.length;
+      failureReasons.set(reason, (failureReasons.get(reason) || 0) + entries.length);
+    }
+
+    function complete(entries, translatedCount) {
+      done += entries.length;
+      completedWords += entries.reduce((sum, entry) => sum + entry.wordCount, 0);
+      newlyTranslated += translatedCount;
+    }
+
+    async function requestPacedChunk(chunk) {
+      const remaining = Math.max(0, nextRequestAt - Date.now());
+      if (remaining) await sleep(remaining, signal);
+      nextRequestAt = Date.now() + Math.max(0, Number(providerConfig.bulkDelay) || 5000);
+      return requestRateLimitedChunk(
+        provider, chunk, language, signal,
+        (seconds) => reportProgress(seconds, true)
+      );
+    }
+
+    function isSplittableGoogleBulkFailure(error) {
+      return error && (error.code === "markup_format_invalid"
+        || error.code === "translation_quality_invalid");
+    }
+
+    async function finishAdaptiveGoogleBlock(entries, error) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const acceptedEntries = Array.isArray(error && error.acceptedEntries)
+        ? error.acceptedEntries : [];
+      const rejectedEntries = Array.isArray(error && error.rejectedEntries)
+        ? error.rejectedEntries : entries;
+      if (acceptedEntries.length) {
+        complete(acceptedEntries, acceptedEntries.length);
+        reportProgress(0, true);
+      }
+      if (!rejectedEntries.length) return;
+      if (!isSplittableGoogleBulkFailure(error) || (entries.length === 1 && rejectedEntries.length === 1)) {
+        recordFailure(error, rejectedEntries);
+        complete(rejectedEntries, 0);
+        console.error(`Google Bulk error for ${rejectedEntries.length} strings (${language}):`, error);
+        reportProgress(0, true);
+        return;
+      }
+      if (rejectedEntries.length < entries.length) {
+        console.warn(`Google Bulk is retrying only ${rejectedEntries.length} rejected strings from a ${entries.length}-string block`);
+        try {
+          await translateGoogleBulkBlock(rejectedEntries, language, provider, signal, requestPacedChunk);
+          complete(rejectedEntries, rejectedEntries.length);
+          reportProgress(0, true);
+        } catch (retryError) {
+          if (retryError && retryError.name === "AbortError") throw retryError;
+          await finishAdaptiveGoogleBlock(rejectedEntries, retryError);
+        }
+        return;
+      }
+      const middle = Math.ceil(rejectedEntries.length / 2);
+      const parts = [rejectedEntries.slice(0, middle), rejectedEntries.slice(middle)];
+      console.warn(`Google Bulk is splitting a rejected ${rejectedEntries.length}-string block into smaller blocks`);
+      for (const part of parts) {
+        try {
+          await translateGoogleBulkBlock(part, language, provider, signal, requestPacedChunk);
+          complete(part, part.length);
+          reportProgress(0, true);
+        } catch (partError) {
+          if (partError && partError.name === "AbortError") throw partError;
+          await finishAdaptiveGoogleBlock(part, partError);
+        }
+      }
+    }
+
+    for (let index = 0; index < strings.length; index += 1) {
+      if (signal.aborted) break;
+      const entry = { source: strings[index], wordCount: wordCounts[index] };
+      try {
+        const result = await translateText(entry.source, language, provider, signal, false, true);
+        if (result.skipped) {
+          freshEntries.push(entry);
+          continue;
+        }
+      } catch (error) {
+        if (error && error.name === "AbortError") break;
+        recordFailure(error, [entry]);
+        console.error(`Bulk cache lookup error for "${entry.source}" (${language}):`, error);
+      }
+      complete([entry], 0);
+      reportProgress(0, false);
+    }
+
+    const pendingBlocks = buildGoogleBulkBlocks(freshEntries, providerConfig);
+    const maximumAdaptiveBlockSize = Math.max(1, Number(providerConfig.bulkMaxItems) || 1);
+    let adaptiveBlockSize = maximumAdaptiveBlockSize;
+    let consecutiveCleanBlocks = 0;
+    const consecutiveFailureLimit = Math.max(
+      1, Number(providerConfig.bulkConsecutiveFailureLimit) || 3
+    );
+    let consecutiveFullBlockFailures = 0;
+    while (pendingBlocks.length) {
+      if (signal.aborted) break;
+      const pendingBlock = pendingBlocks.shift();
+      const block = pendingBlock.length > adaptiveBlockSize
+        ? pendingBlock.slice(0, adaptiveBlockSize) : pendingBlock;
+      if (pendingBlock.length > block.length) pendingBlocks.unshift(pendingBlock.slice(block.length));
+      try {
+        await translateGoogleBulkBlock(block, language, provider, signal, requestPacedChunk);
+        consecutiveFullBlockFailures = 0;
+        consecutiveCleanBlocks += 1;
+        if (adaptiveBlockSize < maximumAdaptiveBlockSize && consecutiveCleanBlocks >= 4) {
+          const previousSize = adaptiveBlockSize;
+          adaptiveBlockSize = Math.min(maximumAdaptiveBlockSize, adaptiveBlockSize + 2);
+          consecutiveCleanBlocks = 0;
+          console.info(`Google Bulk increased clean block size from ${previousSize} to ${adaptiveBlockSize}`);
+        }
+        complete(block, block.length);
+        reportProgress(0, true);
+      } catch (error) {
+        if (error && error.name === "AbortError") break;
+        consecutiveCleanBlocks = 0;
+        const reducedBlockSize = reducedGoogleBulkBlockSize(adaptiveBlockSize, block.length, error);
+        if (reducedBlockSize < adaptiveBlockSize) {
+          console.warn(`Google Bulk reduced new block size from ${adaptiveBlockSize} to ${reducedBlockSize}`);
+          adaptiveBlockSize = reducedBlockSize;
+        }
+        const translatedBeforeFallback = newlyTranslated;
+        const failedBeforeFallback = failed;
+        await finishAdaptiveGoogleBlock(block, error);
+        const fallbackTranslated = newlyTranslated - translatedBeforeFallback;
+        const fallbackFailed = failed - failedBeforeFallback;
+        const blockFailedAfterFallback = fallbackTranslated === 0 && fallbackFailed >= block.length;
+        consecutiveFullBlockFailures = blockFailedAfterFallback
+          ? consecutiveFullBlockFailures + 1 : 0;
+        if (consecutiveFullBlockFailures >= consecutiveFailureLimit) {
+          const stopError = new Error(
+            `Google Bulk stopped after ${consecutiveFailureLimit} consecutive blocks failed after fallback. `
+            + "Completed translations were saved; run it again or choose another provider."
+          );
+          stopError.code = "google_bulk_block_failures";
+          throw stopError;
+        }
+      }
+    }
+    return { done, completedWords, totalWords, newlyTranslated, failed, failureReasons };
+  }
+
   async function translateBulkLanguage(strings, language, provider, signal, onProgress) {
+    if (provider === "google") {
+      return translateGoogleBulkLanguage(strings, language, provider, signal, onProgress);
+    }
     const providerConfig = PROVIDERS[provider];
     const wordCounts = strings.map(countTranslationWords);
     const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
@@ -2052,6 +2510,7 @@
     }
     if (bulkPreparing) return;
     bulkPreparing = true;
+    let keepWorkspaceOpen = false;
     setBulkButtonWorking("Starting…");
     try {
       await new Promise((resolve) => {
@@ -2060,7 +2519,7 @@
         requestAnimationFrame(finish);
         setTimeout(finish, 100);
       });
-      if (!(await ensureBulkProviderReady())) return;
+      if (!(await ensureTranslationProviderReady("bulk"))) return;
 
       running = true;
       activeOperation = "bulk";
@@ -2103,8 +2562,10 @@
       const { done, newlyTranslated, failed, failureReasons } = result;
 
       if (abortController.signal.aborted) {
+        keepWorkspaceOpen = true;
         setStatus(`Bulk stopped at ${done}/${strings.length}: ${activeAbortReason || "unknown cancellation reason"}`);
       } else if (failed > 0) {
+        keepWorkspaceOpen = true;
         const reasons = Array.from(failureReasons.entries())
           .map(([reason, count]) => `${reason} (${count})`)
           .join("; ");
@@ -2116,6 +2577,7 @@
       }
 
     } catch (error) {
+      keepWorkspaceOpen = panel.classList.contains("bulkBusy");
       if (error && error.name === "AbortError") {
         setStatus(`Bulk stopped: ${activeAbortReason || "cancelled by user"}`);
       } else {
@@ -2127,7 +2589,8 @@
       abortController = null;
       activeOperation = null;
       activeAbortReason = "";
-      setBulkUiBusy(false);
+      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) setBulkUiStopped();
+      else setBulkUiBusy(false);
       setBulkButtonIdle();
       refreshCacheStats();
     }
@@ -2144,6 +2607,7 @@
     }
     if (bulkPreparing) return;
     bulkPreparing = true;
+    let keepWorkspaceOpen = false;
     setTestPhraseButtonWorking("Starting…");
     try {
       await new Promise((resolve) => {
@@ -2154,24 +2618,13 @@
       });
       const provider = settings.provider;
       const providerConfig = PROVIDERS[provider];
-      if (providerUsesManagedOffline(provider)) {
-        if (!LOCAL_BRIDGE) {
-          setStatus(`The local offline translation helper is not running. Restart the game through ${PRODUCT_NAME}.`);
-          return;
-        }
-        if (!(await refreshArgosStatus())) return;
-      } else if (!(await ensureBulkProviderReady())) return;
-      const targets = languagesForProvider(provider).filter(([code]) => providerConfig.supportsLanguage(code, {
-        localLanguages: argosSupportedLanguages
-      }));
+      if (!(await ensureTranslationProviderReady("bulk"))) return;
+      const targets = languagesForProvider(provider).filter(([code]) => providerConfig.supportsLanguage(code));
       if (!targets.length) throw new Error("Selected service has no available target languages");
       if (!confirm(
         `Translate the current OMORI test phrase into ${targets.length} languages using ${providerConfig.label}? `
         + "Existing cached languages will be skipped."
         + (provider === "google" ? " Google processes one language every second and may pause after a temporary block." : "")
-        + (providerUsesManagedOffline(provider)
-          ? " The offline engine and missing models will be prepared automatically; models stay on disk. This can use substantial disk space and take a long time."
-          : "")
       )) {
         setStatus("Test phrase translation cancelled before start");
         return;
@@ -2193,7 +2646,6 @@
       let cached = 0;
       let created = 0;
       let failed = 0;
-      let installedModels = 0;
       const failureReasons = new Map();
 
       async function worker() {
@@ -2201,7 +2653,7 @@
           const index = nextIndex;
           nextIndex += 1;
           if (index >= targets.length) return;
-          const [language, name] = targets[index];
+          const [language] = targets[index];
           const key = makeTranslationCacheKey(LANGUAGE_TEST_PHRASE_SOURCE, language, provider);
           try {
             let existing = await importedPackGet(LANGUAGE_TEST_PHRASE_SOURCE, language);
@@ -2213,21 +2665,6 @@
               appendTranslationLog(LANGUAGE_TEST_PHRASE_SOURCE, existing, language, existingImported ? "Imported translation" : provider, true);
               if (!existingImported) await logTranslationToBridge(provider, language, LANGUAGE_TEST_PHRASE_SOURCE, existing, true);
             } else {
-              if (providerUsesManagedOffline(provider)) {
-                const prepared = await prepareManagedOfflineTestPhraseTarget(
-                  provider,
-                  language,
-                  name,
-                  signal,
-                  () => {
-                    etaTracker.pause();
-                    setStatus(translationProgressText(
-                      done * phraseWords, totalWords, etaTracker.current(), 0, provider
-                    ));
-                  }
-                );
-                if (prepared.installed) installedModels += 1;
-              }
               const protectedResult = await translateWithProtectedMarkup(
                 LANGUAGE_TEST_PHRASE_SOURCE,
                 language,
@@ -2281,24 +2718,18 @@
       const concurrency = 1;
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
       if (signal.aborted) {
-        setStatus(
-          `Test phrase stopped at ${done}/${targets.length}: ${activeAbortReason || "cancelled by user"}`
-          + (providerUsesManagedOffline(provider) ? ` · ${installedModels} models installed` : "")
-        );
+        keepWorkspaceOpen = true;
+        setStatus(`Test phrase stopped at ${done}/${targets.length}: ${activeAbortReason || "cancelled by user"}`);
       } else if (failed) {
+        keepWorkspaceOpen = true;
         const reasons = Array.from(failureReasons.entries()).map(([reason, count]) => `${reason} (${count})`).join("; ");
-        setStatus(
-          `Test phrase incomplete: ${targets.length - failed}/${targets.length} ready · ${reasons}`
-          + (providerUsesManagedOffline(provider) ? ` · ${installedModels} models installed` : "")
-        );
+        setStatus(`Test phrase incomplete: ${targets.length - failed}/${targets.length} ready · ${reasons}`);
       } else {
         await reloadSelectedLanguageCache(false);
-        setStatus(
-          `Test phrase ready in ${targets.length} languages · ${created} new · ${cached} cached`
-          + (providerUsesManagedOffline(provider) ? ` · ${installedModels} models installed` : "")
-        );
+        setStatus(`Test phrase ready in ${targets.length} languages · ${created} new · ${cached} cached`);
       }
     } catch (error) {
+      keepWorkspaceOpen = panel.classList.contains("bulkBusy");
       setStatus(error && error.name === "AbortError"
         ? `Test phrase stopped: ${activeAbortReason || "cancelled by user"}`
         : (error.message || "Test phrase translation failed"));
@@ -2308,32 +2739,60 @@
       abortController = null;
       activeOperation = null;
       activeAbortReason = "";
-      setBulkUiBusy(false);
+      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) setBulkUiStopped();
+      else setBulkUiBusy(false);
       setTestPhraseButtonIdle();
-      if (providerUsesManagedOffline(settings.provider)) refreshArgosStatus();
       refreshCacheStats();
     }
   }
 
   async function deleteAllTranslatorData() {
+    if (!LOCAL_BRIDGE) {
+      throw new Error(`Factory reset requires the local helper. Restart the game through ${PRODUCT_NAME}.`);
+    }
+    const credentialScopes = Array.from(new Set(
+      Object.values(OPENAI_COMPATIBLE_PRESETS).map((preset) => preset.baseURL).filter(Boolean)
+        .concat(settings.openAICompatibleBaseURL ? [settings.openAICompatibleBaseURL] : [])
+    ));
+    await requestLocalHelper("/v1/reset", {
+      body: { accepted: true, openAIBaseURLs: credentialScopes }
+    });
     invalidateAppliedTranslations();
-    localStorage.removeItem(SETTINGS_KEY);
-    localStorage.removeItem(LEGACY_SETTINGS_KEY);
     await clearAllCache();
     await clearAllTranslationPacks();
-    localStorage.removeItem(CACHE_META_KEY);
-    localStorage.removeItem(CACHE_DIRTY_KEY);
-    for (const key of LEGACY_CACHE_META_KEYS) localStorage.removeItem(key);
-    for (const key of LEGACY_CACHE_DIRTY_KEYS) localStorage.removeItem(key);
+    clearTimeout(cacheMetadataSaveTimer);
+    cacheMetadataSaveTimer = 0;
+    const storagePrefix = `${game.storageNamespace}.`;
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith(storagePrefix)) localStorage.removeItem(key);
+    }
+    clearCompletedScreenTranslationQueue();
+    pendingAdapterTexts.clear();
+    pendingTranslationRoots.clear();
+    lastFailedJobs = [];
+    lastFailedJobsAllowNetwork = false;
+    clearTranslationLog();
+    geminiStatus = null;
+    lmStudioStatus = null;
+    openAICompatibleStatus = null;
     settings = Object.assign({}, defaults);
+    settingsGeneration += 1;
+    populateLanguageOptions(settings.provider, settings.language);
     languageSelect.value = settings.language;
     providerSelect.value = settings.provider;
-    privacyBox.hidden = true;
     updateProviderHint();
     updateModeButton();
+    updateTranslationScopeControls();
+    if (typeof adapter.onTranslationScopeChanged === "function") {
+      try { adapter.onTranslationScopeChanged(settings.translationScope); } catch (_) {}
+    }
+    if (typeof adapter.onModeChanged === "function") {
+      try { adapter.onModeChanged(settings.mode); } catch (_) {}
+    }
     await refreshCacheStats();
     refreshTranslationPackStatus();
-    setStatus("All translator data deleted");
+    setStatus("Factory reset complete · restart the translator");
   }
 
   const host = document.createElement("div");
@@ -2368,6 +2827,10 @@
   const modeButton = shadow.querySelector(".mode");
   const storyTranslationScopeButton = shadow.querySelector(".storyTranslationScope");
   const fullTranslationScopeButton = shadow.querySelector(".fullTranslationScope");
+  const screenTranslationScopeButton = shadow.querySelector(".screenTranslationScope");
+  const screenActionRow = shadow.querySelector(".screenActionRow");
+  const screenTranslateButton = shadow.querySelector(".screenTranslate");
+  const screenAutoCheckbox = shadow.querySelector(".screenAuto");
   const translationScopeHint = shadow.querySelector(".scopeHint");
   const retryButton = shadow.querySelector(".retry");
   const statusElement = shadow.querySelector(".status");
@@ -2376,10 +2839,6 @@
   const languageSelect = shadow.querySelector(".language");
   const providerSelect = shadow.querySelector(".provider");
   const providerHint = shadow.querySelector(".providerHint");
-  const argosBox = shadow.querySelector(".argosBox");
-  const argosStatusElement = shadow.querySelector(".argosStatus");
-  const argosActionButton = shadow.querySelector(".argosAction");
-  const argosRemoveButton = shadow.querySelector(".argosRemove");
   const geminiBox = shadow.querySelector(".geminiBox");
   const geminiStatusElement = shadow.querySelector(".geminiStatus");
   const geminiKeyInput = shadow.querySelector(".geminiKey");
@@ -2418,7 +2877,6 @@
   const translationLogClearButton = shadow.querySelector(".translationLogClear");
   const cacheFileInput = shadow.querySelector(".cacheFile");
   const cacheStatsElement = shadow.querySelector(".cacheStats");
-  const privacyBox = shadow.querySelector(".privacy");
   const compatibilityBox = shadow.querySelector(".compat");
   const projectSiteLink = shadow.querySelector(".projectSite");
   const packModal = shadow.querySelector(".packModal");
@@ -2434,6 +2892,7 @@
   let pendingPackDialogResolve = null;
   let translationLogScrollPaused = false;
   let translationLogPausedViewport = null;
+  let bulkWorkspaceAwaitingDismissal = false;
 
   function setBulkButtonWorking(label) {
     runtimeUI.setButtonState(bulkButton, { working: true, label, disabled: false });
@@ -2442,6 +2901,18 @@
   function setBulkButtonIdle() {
     runtimeUI.setButtonState(bulkButton, {
       working: false, label: "Bulk Translate All Assets", disabled: false
+    });
+  }
+
+  function setScreenButtonWorking() {
+    runtimeUI.setButtonState(screenTranslateButton, {
+      working: true, label: SCREEN_TRANSLATION_CANCEL_LABEL, disabled: false
+    });
+  }
+
+  function setScreenButtonIdle() {
+    runtimeUI.setButtonState(screenTranslateButton, {
+      working: false, label: SCREEN_TRANSLATION_LABEL, disabled: false
     });
   }
 
@@ -2590,6 +3061,7 @@
   }
 
   function setBulkUiBusy(busy) {
+    if (busy) bulkWorkspaceAwaitingDismissal = false;
     panel.classList.toggle("bulkBusy", busy);
     host.classList.toggle("bulkBusyHost", busy);
     const cancelButton = activeOperation === "test-phrase" ? testPhraseButton : bulkButton;
@@ -2622,6 +3094,15 @@
     }
   }
 
+  function setBulkUiStopped() {
+    bulkWorkspaceAwaitingDismissal = true;
+    bulkCancelButton.textContent = "Back to translator";
+    bulkCancelButton.style.removeProperty("background");
+    bulkCancelButton.classList.remove("working");
+    bulkCancelButton.disabled = false;
+    translationLogHoldButton.disabled = false;
+  }
+
   for (const provider of PROVIDER_LIST) {
     const option = document.createElement("option");
     option.value = provider.id;
@@ -2630,7 +3111,6 @@
   }
   providerSelect.value = settings.provider;
   populateLanguageOptions(settings.provider, settings.language);
-  privacyBox.hidden = true;
   updateCollapsedState();
 
   function positionHost(left, top, right) {
@@ -2649,7 +3129,10 @@
     positionHost("auto", "14px", "14px");
   }
 
-  function setStatus(text) { statusElement.textContent = text; }
+  function setStatus(text) {
+    if (bulkWorkspaceAwaitingDismissal) return;
+    statusElement.textContent = text;
+  }
   function compareVersions(left, right) {
     const leftParts = String(left || "").split("-")[0].split(".").map(Number);
     const rightParts = String(right || "").split("-")[0].split(".").map(Number);
@@ -2867,27 +3350,40 @@
     modeButton.title = translated ? "Show original text" : "Show translation";
   }
   function updateTranslationScopeControls() {
-    const full = settings.translationScope === "full";
-    storyTranslationScopeButton.classList.toggle("active", !full);
+    const scope = settings.translationScope;
+    const story = scope === "story";
+    const full = scope === "full";
+    const screen = scope === "screen";
+    storyTranslationScopeButton.classList.toggle("active", story);
     fullTranslationScopeButton.classList.toggle("active", full);
-    storyTranslationScopeButton.setAttribute("aria-pressed", String(!full));
+    screenTranslationScopeButton.classList.toggle("active", screen);
+    storyTranslationScopeButton.setAttribute("aria-pressed", String(story));
     fullTranslationScopeButton.setAttribute("aria-pressed", String(full));
-    translationScopeHint.textContent = full
+    screenTranslationScopeButton.setAttribute("aria-pressed", String(screen));
+    screenActionRow.hidden = !screen;
+    screenAutoCheckbox.checked = settings.autoScreenTranslation;
+    translationScopeHint.textContent = screen
+      ? "Manual: the button translates only text visible right now. Game assets are not scanned."
+      : full
       ? "Experimental: cached translations are applied to menus and other game windows as well as dialogue."
       : "Stable: only dialogue windows, speaker names, and dialogue choices are translated.";
   }
   function setTranslationScope(scope) {
-    const nextScope = scope === "full" ? "full" : "story";
+    const nextScope = ["story", "full", "screen"].includes(scope) ? scope : "story";
     if (settings.translationScope === nextScope) return;
     abortActiveOperation("translation mode changed");
     settingsGeneration += 1;
     settings.translationScope = nextScope;
+    if (nextScope !== "screen") clearCompletedScreenTranslationQueue();
+    if (nextScope === "screen") invalidateAppliedTranslations();
     saveSettings();
     updateTranslationScopeControls();
     if (typeof adapter.onTranslationScopeChanged === "function") {
       try { adapter.onTranslationScopeChanged(nextScope); } catch (_) {}
     }
-    setStatus(nextScope === "full"
+    setStatus(nextScope === "screen"
+      ? "Screen Translation enabled · press Translate current screen"
+      : nextScope === "full"
       ? "Full Translation enabled · experimental menu translation"
       : "Story Translation enabled · dialogue windows only");
     scheduleAutoTranslation(50);
@@ -2899,39 +3395,12 @@
     collapseButton.setAttribute("aria-label", collapseButton.title);
     collapseButton.setAttribute("aria-expanded", String(!settings.collapsed));
   }
-  function managedOfflineEngine(provider) {
-    const manager = PROVIDERS[provider] && PROVIDERS[provider].modelManager;
-    const engines = {
-      argos: {
-        name: "Argos", statusPath: "/v1/status", runtimeInstallPath: "/v1/runtime/install",
-        modelInstallPath: "/v1/models/install", modelUninstallPath: "/v1/models/uninstall"
-      },
-      "ctranslate2-opus": {
-        name: "CTranslate2 + OPUS-MT", statusPath: "/v1/ctranslate2/status",
-        runtimeInstallPath: "/v1/ctranslate2/runtime/install",
-        modelInstallPath: "/v1/ctranslate2/models/install", modelUninstallPath: "/v1/ctranslate2/models/uninstall"
-      }
-    };
-    return engines[manager] || null;
-  }
-  function providerUsesManagedOffline(provider) { return !!managedOfflineEngine(provider); }
   function providerUsesGemini(provider) { return !!(PROVIDERS[provider] && PROVIDERS[provider].credentialManager === "gemini"); }
-  function openAICompatibleIsLocal() {
-    try {
-      const url = new URL(openAICompatibleConnection().baseURL);
-      return url.protocol === "http:" && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname.toLowerCase());
-    } catch (_) { return false; }
-  }
-  function providerRequiresPrivacy(provider) {
-    if (providerUsesOpenAICompatible(provider) && openAICompatibleIsLocal()) return false;
-    return !!(PROVIDERS[provider] && PROVIDERS[provider].requiresPrivacy);
-  }
   function languagesForProvider(provider) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) return [];
-    if (providerUsesManagedOffline(provider) && !Array.isArray(argosSupportedLanguages)) return LANGUAGES;
     return LANGUAGES.filter(([code]) => activeTranslationPack(code)
-      || selectedProvider.supportsLanguage(code, { localLanguages: argosSupportedLanguages }));
+      || selectedProvider.supportsLanguage(code));
   }
   function populateLanguageOptions(provider, preferredLanguage) {
     const previous = preferredLanguage || languageSelect.value || settings.language;
@@ -2945,7 +3414,7 @@
     }
     const fallback = available.some(([code]) => code === defaults.language) ? defaults.language : (available[0] && available[0][0]);
     languageSelect.value = available.some(([code]) => code === previous) ? previous : (fallback || "");
-    languageSelect.disabled = argosBusy || geminiBusy || lmStudioBusy || openAICompatibleBusy || !available.length;
+    languageSelect.disabled = geminiBusy || lmStudioBusy || openAICompatibleBusy || !available.length;
     return languageSelect.value !== previous;
   }
   function selectedLanguageName() {
@@ -2981,6 +3450,7 @@
     settings.autoTranslate = AUTO_APPLY_TRANSLATIONS;
     if (languageChanged || providerChanged) {
       settingsGeneration += 1;
+      clearCompletedScreenTranslationQueue();
       if (languageChanged && providerChanged) abortActiveOperation("target language and translation service changed");
       else if (languageChanged) abortActiveOperation("target language changed");
       else abortActiveOperation("translation service changed");
@@ -2990,13 +3460,8 @@
     saveSettings();
     scheduleAutoTranslation(50);
   }
-  function setArgosBusy(busy, activeButton) {
-    argosBusy = busy;
-    runtimeUI.setBusyGroup([argosActionButton, argosRemoveButton], busy, activeButton);
-    refreshProviderControlsBusy();
-  }
   function refreshProviderControlsBusy() {
-    const busy = argosBusy || geminiBusy || lmStudioBusy || openAICompatibleBusy;
+    const busy = geminiBusy || lmStudioBusy || openAICompatibleBusy;
     languageSelect.disabled = busy || !languageSelect.options.length;
     providerSelect.disabled = busy;
   }
@@ -3203,96 +3668,28 @@
       return null;
     }
   }
-  async function refreshArgosStatus() {
-    if (!providerUsesManagedOffline(providerSelect.value)) {
-      argosBox.hidden = true;
-      return argosStatus;
-    }
-    const engine = managedOfflineEngine(providerSelect.value);
-    argosBox.hidden = false;
-    if (!LOCAL_BRIDGE) {
-      argosStatus = null;
-      argosStatusElement.textContent = `The local ${engine.name} helper is not running. Restart the game through ${PRODUCT_NAME}.`;
-      argosActionButton.hidden = true;
-      argosRemoveButton.hidden = true;
-      return null;
-    }
-    try {
-      const target = languageSelect.value;
-      argosStatus = await requestLocalHelper(engine.statusPath + "?target=" + encodeURIComponent(target));
-      if (Array.isArray(argosStatus.supportedLanguages)) {
-        argosSupportedLanguages = argosStatus.supportedLanguages;
-        if (populateLanguageOptions(providerSelect.value, target)) {
-          if (providerUsesManagedOffline(settings.provider)) persistControlSettings();
-          return refreshArgosStatus();
-        }
-      }
-      if (!argosStatus.supported) {
-        argosStatusElement.textContent = `${engine.name} has no offline model for ${selectedLanguageName()}. Choose another provider or language.`;
-        argosActionButton.hidden = true;
-        argosRemoveButton.hidden = true;
-      } else if (!argosStatus.runtimeInstalled || !argosStatus.sentenceModelInstalled) {
-        argosStatusElement.textContent = `${engine.name} is not fully installed. Internet is only required for engine and model installation.`;
-        argosActionButton.textContent = `Install ${engine.name} and model`;
-        argosActionButton.hidden = false;
-        argosRemoveButton.hidden = true;
-      } else if (!argosStatus.modelInstalled) {
-        argosStatusElement.textContent = `The English → ${selectedLanguageName()} model has not been downloaded.`;
-        argosActionButton.textContent = providerSelect.value === "ctranslate2-opus" ? "Download and convert model" : "Download model";
-        argosActionButton.hidden = false;
-        argosRemoveButton.hidden = true;
-      } else {
-        argosStatusElement.textContent = `Ready for offline translation · model ${formatBytes(argosStatus.modelBytes)} · engine ${formatBytes(argosStatus.runtimeBytes)}`;
-        argosActionButton.hidden = true;
-        argosRemoveButton.hidden = false;
-      }
-      return argosStatus;
-    } catch (error) {
-      argosStatus = null;
-      argosStatusElement.textContent = error && error.message ? error.message : `Could not check ${engine.name}`;
-      argosActionButton.hidden = true;
-      argosRemoveButton.hidden = true;
-      return null;
-    }
-  }
   function updateProviderHint() {
     const selectedProvider = PROVIDERS[providerSelect.value];
-    privacyBox.hidden = true;
-    if (providerUsesManagedOffline(providerSelect.value)) {
-      if (managedOfflineProvider !== providerSelect.value) {
-        managedOfflineProvider = providerSelect.value;
-        argosSupportedLanguages = null;
-        populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
-      }
-      geminiBox.hidden = true;
-      lmStudioBox.hidden = true;
-      openAICompatibleBox.hidden = true;
-      providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
-      refreshArgosStatus();
-    } else if (providerUsesGemini(providerSelect.value)) {
+    if (providerUsesGemini(providerSelect.value)) {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
-      argosBox.hidden = true;
       lmStudioBox.hidden = true;
       openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshGeminiStatus();
     } else if (providerUsesLMStudio(providerSelect.value)) {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
-      argosBox.hidden = true;
       geminiBox.hidden = true;
       openAICompatibleBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshLMStudioStatus();
     } else if (providerUsesOpenAICompatible(providerSelect.value)) {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
-      argosBox.hidden = true;
       geminiBox.hidden = true;
       lmStudioBox.hidden = true;
       providerHint.textContent = selectedProvider.hint(languageSelect.options.length);
       refreshOpenAICompatibleStatus();
     } else {
       populateLanguageOptions(providerSelect.value, languageSelect.value || settings.language);
-      argosBox.hidden = true;
       geminiBox.hidden = true;
       lmStudioBox.hidden = true;
       openAICompatibleBox.hidden = true;
@@ -3320,6 +3717,40 @@
   modeButton.addEventListener("click", toggleMode);
   storyTranslationScopeButton.addEventListener("click", () => setTranslationScope("story"));
   fullTranslationScopeButton.addEventListener("click", () => setTranslationScope("full"));
+  screenTranslationScopeButton.addEventListener("click", () => setTranslationScope("screen"));
+  function triggerScreenTranslation() {
+    if (running && activeOperation === "screen") {
+      abortActiveOperation("cancelled by user");
+      return;
+    }
+    if (settings.translationScope !== "screen") return;
+    if (settings.mode !== "translated") showTranslations();
+    void translateScreen(true);
+  }
+  screenTranslateButton.addEventListener("click", triggerScreenTranslation);
+  screenAutoCheckbox.addEventListener("change", () => {
+    settings.autoScreenTranslation = screenAutoCheckbox.checked;
+    saveSettings();
+    if (!settings.autoScreenTranslation) {
+      clearCompletedScreenTranslationQueue();
+      if (activeOperation === "screen-auto") abortActiveOperation("automatic Screen Translation disabled");
+      setStatus("Automatic completed-dialogue translation disabled");
+      return;
+    }
+    if (settings.mode !== "translated") showTranslations();
+    setStatus("Automatic completed-dialogue translation enabled");
+  });
+  window.addEventListener("keydown", (event) => {
+    const screenShortcut = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
+      && (event.code === "KeyT" || String(event.key || "").toLowerCase() === "t");
+    if (!screenShortcut || event.repeat || settings.translationScope !== "screen") return;
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+    const origin = path.find((item) => item instanceof Element);
+    if (origin && (origin.isContentEditable || origin.matches("input,textarea,select,[contenteditable='true']"))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    triggerScreenTranslation();
+  }, true);
   retryButton.addEventListener("click", retryFailed);
   let suppressCollapseClick = false;
   collapseButton.addEventListener("click", (event) => {
@@ -3342,12 +3773,15 @@
     persistControlSettings();
     refreshCacheStats();
     refreshTranslationPackStatus();
-    if (providerUsesManagedOffline(providerSelect.value)) refreshArgosStatus();
     setStatus(`Language: ${selectedLanguageName()} (restart recommended)`);
   };
   languageSelect.addEventListener("change", onLanguageChange);
   resetButton.addEventListener("click", async () => {
-    if (!confirm("This will delete all cached translations and reset settings to default. Continue?")) return;
+    if (!confirm(
+      "Factory reset permanently deletes all translator caches, imported packs, saved translation history, "
+      + "downloaded offline models/runtime, provider API keys, and settings (including the remembered game path). "
+      + "OMORI saves and game files are not affected. Continue?"
+    )) return;
     setResetButtonWorking();
     try {
       await new Promise((resolve) => {
@@ -3376,7 +3810,13 @@
   bulkButton.addEventListener("click", bulkTranslateAll);
   testPhraseButton.addEventListener("click", translateTestPhraseAllLanguages);
   bulkCancelButton.addEventListener("click", () => {
-    if (!running || !activeOperation) return;
+    if (!running || !activeOperation) {
+      if (bulkWorkspaceAwaitingDismissal) {
+        bulkWorkspaceAwaitingDismissal = false;
+        setBulkUiBusy(false);
+      }
+      return;
+    }
     bulkCancelButton.textContent = "Interrupting…";
     bulkCancelButton.disabled = true;
     if (activeOperation === "test-phrase") void translateTestPhraseAllLanguages();
@@ -3519,58 +3959,6 @@
     } finally {
       setOpenAICompatibleBusy(false);
     }
-  });
-  argosActionButton.addEventListener("click", async () => {
-    if (argosBusy || !LOCAL_BRIDGE) return;
-    const engine = managedOfflineEngine(providerSelect.value);
-    if (!engine) return;
-    setArgosBusy(true, argosActionButton);
-    try {
-      const status = await refreshArgosStatus();
-      if (!status || !status.supported) return;
-      if (!status.runtimeInstalled || !status.sentenceModelInstalled) {
-        if (!engine.runtimeInstallPath) throw new Error(`The bundled ${engine.name} engine is unavailable`);
-        argosStatusElement.textContent = `Installing the ${engine.name} engine… This may take several minutes.`;
-        await requestLocalHelper(engine.runtimeInstallPath, { body: { accepted: true } });
-      }
-      argosStatusElement.textContent = providerSelect.value === "ctranslate2-opus"
-        ? `Downloading and converting the English → ${selectedLanguageName()} OPUS-MT model…`
-        : `Downloading the English → ${selectedLanguageName()} model…`;
-      await requestLocalHelper(engine.modelInstallPath, { body: { target: languageSelect.value } });
-      await refreshArgosStatus();
-      setStatus(`${engine.name} is ready for offline translation`);
-    } catch (error) {
-      argosStatusElement.textContent = error && error.message ? error.message : `Could not install ${engine.name}`;
-      setStatus(`${engine.name} installation failed`);
-    } finally {
-      setArgosBusy(false);
-    }
-  });
-  argosRemoveButton.addEventListener("click", async () => {
-    if (argosBusy || !confirm(`Remove the offline model for ${selectedLanguageName()}?`)) return;
-    const engine = managedOfflineEngine(providerSelect.value);
-    if (!engine) return;
-    setArgosBusy(true, argosRemoveButton);
-    try {
-      await requestLocalHelper(engine.modelUninstallPath, { body: { target: languageSelect.value } });
-      invalidateAppliedTranslations();
-      await refreshArgosStatus();
-      setStatus(`${engine.name} model removed`);
-    } catch (error) {
-      setStatus(error && error.message ? error.message : "Could not remove model");
-    } finally {
-      setArgosBusy(false);
-    }
-  });
-  shadow.querySelector(".allowBulk").addEventListener("click", () => {
-    settings.privacyAccepted = true;
-    privacyBox.hidden = true;
-    saveSettings();
-    setStatus("Bulk upload allowed · press the translation button again");
-  });
-  shadow.querySelector(".cancelBulk").addEventListener("click", () => {
-    privacyBox.hidden = true;
-    setStatus("Bulk translation cancelled");
   });
   let drag = null;
   const bar = shadow.querySelector(".bar");
@@ -3778,8 +4166,12 @@
     gameId: game.id,
     translateScreen: () => translateScreen(true),
     translateAdapterText,
+    registerCompletedScreenText,
+    isAutoScreenTranslationEnabled: () => !!(
+      settings.autoScreenTranslation && settings.translationScope === "screen" && settings.mode === "translated"
+    ),
     registerAdapterText: (text) => {
-      if (settings.mode === "translated" && hasSourceText(text)) {
+      if (settings.mode === "translated" && settings.translationScope !== "screen" && hasSourceText(text)) {
         if (!pendingAdapterTexts.has(text)) {
           pendingAdapterTexts.add(text);
           scheduleAutoTranslation(150);
@@ -3791,21 +4183,7 @@
     getLanguage: () => settings.language,
     getProvider: () => settings.provider,
     isSourceText: (text) => hasSourceText(text),
-    queryMemoryCache: (text) => {
-      if (!core.normalizeText(text)) return null;
-      const imported = importedPackMemoryGet(text, settings.language);
-      if (imported) return imported;
-      const key = makeTranslationCacheKey(text, settings.language, settings.provider);
-      let hit = memoryCache.get(key);
-      if (!hit) {
-        const fuzzySource = core.stripOmoriPrefixes(text);
-        if (fuzzySource) {
-          const fuzzyKey = `${game.id}\n${providerCacheScope(settings.provider)}\n${settings.language}\n${fuzzySource}`;
-          hit = fuzzyMemoryCache.get(fuzzyKey);
-        }
-      }
-      return hit && core.protectedMarkupLayoutMatches(text, hit) ? hit : null;
-    },
+    queryMemoryCache: (text) => queryMemoryTranslation(text),
     collectVisibleTextNodes,
     showOriginal,
     showTranslations,
@@ -3821,5 +4199,7 @@
     try { adapter.onTranslationScopeChanged(settings.translationScope); } catch (_) {}
   }
   console.info(`[${PRODUCT_NAME} ${VERSION}] loaded for ${GAME_TITLE}`);
-  reloadSelectedLanguageCache(false);
+  migrateLegacyGoogleSegmentCache()
+    .catch((error) => console.error("Could not clear the legacy Google segment cache:", error))
+    .then(() => reloadSelectedLanguageCache(false));
 })();

@@ -9,30 +9,15 @@ const registry = globalThis.VNRevivalTranslationProviders;
 test("provider registry exposes a stable extension contract", () => {
   assert.equal(registry.contractVersion, 1);
   assert.deepEqual(registry.list.map(({ id }) => id), [
-    "google", "gemini", "argos", "ctranslate2-opus", "lmstudio", "openai-compatible"
+    "google", "gemini", "lmstudio", "openai-compatible"
   ]);
   for (const provider of registry.list) {
     assert.equal(typeof provider.supportsLanguage, "function");
     assert.equal(typeof provider.splitText, "function");
     assert.equal(typeof provider.translateChunk, "function");
     assert.ok(provider.concurrency > 0);
+    assert.equal(Object.prototype.hasOwnProperty.call(provider, "requiresPrivacy"), false);
   }
-});
-
-test("CTranslate2 OPUS provider stays behind its local engine contract", async () => {
-  let ctranslate2Call = null;
-  const opus = await registry.byId["ctranslate2-opus"].translateChunk({
-    text: "Hello", language: "ru", signal: undefined,
-    localRequest: async (path, options) => {
-      ctranslate2Call = { path, options };
-      return { translatedText: "Привет" };
-    }
-  });
-  assert.equal(opus, "Привет");
-  assert.equal(ctranslate2Call.path, "/v1/ctranslate2/translate");
-  assert.deepEqual(ctranslate2Call.options.body, { text: "Hello", target: "ru" });
-  assert.equal(registry.byId["ctranslate2-opus"].modelManager, "ctranslate2-opus");
-  assert.equal(registry.byId["ctranslate2-opus"].requiresPrivacy, false);
 });
 
 test("removed Bergamot provider is absent", () => {
@@ -41,6 +26,11 @@ test("removed Bergamot provider is absent", () => {
 
 test("removed MyMemory provider is absent", () => {
   assert.equal(registry.byId.mymemory, undefined);
+});
+
+test("removed managed offline providers are absent", () => {
+  assert.equal(registry.byId.argos, undefined);
+  assert.equal(registry.byId["ctranslate2-opus"], undefined);
 });
 
 test("online providers own URL construction and response parsing", async () => {
@@ -57,38 +47,9 @@ test("online providers own URL construction and response parsing", async () => {
   assert.equal(new URL(requestedURL).searchParams.get("tl"), "ru");
   assert.equal(registry.byId.google.concurrency, 1);
   assert.equal(registry.byId.google.delay, 1000);
-});
-
-test("offline provider delegates translation to the authenticated local helper", async () => {
-  let request = null;
-  const translated = await registry.byId.argos.translateChunk({
-    text: "Hello", language: "ru", signal: undefined,
-    localRequest: async (path, options) => {
-      request = { path, options };
-      return { translatedText: "Привет" };
-    }
-  });
-  assert.equal(translated, "Привет");
-  assert.equal(request.path, "/v1/translate");
-  assert.deepEqual(request.options.body, { text: "Hello", target: "ru" });
-});
-
-test("Argos keeps the measured faster single-item path with unchanged order", async () => {
-  const calls = [];
-  const localRequest = async (path, options) => {
-    calls.push({ path, body: options.body });
-    return { translatedText: `RU:${options.body.text}` };
-  };
-  const values = await Promise.all(["one", "two", "three"].map((text) => (
-    registry.byId.argos.translateChunk({ text, language: "ru", signal: undefined, localRequest })
-  )));
-  assert.deepEqual(values, ["RU:one", "RU:two", "RU:three"]);
-  assert.deepEqual(calls, ["one", "two", "three"].map((text) => ({
-    path: "/v1/translate",
-    body: { text, target: "ru" }
-  })));
-  assert.equal(registry.byId.argos.concurrency, 1);
-  assert.equal(registry.byId.argos.batchSize, 1);
+  assert.equal(registry.byId.google.bulkDelay, 5000);
+  assert.equal(registry.byId.google.bulkMaxItems, 12);
+  assert.equal(registry.byId.google.bulkConsecutiveFailureLimit, 3);
 });
 
 test("Gemini delegates contextual translation without exposing its API key", async () => {
@@ -125,7 +86,6 @@ test("LM Studio delegates translation and selected model to the local helper", a
     text: "Hello", target: "ru", targetName: "Russian", model: "local/qwen"
   });
   assert.equal(registry.byId.lmstudio.modelManager, "lmstudio");
-  assert.equal(registry.byId.lmstudio.requiresPrivacy, false);
   assert.equal(registry.byId.lmstudio.concurrency, 1);
 });
 
@@ -149,5 +109,4 @@ test("OpenAI-compatible delegates endpoint profile and model without exposing it
   });
   assert.equal(registry.byId["openai-compatible"].credentialManager, "openai-compatible");
   assert.equal(registry.byId["openai-compatible"].modelManager, "openai-compatible");
-  assert.equal(registry.byId["openai-compatible"].requiresPrivacy, true);
 });

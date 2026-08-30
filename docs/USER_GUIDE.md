@@ -18,6 +18,8 @@ On Apple Silicon, keep Steam open. OMORI may appear briefly and restart automati
 ### Main controls
 
 - The `Translation / Original` toggle switches between the saved translation and the original English text.
+- In `Screen Translation`, press `Translate current screen (Ctrl+Shift+T)` or use `Ctrl+Shift+T` to translate only text visible at that moment. Press the button or shortcut again while running to cancel the current screen pass. The shortcut is ignored while typing in an input field.
+- Optional: enable `Automatically translate completed dialogue` inside Screen Translation to translate each dialogue page once it finishes typing. The option is off by default and does not automatically translate menus.
 - All settings remain visible while the panel is expanded.
 - The single `− / +` button switches between the complete panel and one `+` button. Every new launch starts expanded.
 - Drag the expanded panel by its top bar, or drag the collapsed `+` button itself. Its position is remembered.
@@ -26,8 +28,8 @@ On Apple Silicon, keep Steam open. OMORI may appear briefly and restart automati
 
 - `Story Translation` is the current stable mode. It deliberately translates only dialogue windows, speaker names, and dialogue choices. Menus and other system screens stay original because this boundary is more reliable and keeps OMORI's presentation consistent.
 - `Full Translation` is experimental. It additionally applies the existing cache to non-dialogue RPG Maker and OMORI windows, including the main menu, items, skills, equipment, options, save/load, shops, and battle windows. Switching back to Story refreshes those windows with their original text. Image-based labels, standalone sprite bitmaps, dynamically assembled text, and strings missing from the selected provider/language cache may remain English. Long translations can also need visual tuning in narrow windows.
+- `Screen Translation` does not extract or scan `.HERO` assets. `Translate current screen` approves the exact DOM and canvas strings in currently visible game windows, including values already substituted into template strings, applies cache hits, translates only the misses, saves them, and redraws that screen. A later window redraw or another screen requires another press. The optional `Automatically translate completed dialogue` setting instead approves only a completed `Window_Message` page after its typewriter output ends; menus still require the button. Image-only labels and standalone sprite bitmaps without a `Window_Base` owner are outside this capture.
 
-The selected translation mode is saved. Neither mode starts hidden network requests during gameplay: Full can only display entries already present in the selected cache, whether created by Bulk or imported. The `Translation / Original` toggle controls whether cached text is displayed and is separate from the Story/Full choice.
 
 ### Choosing a translation service and language
 
@@ -35,12 +37,9 @@ First choose `Translation service`, then choose `Language` in the expanded panel
 
 - `Google Translate` works online. Its quality and speed are average. It usually works fine, but Google may temporarily limit requests.
 - `Gemini AI` usually gives the best and fastest contextual translation. It needs an internet connection and your own Gemini API key. Free-tier content may be used by Google to improve its products, and some explicit scenes may still be blocked.
-- `Argos Offline` runs on your computer and does not send game text online. It is slower, its quality is lower, and it supports fewer languages. Internet is needed to install the engine or a language model; translation works offline after installation.
-- `CTranslate2 + OPUS-MT` downloads an official Helsinki-NLP model and converts it to an optimized local INT8 model. The first conversion can take several minutes and use substantial disk space.
 - `LM Studio Local AI` uses an OpenAI-compatible model served by LM Studio on this computer. Quality and speed depend on the selected model; game text is not sent online.
 - `OpenAI-compatible AI` connects to OpenCode Go, OpenRouter, DeepSeek, LM Studio, or a custom compatible endpoint. Remote endpoints receive the extracted text; a loopback endpoint stays local.
 
-`Bulk Translate All Assets` sends all supported strings extracted from English `.HERO` assets to the selected remote provider after explicit confirmation. This catalogue includes dialogue and many localized menu labels used by Full Translation. The first Bulk stores it in a separate local asset index. Later Bulk runs reuse it immediately; adding, removing, resizing, or changing the modification time of a `.HERO` file rebuilds the index automatically. A missing or damaged index is also rebuilt, without affecting translations, models, saves, keys, or the translation log. Normal gameplay uses only the resulting translation cache and does not send visible text to a provider. Argos, CTranslate2, LM Studio, and loopback OpenAI-compatible endpoints process the bulk set locally.
 
 ### Using Gemini AI
 
@@ -51,25 +50,7 @@ First choose `Translation service`, then choose `Language` in the expanded panel
 
 The field is cleared after saving. The key is stored in Windows Credential Manager or macOS Keychain, not in the game settings or translation cache. Use `Remove key` to delete it.
 
-### Using Argos Offline
-
-1. Select `Argos Offline`.
-2. Choose a supported language.
-3. Click `Install Argos and model` or `Download model`.
-4. Wait until the status says that offline translation is ready.
-
-The first installation may take several minutes. A language model usually needs about 80–250 MB. Use `Remove model` if you no longer need the selected model. Bulk sends independently protected strings through the sequential Argos path. Live-log measurements showed that grouping strings into CTranslate2 batches was slower with the unchanged beam size `4`, so the normal provider returned to one request at a time and a measured conservative cap of four CPU threads. Existing cache entries remain compatible.
-
-### Using CTranslate2 + OPUS-MT
-
-1. Select `CTranslate2 + OPUS-MT`.
-2. Choose a language offered by that engine.
-3. Click `Download model`, `Install CTranslate2 + OPUS-MT and model`, or `Download and convert model`.
-4. Keep the application open until the status says that offline translation is ready.
-
-CTranslate2 is bundled in the Windows archive and installed into the local offline runtime on macOS when needed. OPUS-MT archives come from the official Helsinki-NLP catalog and are converted on this computer. `Remove model` removes only the selected model. No model is downloaded during ordinary gameplay.
-
-OPUS-MT does not accept prompts and is especially sensitive to ALL CAPS. The translator normalizes display case before a request, keeps game controls, placeholders, numbers, and currency local, and refuses to cache an answer that is obviously truncated or repetitive. Font-test alphabets, markup-only lines, and Base64 ROBOHEART text are skipped instead of being damaged. A rejected line remains uncached and can be retried with another provider.
+The same input pipeline is used for every provider. Engine keys such as `DW itemBuyingPromptMessage` and floor labels such as `1F` are skipped. Multiple visible pieces around game controls are first translated together with neutral context separators; the controls themselves are never sent. If a weak model changes a separator, the app discards that attempt and safely retries the isolated text pieces. For Cyrillic targets, a result that retains a substantial part of the English source is also left uncached. The context-aware Google path has a new cache identity. On first launch it removes only the old Google segment variant for the currently selected game and language; imported packs, other languages and other provider caches remain separate.
 
 ### Using LM Studio Local AI
 
@@ -97,24 +78,22 @@ The built-in Base URLs are filled automatically. A custom remote URL must use HT
 
 1. Choose a bulk translation service and target language.
 2. Click `Bulk Translate All Assets`.
-3. For an online service, review the notice and click `Allow bulk upload`, then click the bulk button again.
-4. Wait for the counter to complete. You can cancel and resume later; completed entries stay cached.
+3. Wait for the counter to complete. For an online service, the button starts sending extracted strings immediately. You can cancel and resume later, and completed entries stay cached.
 
-The bulk operation continues if OMORI is minimized or another application becomes active. Google Bulk sends one fresh request every second. If Google returns `HTTP 429`, Bulk stops sending requests, displays a 15-minute countdown, and retries the same string without increasing `done` or `failed`; repeated limits extend the persisted cooldown to 30 and 60 minutes. The progress line also shows its live failed count. Other terminal errors are summarized when the run ends. Run it again to continue from entries missing from the cache.
+The bulk operation continues if OMORI is minimized or another application becomes active. Google Bulk checks existing entries first, then groups only missing translations into protected blocks of at most 12 strings and 3200 UTF-8 bytes. It starts one block at least every five seconds, validates every returned string, and stores each valid result under its normal individual cache key. If one parsed string is rejected, valid results from the same response remain saved and only the rejected remainder is retried. Recursive splitting is reserved for a response from which no string can be accepted. A fully rejected multi-string block halves the size of future blocks down to 3; a partially rejected block reduces it by 2. Four clean blocks increase it by 2 toward 12. A failing one- or two-string tail does not reduce future blocks, and every request keeps the same five-second pacing. Elongated vocalizations and repeated stylized hyphenated names are not treated as ordinary untranslated English carryover. Only a string that still fails alone is counted as failed. The circuit breaker counts a block only after every adaptive retry and split has completed; any translation recovered by fallback resets the streak. Three consecutive blocks that still produce no valid result after fallback stop Bulk as a systemic error while preserving all completed cache entries. If Google returns `HTTP 429`, Bulk stops sending requests, displays a 15-minute countdown, and retries the same request without increasing `done` or `failed`; repeated limits extend the persisted cooldown to 30 and 60 minutes. The progress line also shows its live failed count. Other terminal errors are summarized when the run ends. Run it again to continue from entries missing from the cache.
 
-The bulk button immediately shows a spinner after it is pressed. Once Bulk or Test Phrase starts, the translation workspace fills the entire application: the protected-text word counter with an estimated time remaining (or an explicit `Rate limited by … · retrying in …` provider cooldown), the live translation log, its `Stop scroll` control, and a pinned `Interrupt translation (progress will be saved)` button remain visible. The interrupt button keeps the spinner and color of the operation that was started. Service controls, update information, cache tools, the other log actions, title bar, and collapse control stay hidden until the operation finishes or is interrupted. The log uses all remaining space and the normal panel is restored automatically afterward. The displayed progress remains word-based, while the estimate uses a sliding completed-entry rate and excludes model startup, model installation, and provider cooldown waits. This prevents a short cluster of unusually long lines from inflating the whole-run estimate. Import and export buttons remain below the blue bulk button outside this active workspace.
+The bulk button immediately shows a spinner after it is pressed. Once Bulk or Test Phrase starts, the translation workspace fills the entire application: the protected-text word counter with an estimated time remaining (or an explicit `Rate limited by … · retrying in …` provider cooldown), the live translation log, its `Stop scroll` control, and a pinned `Interrupt translation (progress will be saved)` button remain visible. The interrupt button keeps the spinner and color of the operation that was started. Service controls, update information, cache tools, the other log actions, title bar, and collapse control stay hidden during the operation. A successful run restores the normal panel automatically. A stopped, interrupted, or incomplete run keeps its final status and log visible without a spinner; press `Back to translator` when you are ready to leave it. The displayed progress remains word-based, while the estimate uses a sliding completed-entry rate and excludes cache hits, provider preparation, and cooldown waits. This prevents a short cluster of unusually long lines from inflating the whole-run estimate. Import and export buttons remain below the blue bulk button outside this active workspace.
 
 At every startup, the local helper checks the VN Revival update manifest. A dedicated line below the main status remains visible and reports `Checking for updates…`, `Up to date`, an available version with either `translation cache will be kept` or `translation cache rebuild required`, or `Could not check for updates`. When an update is available, up to three short change notes are shown below it. Until their source is configured, the panel displays a clear placeholder. A failed check never prevents the game from starting. Version 0.9.44 only checks and reports; it does not download or install an update.
 
-`Live translation log` opens automatically for every result processed by Bulk or Test Phrase. Starting a new operation clears only this live view, so entries from a previous language, provider, or model are not mixed with the current run. Each entry shows its time, provider and language followed by the English source and translated result; reused results carry a `cache` label. Press `Stop scroll` to keep the currently visible entry fixed while you scroll the list manually. Translation and logging continue in the background and new entries still appear in the list. Press `Resume scroll` to jump back to the newest entries and restore normal automatic following. The live view keeps at most 40 newest entries to avoid slowing down the game. The local helper persists each unique provider/language/source/translation pair across launches, including a cached pair if it was missing from history, without adding duplicates on later runs. Use `View saved` to load the latest 200 entries and `Save file` to export the complete history as JSONL. `Clear view` clears only the panel; it does not delete the saved history, and neither does `Reset all data`. Normal cache-only gameplay does not add log entries.
+`Live translation log` opens automatically for every result processed by Bulk or Test Phrase. Starting a new operation clears only this live view, so entries from a previous language, provider, or model are not mixed with the current run. Each entry shows its time, provider and language followed by the English source and translated result; reused results carry a `cache` label. Press `Stop scroll` to keep the currently visible entry fixed while you scroll the list manually. Translation and logging continue in the background and new entries still appear in the list. Press `Resume scroll` to jump back to the newest entries and restore normal automatic following. The live view keeps at most 40 newest entries to avoid slowing down the game. The local helper persists each unique provider/language/source/translation pair across launches, including a cached pair if it was missing from history, without adding duplicates on later runs. Use `View saved` to load the latest 200 entries and `Save file` to export the complete history as JSONL. `Clear view` clears only the panel and keeps the saved history; the full `Reset all data` operation deletes it. Normal cache-only gameplay does not add log entries.
 
 `Test Phrase · All Languages` translates only `Hi, OMORI! Cliff-faced as usual…` into every language available through the selected service. It keeps running when you switch applications and processes languages one at a time. The free Google endpoint accepts one target language per request, so Google mode sends one request every second and a full unrestricted run usually takes about 5 minutes. A temporary `HTTP 429` stops all Google requests for 15 minutes, preserves both the deadline and the next backoff step across restarts, and retries the same language instead of creating a failed result. Repeated limits increase the cooldown to 30 and 60 minutes even after restarting the application. Interrupting keeps completed languages, and the next run skips them.
 
-With Argos or CTranslate2 + OPUS-MT, the test automatically prepares the engine and each missing English → target model before translating an uncached language. Cached languages are skipped without installing their models. The confirmation warns that the run can download several gigabytes, take a long time, and retain installed models on disk. Normal one-language Bulk still requires only the selected model.
 
 Do not use a successful large cached translation as proof that Google currently accepts new requests. A language such as Russian may already have thousands of cached entries, while the all-language test still needs one fresh request for every missing language. The status line reports `new`, `cached`, and `failed` separately. A visible retry countdown with `0 failed` means the test is safely waiting; do not repeatedly restart it, because the Google cooldown is intentionally preserved. To continue immediately, select another provider; its results use a separate cache identity.
 
-Cached translations are applied automatically as supported game text is drawn. There is no separate apply button or auto-apply setting, and normal gameplay does not send text over the network.
+In Story and Full, cached translations are applied automatically as supported game text is drawn. Screen stays manual unless `Automatically translate completed dialogue` is enabled; then only completed dialogue pages may start a fresh request. Menus still require `Translate current screen` or `Ctrl+Shift+T`.
 
 In Story mode, OMORI canvas hooks display cached translations only in dialogue text, speaker names, and dialogue choices. Full mode adds supported non-dialogue `Window_Base` surfaces. Neither path starts background provider requests. `Original` applies to newly drawn dialogue and menu text.
 
@@ -126,7 +105,7 @@ Translations are cached automatically. The settings show the number of saved tra
 
 An imported translation is a reversible overlay: it is displayed before your own provider cache but never overwrites it. The panel shows the active imported language, entry count, source and filename. `Remove imported` removes only that overlay and immediately reveals your own cached translations again. Importing another file for the same language replaces the previous imported overlay only after the new file has been fully validated and stored.
 
-After you confirm `Reset all data`, its button shows a spinner and `Resetting…` until cache deletion and the settings reset have finished. The button cannot be pressed again while the reset is running.
+`Reset all data` returns the translator to a freshly downloaded state. It deletes provider and in-memory caches, imported packs, saved history and logs, leftover files from providers available in older releases, provider API keys, settings, cooldowns, the remembered game path, and internal metadata. It does not modify OMORI files or game saves; the launcher will rediscover the game or ask for it on the next start. After confirmation, the button shows a spinner and `Resetting…` until deletion finishes, then asks you to restart the translator; the button cannot be pressed again while reset is running.
 
 The VN Revival project link opens in your default system browser. At the bottom of the panel, use the icons next to it to open:
 
@@ -164,6 +143,8 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 ### Основное управление
 
 - toggle `Translation / Original` переключает сохранённый перевод и оригинальный английский текст.
+- В `Screen Translation` кнопка `Translate current screen (Ctrl+Shift+T)` или комбинация `Ctrl+Shift+T` переводит только текст, видимый в этот момент. Повторное нажатие кнопки или комбинации во время работы отменяет текущий экранный проход. Во время ввода текста комбинация игнорируется.
+- Необязательно: включите внутри Screen Translation пункт `Automatically translate completed dialogue`, чтобы каждая страница реплики переводилась после завершения печати. По умолчанию опция выключена и не переводит меню автоматически.
 - В развёрнутой панели настройки видны постоянно.
 - Единственная кнопка `− / +` переключает полную панель и один плюсик. Каждый новый запуск начинается развёрнутым.
 - Развёрнутую панель можно перемещать за верхнюю полоску, а свёрнутую — перетаскиванием самого плюсика. Позиция сохраняется.
@@ -172,8 +153,8 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 
 - `Story Translation` — текущий стабильный режим. Он намеренно переводит только диалоговые окна, имена говорящих и варианты ответа. Меню и остальные системные экраны остаются оригинальными: такая граница надёжнее и сохраняет целостный внешний вид OMORI.
 - `Full Translation` — экспериментальный режим. Он дополнительно применяет существующий кэш к недиалоговым окнам RPG Maker и OMORI: главному меню, предметам, навыкам, экипировке, настройкам, сохранению/загрузке, магазинам и боевым окнам. Возврат в Story перерисовывает эти окна исходным текстом. Подписи-картинки, отдельные sprite-bitmap, динамически собранные строки и строки, которых нет в кэше выбранного языка/провайдера, могут остаться английскими. Длинные переводы в узких окнах могут потребовать визуальной подгонки.
+- `Screen Translation` не извлекает и не обходит `.HERO`. Кнопка `Translate current screen` одобряет точные DOM- и canvas-строки только видимых сейчас игровых окон, включая уже подставленные значения строк-шаблонов, применяет cache hit, переводит cache miss, сохраняет результат и перерисовывает этот экран. После новой перерисовки окна или перехода на другой экран кнопку нужно нажать снова. Опция `Automatically translate completed dialogue` вместо этого одобряет только завершившую печать страницу `Window_Message`; меню по-прежнему требуют кнопки. Надписи-картинки и отдельные sprite-bitmap без владельца `Window_Base` в снимок не входят.
 
-Выбранный режим перевода сохраняется. Ни один режим не запускает скрытые сетевые запросы во время игры: Full может показать только записи, уже имеющиеся в выбранном кэше после Bulk или импорта. Переключатель `Translation / Original` отдельно управляет показом кэшированного текста и не является выбором Story/Full.
 
 ### Выбор сервиса и языка
 
@@ -181,12 +162,9 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 
 - `Google Translate` работает через интернет. Качество и скорость средние. Обычно сервис работает нормально, но Google может временно ограничить запросы.
 - `Gemini AI` обычно даёт самый качественный и быстрый контекстный перевод. Нужны интернет и собственный API-ключ Gemini. На бесплатном тарифе Google может использовать отправленный текст для улучшения продуктов, а отдельные откровенные сцены всё равно могут блокироваться.
-- `Argos Offline` работает на компьютере и не отправляет игровой текст в интернет. Он медленнее, качество ниже, а языков доступно меньше. Для установки движка или языковой модели нужен интернет; после установки перевод работает офлайн.
-- `CTranslate2 + OPUS-MT` скачивает официальную модель Helsinki-NLP и преобразует её в оптимизированный локальный INT8-формат. Первая конвертация может занять несколько минут и потребовать заметного места на диске.
 - `LM Studio Local AI` использует OpenAI-совместимую модель, которую LM Studio обслуживает локально на этом компьютере. Качество и скорость зависят от модели; игровой текст в интернет не отправляется.
 - `OpenAI-compatible AI` подключается к OpenCode Go, OpenRouter, DeepSeek, LM Studio или произвольному совместимому endpoint. Удалённый сервис получает извлечённый текст, а loopback-адрес остаётся локальным.
 
-Кнопка `Bulk Translate All Assets` после явного подтверждения отправляет выбранному удалённому провайдеру все поддерживаемые строки из английских `.HERO`. Каталог включает диалоги и многие локализуемые подписи меню, которые использует Full Translation. Первый Bulk сохраняет извлечённый исходный каталог в отдельный локальный asset index. Следующие Bulk используют его сразу; добавление/удаление `.HERO`, изменение размера или времени модификации автоматически перестраивает индекс. Отсутствующий или повреждённый индекс также перестраивается, не затрагивая переводы, модели, сохранения, ключи и журнал. Обычный игровой процесс использует только созданный translation cache и не отправляет видимый текст провайдеру. Argos, CTranslate2, LM Studio и OpenAI-compatible endpoint на loopback-адресе обрабатывают массовый набор локально.
 
 ### Использование Gemini AI
 
@@ -196,6 +174,18 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 4. Нажмите `Save API key`.
 
 После сохранения поле очищается. Ключ хранится в Windows Credential Manager или macOS Keychain, а не в настройках игры или кэше переводов. Кнопка `Remove key` удаляет ключ.
+
+Одинаковый входной конвейер используется для всех провайдеров. Engine keys вроде `DW itemBuyingPromptMessage` и подписи этажей вроде `1F` пропускаются. Несколько видимых частей вокруг игровых команд сначала переводятся вместе с нейтральными контекстными разделителями; сами команды модели никогда не передаются. Если слабая модель изменит разделитель, попытка отбрасывается и приложение безопасно повторяет перевод отдельных текстовых частей. Для кириллических языков результат с существенной долей исходных английских слов также не попадает в кэш. Контекстный Google-путь имеет отдельную cache identity, поэтому его результаты не смешиваются с прежним посегментным вариантом.
+
+### Использование LM Studio Local AI
+
+1. Откройте LM Studio и запустите локальный сервер в разделе Developer. Стандартный адрес — `127.0.0.1:1234`.
+2. Загрузите модель или включите Just-In-Time model loading в LM Studio.
+3. Выберите в переводчике `LM Studio Local AI`.
+4. Нажмите `Refresh models` и выберите модель.
+5. Выберите целевой язык и нажмите `Bulk Translate All Assets`.
+
+Переводчик не запускает и не останавливает LM Studio. Сервер должен оставаться доступным до окончания массового перевода. CORS не требуется: с LM Studio общается авторизованный локальный helper. Для каждой выбранной модели используется отдельная cache identity.
 
 ### Использование OpenAI-compatible AI
 
@@ -209,48 +199,26 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 
 Встроенные Base URL подставляются автоматически. Произвольный удалённый URL обязан использовать HTTPS; HTTP разрешён только для `localhost` и других loopback-адресов. Каждый ключ хранится отдельно по Base URL в Windows Credential Manager или macOS Keychain. Интеграция поддерживает формат OpenAI Chat Completions (`/models` и `/chat/completions`); модели только для Responses API или Anthropic Messages API не поддерживаются. Смена URL или модели создаёт отдельную область кэша перевода.
 
-### Использование Argos Offline
-
-1. Выберите `Argos Offline`.
-2. Выберите поддерживаемый язык.
-3. Нажмите `Install Argos and model` или `Download model`.
-4. Дождитесь сообщения о готовности офлайн-перевода.
-
-Первая установка может занять несколько минут. Языковая модель обычно занимает около 80–250 МБ. Кнопка `Remove model` удаляет выбранную модель. Bulk передаёт независимо защищённые строки последовательному пути Argos. Измерения живого журнала показали, что группировка строк в CTranslate2 batch при неизменном beam size `4` работает медленнее, поэтому штатный provider снова делает по одному запросу и использует проверенный консервативный предел в четыре CPU-потока. Существующий кэш остаётся совместимым.
-
-### Использование CTranslate2 + OPUS-MT
-
-1. Выберите `CTranslate2 + OPUS-MT`.
-2. Выберите язык из каталога движка.
-3. Нажмите `Download model`, `Install CTranslate2 + OPUS-MT and model` или `Download and convert model`.
-4. Не закрывайте приложение, пока статус не сообщит о готовности офлайн-перевода.
-
-CTranslate2 входит в Windows-архив, а на macOS при необходимости устанавливается в локальный offline-runtime. Архив OPUS-MT загружается из официального каталога Helsinki-NLP и конвертируется на этом компьютере. `Remove model` удаляет только выбранную модель. Во время обычной игры модели не скачиваются.
-
-OPUS-MT — специализированная модель машинного перевода, а не диалоговая LLM: произвольные промпты и инструкции она не принимает. Перед запросом переводчик локально приводит английский текст, набранный целиком заглавными буквами, к обычному регистру и после перевода восстанавливает нужное отображение. Разметка, технические строки, Base64-блоки, заполнители, числа и валютные обозначения защищаются локально. Очевидно обрезанный, повторяющийся или повредивший такие данные ответ не записывается в кэш. В schema 5 очищается только старый provider-кэш; импортированные паки, модели, сохранения и ключи сохраняются.
-
 ### Создание и использование кэша переводов
 
 1. Выберите сервис массового перевода и целевой язык.
 2. Нажмите `Bulk Translate All Assets`.
-3. Для онлайн-сервиса прочитайте предупреждение, нажмите `Allow bulk upload`, затем снова нажмите кнопку массового перевода.
-4. Дождитесь завершения счётчика. Операцию можно прервать кнопкой `Interrupt translation (progress will be saved)` и продолжить позже: готовые записи останутся в кэше.
+3. Дождитесь завершения счётчика. Для онлайн-сервиса кнопка сразу начинает отправлять извлечённые строки. Операцию можно прервать кнопкой `Interrupt translation (progress will be saved)` и продолжить позже: готовые записи останутся в кэше.
 
-Массовая операция продолжается, если OMORI свёрнута или активно другое приложение. Google Bulk отправляет по одному свежему запросу раз в секунду. При `HTTP 429` Bulk прекращает запросы, показывает 15-минутный обратный отсчёт и повторяет ту же строку без увеличения `done` или `failed`; повторные ограничения продлевают сохраняемый cooldown до 30 и 60 минут. Во время обычного прогресса также виден актуальный счётчик `failed`. Остальные конечные ошибки суммируются после прохода. Повторный запуск продолжит заполнение отсутствующих записей кэша.
+Массовая операция продолжается, если OMORI свёрнута или активно другое приложение. Google Bulk сначала проверяет готовые записи, затем объединяет только отсутствующие переводы в защищённые блоки максимум по 12 строк и 3200 UTF-8 байт. Новый блок начинается не чаще одного раза в 5 секунд, каждый результат проверяется и сохраняется под обычным индивидуальным ключом кэша. Если отклонена одна разобранная строка, корректные результаты того же ответа сразу сохраняются и повторяется только отклонённый остаток. Рекурсивное деление используется лишь для ответа, из которого нельзя принять ни одной строки. Полностью отклонённый многострочный блок уменьшает размер следующих блоков вдвое вплоть до 3, частично отклонённый — на 2. Четыре чистых блока увеличивают его на 2 обратно к 12. Неудачный хвост из одной или двух строк не уменьшает следующие блоки, а все запросы сохраняют тот же пятсекундный интервал. Вытянутые вокализации и повторяющиеся стилизованные дефисные названия не считаются обычным английским carryover. В `failed` попадает только строка, которая не прошла проверку даже отдельно. Circuit breaker учитывает блок лишь после завершения всех адаптивных повторов и разбиений; любой спасённый fallback-перевод сбрасывает серию. Только три последовательных блока, не давшие ни одного результата уже после fallback, останавливают Bulk как при системной ошибке, не удаляя готовый кэш. При `HTTP 429` Bulk прекращает запросы, показывает 15-минутный обратный отсчёт и повторяет тот же запрос без увеличения `done` или `failed`; повторные ограничения продлевают сохраняемый cooldown до 30 и 60 минут. Во время обычного прогресса также виден актуальный счётчик `failed`. Остальные конечные ошибки суммируются после прохода. Повторный запуск продолжит заполнение отсутствующих записей кэша.
 
-Сразу после нажатия кнопка массового перевода показывает вращающийся индикатор. После запуска Bulk или Test Phrase рабочая область занимает всё окно приложения: остаются счётчик обработанных слов с расчётным оставшимся временем (либо явный статус `Rate limited by … · retrying in …` с обратным отсчётом паузы провайдера), живой журнал, его фиксатор `Stop scroll` и закреплённая кнопка `Interrupt translation (progress will be saved)`. Она сохраняет spinner и цвет запустившей операцию кнопки. Настройки сервисов, обновления, инструменты кэша, остальные действия журнала, заголовок и сворачивание скрыты до завершения или прерывания. Журнал занимает всё свободное место, после окончания обычная панель восстанавливается автоматически. Отображаемый прогресс считается в словах, а ETA — по скользящей скорости только новых переводов, созданных текущей операцией, без запуска/установки модели и ожидания cooldown. Cache hit не увеличивает измеренную скорость, а лишь уменьшает число оставшихся jobs. Вне активной операции импорт и экспорт находятся под синей кнопкой.
+Сразу после нажатия кнопка массового перевода показывает вращающийся индикатор. После запуска Bulk или Test Phrase рабочая область занимает всё окно приложения: остаются счётчик обработанных слов с расчётным оставшимся временем (либо явный статус `Rate limited by … · retrying in …` с обратным отсчётом паузы провайдера), живой журнал, его фиксатор `Stop scroll` и закреплённая кнопка `Interrupt translation (progress will be saved)`. Она сохраняет spinner и цвет запустившей операцию кнопки. Настройки сервисов, обновления, инструменты кэша, остальные действия журнала, заголовок и сворачивание скрыты во время операции. Успешный проход автоматически восстанавливает обычную панель. После остановки, ручного прерывания или неполного результата итоговый статус и журнал остаются на экране уже без spinner; выйти из них можно кнопкой `Back to translator`. Отображаемый прогресс считается в словах, а ETA — по скользящей скорости только новых переводов, созданных текущей операцией, без cache hit, подготовки провайдера и ожидания cooldown. Попадание в кэш лишь уменьшает число оставшихся jobs. Вне активной операции импорт и экспорт находятся под синей кнопкой.
 
 При каждом запуске локальный helper проверяет манифест обновлений VN Revival. Отдельная постоянная строка под основным статусом показывает `Checking for updates…`, актуальную версию, найденную версию с пояснением `translation cache will be kept`/`translation cache rebuild required` либо `Could not check for updates`. Для найденного обновления ниже выводятся до трёх коротких изменений. Пока их источник не настроен, панель показывает явную заглушку. Неудачная проверка никогда не мешает запуску игры. Версия 0.9.44 только проверяет и сообщает результат — она ещё ничего не скачивает и не устанавливает.
 
-`Live translation log` автоматически раскрывается для каждого результата, обработанного Bulk или Test Phrase. При старте нового прохода очищается только живая область, поэтому записи прежнего языка, провайдера или модели не смешиваются с текущими. Каждая запись показывает время, сервис и язык, затем исходную английскую строку и готовый результат; повторно использованный результат отмечается словом `cache`. Нажмите `Stop scroll`, чтобы зафиксировать текущую видимую запись и свободно листать список вручную. Перевод и журнал продолжают работать, новые пары по-прежнему добавляются. Нажмите `Resume scroll`, чтобы перейти к новейшим строкам и вернуть обычное автоследование. Обычно живой список хранит 40 последних пар; во время Stop он временно удерживает ещё до 40 строк вокруг просматриваемой позиции и снова сокращается после Resume. Локальный helper сохраняет между запусками каждую уникальную пару provider/language/source/translation, включая отсутствовавшую в истории кэш-пару, но не создаёт дубли при следующих проходах. `View saved` загружает последние 200 записей, `Save file` сохраняет полный журнал в JSONL. `Clear view` очищает только панель; сохранённая история остаётся на диске и также не удаляется кнопкой `Reset all data`. Обычное воспроизведение готовых реплик из кэша журналом не засоряется.
+`Live translation log` автоматически раскрывается для каждого результата, обработанного Bulk или Test Phrase. При старте нового прохода очищается только живая область, поэтому записи прежнего языка, провайдера или модели не смешиваются с текущими. Каждая запись показывает время, сервис и язык, затем исходную английскую строку и готовый результат; повторно использованный результат отмечается словом `cache`. Нажмите `Stop scroll`, чтобы зафиксировать текущую видимую запись и свободно листать список вручную. Перевод и журнал продолжают работать, новые пары по-прежнему добавляются. Нажмите `Resume scroll`, чтобы перейти к новейшим строкам и вернуть обычное автоследование. Обычно живой список хранит 40 последних пар; во время Stop он временно удерживает ещё до 40 строк вокруг просматриваемой позиции и снова сокращается после Resume. Локальный helper сохраняет между запусками каждую уникальную пару provider/language/source/translation, включая отсутствовавшую в истории кэш-пару, но не создаёт дубли при следующих проходах. `View saved` загружает последние 200 записей, `Save file` сохраняет полный журнал в JSONL. `Clear view` очищает только панель и оставляет сохранённую историю; полный `Reset all data` удаляет и её. Обычное воспроизведение готовых реплик из кэша журналом не засоряется.
 
 Кнопка `Test Phrase · All Languages` переводит только реплику `Hi, OMORI! Cliff-faced as usual…` во все языки, доступные выбранному сервису. Управляющие коды OMORI не отправляются провайдеру, готовые языки пропускаются, а повторное нажатие продолжает отсутствующие. Тест продолжает работу при переключении в другое приложение и обрабатывает языки по одному. Бесплатный Google endpoint принимает один целевой язык за запрос, поэтому Google-режим делает запрос раз в секунду, а полный проход без ограничений обычно занимает около 5 минут. При `HTTP 429` Google-запросы полностью прекращаются на 15 минут, срок и следующая ступень паузы сохраняются между запусками, затем повторяется тот же язык. Повторные ограничения увеличивают паузу до 30 и 60 минут даже после перезапуска приложения. После завершения оставайтесь на этой реплике и переключайте язык для ручной проверки Canvas.
 
-С Argos или CTranslate2 + OPUS-MT тест автоматически подготавливает движок и каждую отсутствующую модель English → target перед переводом языка без готового кэша. Закэшированные языки пропускаются без установки их моделей. Подтверждение предупреждает, что проход может скачать несколько гигабайт, занять много времени и оставить установленные модели на диске. Обычный Bulk одного языка по-прежнему требует только выбранную модель.
 
 Успешный большой перевод из кэша не означает, что Google прямо сейчас принимает новые запросы. Например, для русского языка в кэше уже могут находиться тысячи строк, тогда как тесту всё равно нужен отдельный свежий запрос для каждого отсутствующего языка. Строка состояния отдельно показывает `new`, `cached` и `failed`. Обратный отсчёт при `0 failed` означает безопасное ожидание, а не поломку. Не нужно многократно перезапускать тест: срок Google-паузы специально сохраняется. Если продолжить необходимо сразу, выберите другой сервис; его результаты будут храниться в отдельной области кэша.
 
-Готовые переводы из кэша применяются автоматически при отрисовке поддерживаемого игрового текста. Отдельной кнопки применения и настройки автоприменения нет; обычный игровой процесс не отправляет текст в сеть.
+В Story и Full готовые переводы из кэша применяются автоматически при отрисовке поддерживаемого игрового текста. Screen остаётся ручным, пока не включена опция `Automatically translate completed dialogue`; с ней свежий запрос может запустить только завершившаяся страница реплики. Меню по-прежнему требуют `Translate current screen` или `Ctrl+Shift+T`.
 
 После смены языка дождитесь сообщения `Ready: … cache loaded`. Мод перерисует уже открытую реплику — включая завершённую страницу, ожидающую нажатия — и варианты ответа, поэтому перезапуск игры не требуется.
 
@@ -270,9 +238,8 @@ OPUS-MT — специализированная модель машинного
 
 Перед обращением к любому сервису мод отделяет разметку OMORI от переводимого текста. К защищённым токенам относятся команды с обратной косой чертой (`\aub`, `\art`, `\ber`, `\sxbf`, `\itemget`, `\!`, `\N[1]`, `\n<NAME>`), экранированные кавычки (`\"`), теги (`<WordWrap>`, `<br>`), квадратные метаданные (`[TRASH]`) и внутренние контекстные разделители. Все модели получают только обычные текстовые участки; мод вставляет ответы между точными исходными токенами и проверяет собранную строку. Поэтому даже слабая модель не может изменить, удалить или переставить служебную разметку.
 
-При первом запуске 0.9.29 прежний кэш переводов очищается как несовместимый: старые результаты невозможно надёжно отличить от строк с изменёнными кавычками и расположением команд. Установленные модели Argos/CTranslate2, сохранения игры, защищённые API-ключи и `translation-history.jsonl` при этой миграции не удаляются. После обновления снова запустите нужный Bulk или Test Phrase.
 
-После подтверждения `Reset all data` кнопка показывает вращающийся индикатор и надпись `Resetting…` до завершения очистки кэша и сброса настроек. Во время операции повторное нажатие недоступно.
+`Reset all data` возвращает переводчик к состоянию новой загрузки: удаляет provider- и RAM-кэши, импортированные паки, сохранённую историю и логи, оставшиеся файлы провайдеров из прежних версий, API-ключи, настройки, cooldown, запомненный путь игры и служебные метаданные. Файлы и сохранения OMORI не изменяются; при следующем старте лаунчер снова найдёт игру или попросит выбрать её. После подтверждения кнопка показывает `Resetting…` до завершения удаления, затем просит перезапустить переводчик; во время операции повторное нажатие недоступно.
 
 Ссылка VN Revival открывает сайт проекта в системном браузере. Рядом находятся иконки:
 

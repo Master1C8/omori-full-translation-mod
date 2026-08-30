@@ -18,14 +18,47 @@
     return translated;
   }
 
+  function resolvedMessageSourceText(messageWindow, rawText) {
+    const raw = String(rawText || "");
+    const core = typeof window !== "undefined" ? window.VNRevivalTranslationCore : null;
+    if (!raw || !messageWindow || typeof messageWindow.convertEscapeCharacters !== "function"
+      || !core || typeof core.tokenizeProtectedMarkup !== "function") return raw;
+
+    // Resolving the complete string is unsafe: RPG Maker turns commands into
+    // ESC bytes and OMORI consumes layout/speaker prefixes such as <WordWrap>
+    // and \mar. Resolve only dynamic template tokens while leaving every other
+    // protected token in the provider input and cache key verbatim.
+    return core.tokenizeProtectedMarkup(raw).map((segment) => {
+      const isDynamicToken = !!(segment && segment.type === "token"
+        && (/^\\(?:v|n|p)\[[^\]\r\n]*\]$/i.test(segment.value) || /^\\g$/i.test(segment.value)));
+      if (!isDynamicToken) {
+        return segment && typeof segment.value === "string" ? segment.value : "";
+      }
+      try {
+        return String(messageWindow.convertEscapeCharacters(segment.value))
+          .replace(/\u001b/g, "\\");
+      } catch (_) {
+        return segment.value;
+      }
+    }).join("");
+  }
+
   function currentTranslationScope() {
     if (typeof window === "undefined") return "story";
     const translator = window.__vnRevivalTranslator;
     if (translator && typeof translator.getTranslationScope === "function") {
-      return translator.getTranslationScope() === "full" ? "full" : "story";
+      const scope = translator.getTranslationScope();
+      return scope === "full" || scope === "screen" ? scope : "story";
     }
-    return window.__vnRevival_translationScope === "full" ? "full" : "story";
+    const scope = window.__vnRevival_translationScope;
+    return scope === "full" || scope === "screen" ? scope : "story";
   }
+
+  let collectVisibleGameTexts = () => [];
+  let clearApprovedScreenTexts = () => {};
+  let refreshApprovedScreenWindows = () => {};
+  let beginApprovedScreenRefresh = () => {};
+  let endApprovedScreenRefresh = () => {};
 
   function isDialogueWindow(windowObject) {
     if (typeof window === "undefined" || !windowObject) return false;
@@ -87,10 +120,14 @@
     hasSourceText(value, core) {
       return core.hasEnglishText(value);
     },
+    collectVisibleTexts() {
+      return collectVisibleGameTexts();
+    },
     onModeChanged(newMode) {
       if (typeof window === "undefined") return;
       window.__vnRevival_isTranslatedMode = (newMode === "translated");
       if (currentTranslationScope() === "full") refreshNonDialogueWindows();
+      else if (currentTranslationScope() === "screen") refreshApprovedScreenWindows();
       if (window.SceneManager && window.SceneManager._scene) {
         const sc = window.SceneManager._scene;
         const messageWindow = sc._messageWindow;
@@ -100,7 +137,7 @@
             ? messageWindow._vnRevivalCurrentText
             : "");
         if (messageWindow && messageWindow.isOpen && messageWindow.isOpen() && gameMessage && raw) {
-          const completedPage = !messageWindow._textState && messageWindow.pause;
+          const completedPage = !messageWindow._textState;
           if (completedPage && typeof window.__vnRevivalRedrawCompletedMessage === "function") {
             try {
               if (window.__vnRevivalRedrawCompletedMessage(raw, newMode)) {
@@ -141,22 +178,49 @@
       adapter.onModeChanged(translator && typeof translator.getMode === "function"
         ? translator.getMode()
         : "translated");
-      adapter.onTranslationsChanged();
     },
     onTranslationScopeChanged(scope) {
       if (typeof window === "undefined") return;
-      window.__vnRevival_translationScope = scope === "full" ? "full" : "story";
-      refreshNonDialogueWindows();
+      window.__vnRevival_translationScope = scope === "full" || scope === "screen" ? scope : "story";
+      clearApprovedScreenTexts();
+      if (currentTranslationScope() !== "full") refreshNonDialogueWindows();
+      const translator = window.__vnRevivalTranslator;
+      adapter.onModeChanged(translator && typeof translator.getMode === "function"
+        ? translator.getMode()
+        : "translated");
     },
     onTranslationsChanged() {
       if (typeof window === "undefined" || !window.SceneManager || !window.SceneManager._scene) return;
       const sc = window.SceneManager._scene;
-      // Window_Message watches its own cached translation reactively. Only
-      // dialogue choices need an explicit refresh when their cache entry arrives.
-      if (sc._choiceListWindow && sc._choiceListWindow.visible && typeof sc._choiceListWindow.refresh === "function") {
-        try { sc._choiceListWindow.refresh(); } catch (_) {}
+      beginApprovedScreenRefresh();
+      try {
+        // Window_Message watches its own cached translation reactively. Only
+        // dialogue choices need an explicit refresh when their cache entry arrives.
+        if (sc._choiceListWindow && sc._choiceListWindow.visible && typeof sc._choiceListWindow.refresh === "function") {
+          try { sc._choiceListWindow.refresh(); } catch (_) {}
+        }
+        const messageWindow = sc._messageWindow;
+        const nameWindow = sc._nameBoxWindow
+          || (messageWindow && (messageWindow._nameBoxWindow || messageWindow._nameWindow));
+        if (nameWindow && nameWindow.visible !== false && typeof nameWindow.refresh === "function") {
+          const nameSource = nameWindow._vnRevivalScreenSourceText || nameWindow._text;
+          if (nameSource) {
+            try { nameWindow.refresh(nameSource, nameWindow._position); } catch (_) {}
+          }
+        }
+        const raw = rawGameMessageText(window.$gameMessage)
+          || (messageWindow && messageWindow._vnRevivalCurrentText)
+          || "";
+        if (messageWindow && messageWindow.isOpen && messageWindow.isOpen()
+          && !messageWindow._textState && raw
+          && typeof window.__vnRevivalRedrawCompletedMessage === "function") {
+          try { window.__vnRevivalRedrawCompletedMessage(raw, "translated"); } catch (_) {}
+        }
+        if (currentTranslationScope() === "full") refreshNonDialogueWindows();
+        else if (currentTranslationScope() === "screen") refreshApprovedScreenWindows();
+      } finally {
+        endApprovedScreenRefresh();
       }
-      if (currentTranslationScope() === "full") refreshNonDialogueWindows();
     }
   });
 
@@ -169,10 +233,111 @@
 
       const inFlightRequests = new Set();
       const skipCache = new Set();
+      const visibleWindowTexts = new WeakMap();
+      const approvedScreenTexts = new WeakMap();
+      let approvedScreenScene = null;
+      let approvedScreenRefreshDepth = 0;
+      const MIN_TRANSLATED_SYSTEM_FONT_SIZE = 16;
+      const CYRILLIC_SYSTEM_FONT_REDUCTION = 8;
+      const TRANSLATED_TEXT_SAFETY_PADDING = 4;
+      const CYRILLIC_SCRIPT_PATTERN = /[\u0400-\u04FF]/;
       const FONT_FALLBACK_STACK = 'GameFont, OMORI_GAME, OMORI_GAME2, NotoSans_Regular, "Noto Sans", Arial, sans-serif, -apple-system';
       const RTL_SCRIPT_PATTERN = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
       const isTranslateActive = () => !!window.__vnRevival_isTranslatedMode;
-      const isFullTranslationActive = () => isTranslateActive() && currentTranslationScope() === "full";
+      const isWideTranslationActive = () => isTranslateActive() && currentTranslationScope() !== "story";
+      const isScreenTranslationActive = () => isTranslateActive() && currentTranslationScope() === "screen";
+
+      const isScreenTextApproved = (windowObject, value) => {
+        if (currentTranslationScope() !== "screen") return true;
+        if (!windowObject || approvedScreenScene !== (window.SceneManager && window.SceneManager._scene)) return false;
+        const approved = approvedScreenTexts.get(windowObject);
+        return !!(approved && approved.has(String(value == null ? "" : value).trim()));
+      };
+
+      clearApprovedScreenTexts = () => {
+        approvedScreenScene = null;
+        visitActiveGameWindows((windowObject) => approvedScreenTexts.delete(windowObject));
+      };
+      refreshApprovedScreenWindows = () => {
+        visitActiveGameWindows((windowObject) => {
+          if (!approvedScreenTexts.has(windowObject) || isDialogueWindow(windowObject)
+            || typeof windowObject.refresh !== "function") return;
+          if (typeof window.__vnRevivalMapWindowBitmap === "function") {
+            try { window.__vnRevivalMapWindowBitmap(windowObject); } catch (_) {}
+          }
+          try { windowObject.refresh(); } catch (_) {}
+        });
+      };
+      beginApprovedScreenRefresh = () => { approvedScreenRefreshDepth += 1; };
+      endApprovedScreenRefresh = () => { approvedScreenRefreshDepth = Math.max(0, approvedScreenRefreshDepth - 1); };
+
+      const isWindowVisible = (windowObject) => !!(windowObject
+        && windowObject.visible !== false
+        && !(Number.isFinite(windowObject.openness) && windowObject.openness <= 0)
+        && !(Number.isFinite(windowObject.contentsOpacity) && windowObject.contentsOpacity <= 0));
+
+      const rememberVisibleWindowText = (windowObject, value) => {
+        const text = String(value == null ? "" : value).trim();
+        if (!isScreenTranslationActive() || !isWindowVisible(windowObject) || text.length < 2) return;
+        if (!visibleWindowTexts.has(windowObject)) visibleWindowTexts.set(windowObject, new Set());
+        visibleWindowTexts.get(windowObject).add(text);
+      };
+
+      const approveScreenText = (windowObject, value) => {
+        const text = String(value == null ? "" : value).trim();
+        if (!windowObject || text.length < 2) return false;
+        approvedScreenScene = window.SceneManager && window.SceneManager._scene;
+        if (!approvedScreenTexts.has(windowObject)) approvedScreenTexts.set(windowObject, new Set());
+        approvedScreenTexts.get(windowObject).add(text);
+        return true;
+      };
+
+      const queueCompletedScreenMessage = (messageWindow) => {
+        if (!isScreenTranslationActive() || !messageWindow || messageWindow._vnRevivalAutoCompletionQueued) return;
+        const translator = window.__vnRevivalTranslator;
+        if (!translator || typeof translator.registerCompletedScreenText !== "function") return;
+        const raw = rawGameMessageText(window.$gameMessage) || messageWindow._vnRevivalCurrentText || "";
+        const source = messageWindow._vnRevivalScreenSourceText
+          || resolvedMessageSourceText(messageWindow, raw);
+        if (!source || translator.registerCompletedScreenText(source) !== true) return;
+        messageWindow._vnRevivalAutoCompletionQueued = true;
+        approveScreenText(messageWindow, source);
+      };
+
+      collectVisibleGameTexts = () => {
+        const result = new Set();
+        approvedScreenScene = window.SceneManager && window.SceneManager._scene;
+        visitActiveGameWindows((windowObject) => {
+          approvedScreenTexts.delete(windowObject);
+          if (!isWindowVisible(windowObject)) return;
+          const approved = new Set();
+          const add = (value) => {
+            const text = String(value == null ? "" : value).trim();
+            if (text.length < 2) return;
+            result.add(text);
+            approved.add(text);
+          };
+          const remembered = visibleWindowTexts.get(windowObject);
+          if (remembered) for (const text of remembered) add(text);
+          if (window.Window_Message && windowObject instanceof window.Window_Message) {
+            add(windowObject._vnRevivalScreenSourceText
+              || rawGameMessageText(window.$gameMessage)
+              || windowObject._vnRevivalCurrentText);
+          }
+          if (window.Window_NameBox && windowObject instanceof window.Window_NameBox) {
+            add(windowObject._vnRevivalScreenSourceText || windowObject._text);
+          }
+          if (window.Window_ChoiceList && windowObject instanceof window.Window_ChoiceList
+            && typeof windowObject.commandName === "function") {
+            const count = typeof windowObject.maxItems === "function"
+              ? Number(windowObject.maxItems()) || 0
+              : Array.isArray(windowObject._list) ? windowObject._list.length : 0;
+            for (let index = 0; index < count; index += 1) add(windowObject.commandName(index));
+          }
+          if (approved.size) approvedScreenTexts.set(windowObject, approved);
+        });
+        return Array.from(result);
+      };
 
       const activeLanguage = () => {
         const translator = window.__vnRevivalTranslator;
@@ -216,8 +381,47 @@
           .finally(() => inFlightRequests.delete(text));
       };
 
-      const translateString = (str) => {
+      const visibleTextForFontFit = (value) => {
+        const text = String(value == null ? "" : value).replace(/<br\s*\/?\s*>/gi, "\n");
+        const core = window.VNRevivalTranslationCore;
+        if (!core || typeof core.tokenizeProtectedMarkup !== "function") return text;
+        return core.tokenizeProtectedMarkup(text)
+          .map((segment) => segment.type === "text" ? segment.value : "")
+          .join("");
+      };
+
+      const fitTranslatedBitmapFont = (bitmap, value, maxWidth) => {
+        if (!bitmap || typeof bitmap.measureTextWidth !== "function") return null;
+        const originalFontSize = Number(bitmap.fontSize);
+        if (!Number.isFinite(originalFontSize) || originalFontSize <= MIN_TRANSLATED_SYSTEM_FONT_SIZE) return null;
+        const lines = visibleTextForFontFit(value).split("\n");
+        let targetFontSize = lines.some((line) => CYRILLIC_SCRIPT_PATTERN.test(line))
+          ? Math.max(MIN_TRANSLATED_SYSTEM_FONT_SIZE, originalFontSize - CYRILLIC_SYSTEM_FONT_REDUCTION)
+          : originalFontSize;
+        bitmap.fontSize = targetFontSize;
+        try {
+          const availableWidth = Number(maxWidth) - TRANSLATED_TEXT_SAFETY_PADDING;
+          if (Number.isFinite(availableWidth) && availableWidth > 0) {
+            const measuredWidth = lines.reduce((width, line) =>
+              Math.max(width, Number(bitmap.measureTextWidth(line)) || 0), 0);
+            if (measuredWidth > availableWidth) {
+              targetFontSize = Math.max(
+                MIN_TRANSLATED_SYSTEM_FONT_SIZE,
+                Math.floor(targetFontSize * availableWidth / measuredWidth)
+              );
+              bitmap.fontSize = targetFontSize;
+            }
+          }
+          return targetFontSize !== originalFontSize ? originalFontSize : null;
+        } catch (error) {
+          bitmap.fontSize = originalFontSize;
+          throw error;
+        }
+      };
+
+      const translateString = (str, windowObject) => {
         if (!window.__vnRevival_isTranslatedMode || typeof str !== "string" || str.length < 2) return str;
+        if (!isScreenTextApproved(windowObject, str)) return str;
         if (skipCache.has(str)) return str;
         if (/[\u0410-\u044F\u0401\u0451]/.test(str)) return str;
         if (!/[a-zA-Z]/.test(str) || str.includes("this.") || /[\+\*\/]/.test(str)) {
@@ -235,6 +439,19 @@
         return str;
       };
 
+      const cachedMessageTranslation = (messageWindow, rawText) => {
+        const translator = window.__vnRevivalTranslator;
+        if (!translator || typeof translator.queryMemoryCache !== "function") return null;
+        const resolved = String(messageWindow && messageWindow._vnRevivalScreenSourceText || "");
+        const resolvedHit = resolved && isScreenTextApproved(messageWindow, resolved)
+          ? translator.queryMemoryCache(resolved)
+          : null;
+        if (resolvedHit) return { source: resolved, translation: resolvedHit, resolved: true };
+        const raw = String(rawText || "");
+        const rawHit = raw && isScreenTextApproved(messageWindow, raw) ? translator.queryMemoryCache(raw) : null;
+        return rawHit ? { source: raw, translation: rawHit, resolved: false } : null;
+      };
+
       const redrawCompletedMessage = (rawText, mode) => {
         const scene = window.SceneManager && window.SceneManager._scene;
         const messageWindow = scene && scene._messageWindow;
@@ -242,25 +459,26 @@
         // RTL pages need the animated message hook because it draws each shaped
         // logical line as one canvas operation.
         if (mode === "translated" && isRtlActive()) return false;
-        const translator = window.__vnRevivalTranslator;
-        const cached = mode === "translated" && translator && typeof translator.queryMemoryCache === "function"
-          ? translator.queryMemoryCache(rawText)
-          : null;
-        const visibleText = mode === "translated" && cached
-          ? translatedMessageText(rawText, cached)
+        const cached = mode === "translated" ? cachedMessageTranslation(messageWindow, rawText) : null;
+        const visibleText = cached
+          ? translatedMessageText(cached.source, cached.translation)
           : rawText;
         if (!visibleText) return false;
         const drawX = typeof messageWindow.newLineX === "function" ? messageWindow.newLineX() : 0;
         const drawWidth = Math.max(40, Number(messageWindow.contents.width || 0) - drawX);
+        const drawableText = typeof messageWindow.setWordWrap === "function"
+          ? messageWindow.setWordWrap(visibleText)
+          : visibleText;
+        const wasPaused = !!messageWindow.pause;
         messageWindow.contents.clear();
         if (typeof messageWindow.resetFontSettings === "function") messageWindow.resetFontSettings();
-        messageWindow.drawTextEx(visibleText, drawX, 0, drawWidth);
+        messageWindow.drawTextEx(drawableText, drawX, 0, drawWidth);
         messageWindow._vnRevivalCurrentText = rawText;
-        messageWindow.__lastTranslatedText = cached || null;
+        messageWindow.__lastTranslatedText = cached ? cached.translation : null;
         // Keep RPG Maker's completed-page input state intact. The next OK press
         // must still advance the conversation normally.
         messageWindow._textState = null;
-        messageWindow.pause = true;
+        messageWindow.pause = wasPaused;
         return true;
       };
       window.__vnRevivalRedrawCompletedMessage = redrawCompletedMessage;
@@ -354,6 +572,8 @@
           window.Window_Base.prototype.__vnRevivalFullContentsHooked = true;
           const _createContents = window.Window_Base.prototype.createContents;
           window.Window_Base.prototype.createContents = function() {
+            visibleWindowTexts.delete(this);
+            if (!approvedScreenRefreshDepth) approvedScreenTexts.delete(this);
             const result = _createContents.apply(this, arguments);
             mapWindowBitmap(this);
             return result;
@@ -366,11 +586,35 @@
           const _bitmapDrawText = window.Bitmap.prototype.drawText;
           window.Bitmap.prototype.drawText = function(text) {
             const owner = bitmapOwners.get(this);
-            const shouldTranslate = owner && isFullTranslationActive() && !isDialogueWindow(owner)
+            if (owner && !isDialogueWindow(owner) && !owner.__vnRevivalDrawingTextEx) {
+              rememberVisibleWindowText(owner, text);
+            }
+            const shouldTranslate = owner && isWideTranslationActive() && !isDialogueWindow(owner)
               && !owner.__vnRevivalDrawingTextEx;
             const args = Array.prototype.slice.call(arguments);
-            if (shouldTranslate && typeof text === "string") args[0] = translateString(text);
-            return _bitmapDrawText.apply(this, args);
+            if (shouldTranslate && typeof text === "string") args[0] = translateString(text, owner);
+            const fittedFontSize = args[0] !== text
+              ? fitTranslatedBitmapFont(this, args[0], args[3])
+              : null;
+            try {
+              return _bitmapDrawText.apply(this, args);
+            } finally {
+              if (fittedFontSize !== null) this.fontSize = fittedFontSize;
+            }
+          };
+        }
+
+        if (window.Bitmap && typeof window.Bitmap.prototype.clear === "function"
+          && !window.Bitmap.prototype.__vnRevivalVisibleTextClearHooked) {
+          window.Bitmap.prototype.__vnRevivalVisibleTextClearHooked = true;
+          const _bitmapClear = window.Bitmap.prototype.clear;
+          window.Bitmap.prototype.clear = function() {
+            const owner = bitmapOwners.get(this);
+            if (owner) {
+              visibleWindowTexts.delete(owner);
+              if (!approvedScreenRefreshDepth) approvedScreenTexts.delete(owner);
+            }
+            return _bitmapClear.apply(this, arguments);
           };
         }
 
@@ -379,16 +623,26 @@
           window.Window_Base.prototype.__vnRevivalFullDrawTextExHooked = true;
           const _drawTextEx = window.Window_Base.prototype.drawTextEx;
           window.Window_Base.prototype.drawTextEx = function(text) {
-            if (!isFullTranslationActive() || isDialogueWindow(this) || typeof text !== "string") {
+            if (!isDialogueWindow(this)) rememberVisibleWindowText(this, text);
+            if (!isWideTranslationActive() || isDialogueWindow(this) || typeof text !== "string") {
               return _drawTextEx.apply(this, arguments);
             }
             const args = Array.prototype.slice.call(arguments);
-            args[0] = translateString(text);
+            args[0] = translateString(text, this);
+            const drawX = Number(args[1]) || 0;
+            const requestedWidth = Number(args[3]);
+            const availableWidth = Number.isFinite(requestedWidth) && requestedWidth > 0
+              ? requestedWidth
+              : Math.max(0, Number(this.contents && this.contents.width) - drawX);
+            const fittedFontSize = args[0] !== text
+              ? fitTranslatedBitmapFont(this.contents, args[0], availableWidth)
+              : null;
             this.__vnRevivalDrawingTextEx = true;
             try {
               return _drawTextEx.apply(this, args);
             } finally {
               this.__vnRevivalDrawingTextEx = false;
+              if (fittedFontSize !== null) this.contents.fontSize = fittedFontSize;
             }
           };
         }
@@ -419,17 +673,21 @@
           const _start = window.Window_Message.prototype.startMessage;
           window.Window_Message.prototype.startMessage = function() {
             const raw = rawGameMessageText(window.$gameMessage);
+            this._vnRevivalAutoCompletionQueued = false;
             if (isTranslateActive() && raw) {
               this._vnRevivalCurrentText = raw;
+              this._vnRevivalScreenSourceText = resolvedMessageSourceText(this, raw);
               this.__lastTranslatedText = null;
             }
             _start.call(this);
             if (isTranslateActive() && raw && this._textState) {
-              const translator = window.__vnRevivalTranslator;
-              const cached = translator ? translator.queryMemoryCache(raw) : null;
-              if (typeof cached === "string" && cached.length > 0 && !cached.toLowerCase().includes("undefined")) {
-                this.__lastTranslatedText = cached;
-                this._textState.text = this.convertEscapeCharacters(translatedMessageText(raw, cached));
+              const cached = cachedMessageTranslation(this, raw);
+              if (cached && typeof cached.translation === "string" && cached.translation.length > 0
+                && !cached.translation.toLowerCase().includes("undefined")) {
+                this.__lastTranslatedText = cached.translation;
+                this._textState.text = this.convertEscapeCharacters(
+                  translatedMessageText(cached.source, cached.translation)
+                );
                 this._textState.index = 0;
               }
             }
@@ -441,16 +699,21 @@
             const raw = rawGameMessageText(window.$gameMessage) || this._vnRevivalCurrentText;
             if (raw) this._vnRevivalCurrentText = raw;
             if (isTranslateActive() && this.visible && this._textState && raw) {
-              const translator = window.__vnRevivalTranslator;
-              const cached = translator ? translator.queryMemoryCache(raw) : null;
+              const cached = cachedMessageTranslation(this, raw);
 
-              if (typeof cached === 'string' && cached.length > 0 && !cached.toLowerCase().includes("undefined") && this.__lastTranslatedText !== cached) {
-                this.__lastTranslatedText = cached;
+              if (cached && typeof cached.translation === "string" && cached.translation.length > 0
+                && !cached.translation.toLowerCase().includes("undefined")
+                && this.__lastTranslatedText !== cached.translation) {
+                this.__lastTranslatedText = cached.translation;
 
-                const translatedText = this.convertEscapeCharacters(translatedMessageText(raw, cached));
+                const translatedText = this.convertEscapeCharacters(
+                  translatedMessageText(cached.source, cached.translation)
+                );
                 this.newPage(this._textState);
                 this._textState.text = translatedText;
                 this._textState.index = 0;
+                this.pause = false;
+                this._waitCount = 0;
                 prepareRtlMessageState(this, this._textState);
                 return;
               }
@@ -488,6 +751,7 @@
                   drawRtlText(this.contents, item.text, item.x, item.y, item.width, item.height);
                 }
               }
+              queueCompletedScreenMessage(this);
               return result;
             };
           }
@@ -543,7 +807,8 @@
           const _choiceDrawItem = window.Window_ChoiceList.prototype.drawItem;
           window.Window_ChoiceList.prototype.drawItem = function(index) {
             const source = typeof this.commandName === "function" ? String(this.commandName(index) || "") : "";
-            const translated = source && isTranslateActive() ? translateString(source) : source;
+            rememberVisibleWindowText(this, source);
+            const translated = source && isTranslateActive() ? translateString(source, this) : source;
             if (!translated || translated === source || typeof this.itemRectForText !== "function") {
               return _choiceDrawItem.call(this, index);
             }
@@ -569,7 +834,9 @@
            window.Window_NameBox.prototype.__vnRevivalHooked = true;
            const _nameRefresh = window.Window_NameBox.prototype.refresh;
            window.Window_NameBox.prototype.refresh = function(text, position) {
-              const translated = text && isTranslateActive() ? translateString(text) : text;
+              this._vnRevivalScreenSourceText = String(text || "");
+              rememberVisibleWindowText(this, text);
+              const translated = text && isTranslateActive() ? translateString(text, this) : text;
               const rtlName = isRtlActive() && RTL_SCRIPT_PATTERN.test(String(translated || ""));
               const result = _nameRefresh.call(this, translated, position);
               if (translated && this.contents && typeof this.drawTextEx === "function") {

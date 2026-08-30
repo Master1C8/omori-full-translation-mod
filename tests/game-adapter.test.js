@@ -16,6 +16,13 @@ const runtimeSource = ["translator-runtime.js", "runtime-panel.js"]
   .join("\n");
 const runtimeUISource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-ui.js"), "utf8");
 const runtimeProgressSource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-progress.js"), "utf8");
+const reducedGoogleBulkBlockSizeSource = runtimeSource.match(
+  /function reducedGoogleBulkBlockSize\(currentSize, blockLength, error\) \{[\s\S]*?\n  \}/
+);
+assert.ok(reducedGoogleBulkBlockSizeSource, "adaptive Google Bulk size helper must exist");
+const reducedGoogleBulkBlockSize = Function(
+  `"use strict"; return (${reducedGoogleBulkBlockSizeSource[0]});`
+)();
 
 test("selected game manifest supplies universal runtime identity", () => {
   assert.equal(manifest.id, gameId);
@@ -65,11 +72,12 @@ test("translator panel restores position, drags globally, and collapses to one b
   assert.doesNotMatch(runtimeSource, /settings\.collapsed = !settings\.collapsed;\s*updateCollapsedState\(\);\s*saveSettings\(\)/);
 });
 
-test("full-translation mode keeps gameplay cache-only and gates bulk uploads", () => {
-  assert.match(runtimeSource, /translateText\(job\.source, language, provider, signal, false\)/);
-  assert.match(runtimeSource, /await ensureBulkProviderReady\(\)/);
-  assert.match(runtimeSource, /providerRequiresPrivacy\(settings\.provider\) && !settings\.privacyAccepted/);
-  assert.match(runtimeSource, /allowBulk/);
+test("full-translation mode keeps gameplay cache-only and starts explicit translations directly", () => {
+  assert.match(runtimeSource, /const manualScreen = isManual && settings\.translationScope === "screen"/);
+  assert.match(runtimeSource, /allowNetwork: manualScreen/);
+  assert.match(runtimeSource, /ensureTranslationProviderReady\(automaticScreen \? "auto-screen" : "screen"\)/);
+  assert.match(runtimeSource, /ensureTranslationProviderReady\("bulk"\)/);
+  assert.doesNotMatch(runtimeSource, /privacyAccepted|providerRequiresPrivacy|allowBulk|cancelBulk/);
   assert.doesNotMatch(runtimeSource, /isBulkMode/);
   assert.doesNotMatch(runtimeSource, /allowAuto/);
 });
@@ -99,22 +107,62 @@ test("cache mutations wait for IndexedDB commit before updating in-memory state"
 
 test("every provider path protects OMORI markup and rejects unsafe cached output", () => {
   assert.match(runtimeSource, /core\.translateProtectedText\(/);
+  assert.match(runtimeSource, /\{ language, contextual: true \}/);
   assert.match(runtimeSource, /translateWithProtectedMarkup\(\s*source, language, provider/);
   assert.match(runtimeSource, /translateWithProtectedMarkup\(\s*LANGUAGE_TEST_PHRASE_SOURCE/);
   assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, cached\)/);
-  assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(text, hit\)/);
+  assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, hit\)/);
   assert.match(runtimeSource, /core\.PROTECTED_MARKUP_VERSION/);
   assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 5\)/);
   assert.match(runtimeSource, /event\.oldVersion < 5/);
 });
 
-test("translator panel uses always-on cache application without obsolete manual controls", () => {
+test("Google context isolates and narrowly removes only its old selected-language cache", () => {
+  assert.match(runtimeSource, /const GOOGLE_CONTEXT_VERSION = "google-context-v1"/);
+  assert.match(runtimeSource, /provider === "google"\) providerVariant = GOOGLE_CONTEXT_VERSION/);
+  const migrationBody = runtimeSource.slice(
+    runtimeSource.indexOf("async function clearLegacyGoogleSegmentCache"),
+    runtimeSource.indexOf("async function clearAllCache")
+  );
+  assert.match(migrationBody, /core\.cacheKeyGame\(cursor\.key\) === game\.id/);
+  assert.match(migrationBody, /core\.cacheKeyProvider\(cursor\.key\) === "google"/);
+  assert.match(migrationBody, /core\.cacheKeyLanguage\(cursor\.key\) === language/);
+  assert.match(migrationBody, /core\.cacheKeyVariant\(cursor\.key\) === legacyVariant/);
+  assert.match(migrationBody, /await rebuildCacheMetadata\(\)/);
+  assert.doesNotMatch(migrationBody, /TRANSLATION_PACK_STORE_NAME|clearCacheForProvider/);
+});
+
+test("translator panel keeps cache application automatic and offers opt-in completed-dialogue Screen translation", () => {
   assert.match(runtimeSource, /const AUTO_APPLY_TRANSLATIONS = true/);
   assert.doesNotMatch(runtimeSource, /Sync Translation/);
-  assert.doesNotMatch(runtimeSource, /Ctrl\+Shift\+T/);
   assert.doesNotMatch(runtimeSource, /class="auto"/);
   assert.doesNotMatch(runtimeSource, /Automatically apply translations from cache/);
   assert.doesNotMatch(runtimeSource, /mainButton|autoCheckbox/);
+  assert.match(runtimeSource, /class="primary screenTranslate"[^>]*aria-keyshortcuts="Control\+Shift\+T"[^>]*>Translate current screen \(Ctrl\+Shift\+T\)<\/button>/);
+  assert.match(runtimeSource, /const SCREEN_TRANSLATION_CANCEL_LABEL = "Cancel current screen \(Ctrl\+Shift\+T\)"/);
+  assert.match(runtimeSource, /screenTranslateButton\.addEventListener\("click", triggerScreenTranslation\)/);
+  assert.match(runtimeSource, /autoScreenTranslation: false/);
+  assert.match(runtimeSource, /source\.autoScreenTranslation === true/);
+  assert.match(runtimeSource, /class="screenAuto" type="checkbox"/);
+  assert.match(runtimeSource, /screenAutoCheckbox\.addEventListener\("change"/);
+  assert.match(runtimeSource, /registerCompletedScreenText/);
+  assert.match(runtimeSource, /automaticScreen: true/);
+  assert.match(runtimeSource, /activeOperation = automaticScreen \? "screen-auto"/);
+  assert.match(runtimeSource, /event\.ctrlKey && event\.shiftKey && !event\.altKey && !event\.metaKey/);
+  assert.match(runtimeSource, /event\.code === "KeyT"/);
+  assert.match(runtimeSource, /settings\.translationScope !== "screen"/);
+  assert.match(runtimeSource, /origin\.matches\("input,textarea,select,\[contenteditable='true'\]"\)/);
+  assert.match(runtimeSource, /allowNetwork: manualScreen/);
+  assert.match(runtimeSource, /adapter\.collectVisibleTexts\(\)/);
+  assert.match(runtimeSource, /translateText\(\s*job\.source, language, provider, signal, allowNetwork === true/);
+  assert.match(runtimeSource, /function buildScreenAdapterJobs\(sources\)/);
+  assert.match(runtimeSource, /Math\.min\(12, freshSources\.length - offset\)/);
+  assert.match(runtimeSource, /contextSource = core\.buildContextSource\(slice\)/);
+  assert.match(runtimeSource, /parts: slice\.map\(\(source\) => \(\{ source, node: null, kind: "ui" \}\)\)/);
+  assert.match(runtimeSource, /queryMemoryTranslation\(source\)\) cachedJobs\.push\(job\)/);
+  assert.match(runtimeSource, /if \(!isManual && settings\.translationScope === "screen"\)/);
+  assert.match(runtimeSource, /settings\.translationScope !== "screen" && hasSourceText\(text\)/);
+  assert.match(runtimeSource, /if \(nextScope === "screen"\) invalidateAppliedTranslations\(\)/);
 });
 
 test("expanded panel shows all settings with one collapse control and a mode toggle", () => {
@@ -125,10 +173,12 @@ test("expanded panel shows all settings with one collapse control and a mode tog
   assert.match(runtimeSource, /class="modeChoice originalChoice">Original/);
   assert.match(runtimeSource, /class="scopeChoice storyTranslationScope active" type="button" aria-pressed="true"/);
   assert.match(runtimeSource, /class="scopeChoice fullTranslationScope" type="button" aria-pressed="false"/);
+  assert.match(runtimeSource, /class="scopeChoice screenTranslationScope" type="button" aria-pressed="false"/);
   assert.match(runtimeSource, /Stable · dialogue windows/);
   assert.match(runtimeSource, /Experimental · menus \+ dialogue/);
-  assert.match(runtimeSource, /translationScope: source\.translationScope === "full" \? "full" : defaults\.translationScope/);
+  assert.match(runtimeSource, /\["story", "full", "screen"\]\.includes\(source\.translationScope\)/);
   assert.match(runtimeSource, /fullTranslationScopeButton\.addEventListener\("click", \(\) => setTranslationScope\("full"\)\)/);
+  assert.match(runtimeSource, /screenTranslationScopeButton\.addEventListener\("click", \(\) => setTranslationScope\("screen"\)\)/);
   assert.match(runtimeSource, /getTranslationScope: \(\) => settings\.translationScope/);
   assert.doesNotMatch(runtimeSource, /<button class="gear"/);
   assert.equal((runtimeSource.match(/class="collapseToggle"/g) || []).length, 1);
@@ -187,6 +237,14 @@ test("reset all data shows activity until cache deletion finishes", () => {
   assert.match(runtimeSource, /function setResetButtonWorking\(\)/);
   assert.match(runtimeSource, /runtimeUI\.setButtonState\(resetButton, \{ working: true, label: "Resetting…", disabled: true \}\)/);
   assert.match(runtimeSource, /resetButton\.addEventListener\("click", async \(\) =>/);
+  assert.match(runtimeSource, /Factory reset permanently deletes all translator caches, imported packs, saved translation history/);
+  assert.match(runtimeSource, /OMORI saves and game files are not affected/);
+  assert.match(runtimeSource, /requestLocalHelper\("\/v1\/reset"/);
+  assert.match(runtimeSource, /body: \{ accepted: true, openAIBaseURLs: credentialScopes \}/);
+  assert.match(runtimeSource, /fuzzyMemoryCache\.clear\(\)/);
+  assert.match(runtimeSource, /key\.startsWith\(storagePrefix\)/);
+  assert.match(runtimeSource, /clearTranslationLog\(\)/);
+  assert.match(runtimeSource, /Factory reset complete · restart the translator/);
   assert.match(runtimeSource, /await deleteAllTranslatorData\(\)/);
   assert.match(runtimeSource, /finally \{\s*setResetButtonIdle\(\)/);
 });
@@ -247,7 +305,7 @@ test("shared translation files are inspected, confirmed, and stored as a reversi
   assert.match(runtimeSource, />Cancel<\/button><button class="primary packConfirm" type="button">Import<\/button>/);
   assert.match(runtimeSource, /The imported translation will be shown before your own provider cache/);
   assert.match(runtimeSource, /const importedTranslation = await importedPackGet\(source, language\)/);
-  assert.match(runtimeSource, /const imported = importedPackMemoryGet\(text, settings\.language\)/);
+  assert.match(runtimeSource, /const imported = importedPackMemoryGet\(source, language\)/);
   assert.match(runtimeSource, /async function deleteTranslationPackEntries\(packId\)/);
   assert.match(runtimeSource, />Load translation file<\/button>/);
   assert.match(runtimeSource, />Remove imported<\/button>/);
@@ -310,27 +368,57 @@ test("Bulk pauses and retries the current request when a provider rate-limits", 
   assert.match(runtimeProgressSource, /return `\$\{wordProgress\} · Rate limited by \$\{providerLabel\} · retrying in \$\{formatRetryCountdown\(Math\.ceil\(options\.waitSeconds\)\)\}`/);
 });
 
-test("Argos test phrase installs every missing model before translating", () => {
-  assert.match(runtimeSource, /async function prepareManagedOfflineTestPhraseTarget/);
-  assert.match(runtimeSource, /runtimeInstallPath: "\/v1\/runtime\/install"/);
-  assert.match(runtimeSource, /modelInstallPath: "\/v1\/models\/install"/);
-  assert.match(runtimeSource, /if \(prepared\.installed\) installedModels \+= 1/);
-  assert.match(runtimeSource, /The offline engine and missing models will be prepared automatically/);
-  assert.match(runtimeSource, /This can use substantial disk space and take a long time/);
-  assert.match(runtimeSource, /models installed/);
+test("Google Bulk groups only fresh strings into paced validated blocks", () => {
+  assert.match(runtimeSource, /if \(provider === "google"\) \{\s*return translateGoogleBulkLanguage/);
+  assert.match(runtimeSource, /function buildGoogleBulkBlocks\(entries, providerConfig\)/);
+  assert.match(runtimeSource, /function reducedGoogleBulkBlockSize\(currentSize, blockLength, error\)/);
+  assert.match(runtimeSource, /if \(length < 3\) return current/);
+  assert.match(runtimeSource, /acceptedCount > 0\s*\? Math\.max\(3, current - 2\)\s*:\s*Math\.max\(3, Math\.ceil\(Math\.min\(current, length\) \/ 2\)\)/);
+  assert.match(runtimeSource, /providerConfig\.bulkMaxItems/);
+  assert.match(runtimeSource, /core\.utf8Length\(contextSource\) <= maximumSize/);
+  assert.match(runtimeSource, /translateText\(entry\.source, language, provider, signal, false, true\)/);
+  assert.match(runtimeSource, /nextRequestAt = Date\.now\(\) \+ Math\.max\(0, Number\(providerConfig\.bulkDelay\) \|\| 5000\)/);
+  assert.match(runtimeSource, /core\.buildContextSource\(entries\.map\(\(entry\) => entry\.source\)\)/);
+  assert.match(runtimeSource, /core\.parseContextTranslation\(result\.text, entries\.length\)/);
+  assert.match(runtimeSource, /core\.translationQualityMatches\(entries\[index\]\.source, translations\[index\], language\)/);
+  assert.match(runtimeSource, /cachePut\(makeTranslationCacheKey\(source, language, provider\), translated\)/);
+  assert.match(runtimeSource, /const blockOptions = \{ contextFallback: false, contextualQuality: false \}/);
+  assert.match(runtimeSource, /acceptedEntries: acceptedEntries\.map\(\(accepted\) => accepted\.entry\)/);
+  assert.match(runtimeSource, /error\.rejectedEntries = saved\.rejectedEntries/);
+  assert.match(runtimeSource, /async function finishAdaptiveGoogleBlock\(entries, error\)/);
+  assert.match(runtimeSource, /rejectedEntries\.length < entries\.length/);
+  assert.match(runtimeSource, /retrying only \$\{rejectedEntries\.length\} rejected strings/);
+  assert.match(runtimeSource, /const middle = Math\.ceil\(rejectedEntries\.length \/ 2\)/);
+  assert.match(runtimeSource, /rejectedEntries\.slice\(0, middle\), rejectedEntries\.slice\(middle\)/);
+  assert.match(runtimeSource, /await finishAdaptiveGoogleBlock\(part, partError\)/);
+  assert.match(runtimeSource, /providerConfig\.bulkConsecutiveFailureLimit/);
+  assert.match(runtimeSource, /const pendingBlocks = buildGoogleBulkBlocks\(freshEntries, providerConfig\)/);
+  assert.match(runtimeSource, /pendingBlock\.slice\(0, adaptiveBlockSize\)/);
+  assert.match(runtimeSource, /pendingBlocks\.unshift\(pendingBlock\.slice\(block\.length\)\)/);
+  assert.match(runtimeSource, /consecutiveCleanBlocks >= 4/);
+  assert.match(runtimeSource, /adaptiveBlockSize = Math\.min\(maximumAdaptiveBlockSize, adaptiveBlockSize \+ 2\)/);
+  assert.match(runtimeSource, /reducedGoogleBulkBlockSize\(adaptiveBlockSize, block\.length, error\)/);
+  assert.match(runtimeSource, /const translatedBeforeFallback = newlyTranslated/);
+  assert.match(runtimeSource, /await finishAdaptiveGoogleBlock\(block, error\)/);
+  assert.match(runtimeSource, /const fallbackTranslated = newlyTranslated - translatedBeforeFallback/);
+  assert.match(runtimeSource, /const blockFailedAfterFallback = fallbackTranslated === 0 && fallbackFailed >= block\.length/);
+  assert.match(runtimeSource, /consecutiveFullBlockFailures >= consecutiveFailureLimit/);
+  assert.match(runtimeSource, /Google Bulk stopped after \$\{consecutiveFailureLimit\} consecutive blocks failed after fallback/);
+  assert.doesNotMatch(runtimeSource, /consecutiveFullBlockFailures = acceptedCount \? 0/);
+  assert.match(runtimeSource, /function setStatus\(text\) \{\s*if \(bulkWorkspaceAwaitingDismissal\) return;/);
 });
 
-test("managed offline UI supports Argos and CTranslate2 OPUS without Bergamot", () => {
-  assert.match(runtimeSource, /name: "CTranslate2 \+ OPUS-MT", statusPath: "\/v1\/ctranslate2\/status"/);
-  assert.doesNotMatch(runtimeSource, /bergamot/i);
-  assert.match(runtimeSource, /Download and convert model/);
-  assert.match(runtimeSource, /engine\.modelInstallPath/);
-  assert.match(runtimeSource, /engine\.modelUninstallPath/);
-  assert.match(runtimeSource, /\.argosAction\.working::before/);
-  assert.match(runtimeSource, /setArgosBusy\(true, argosActionButton\)/);
-  assert.match(runtimeSource, /setArgosBusy\(true, argosRemoveButton\)/);
-  assert.match(runtimeSource, /runtimeUI\.setBusyGroup\(\[argosActionButton, argosRemoveButton\]/);
-  assert.match(runtimeUISource, /function setBusyGroup\(controls, busy, activeControl = null\)/);
+test("Google Bulk adapts future block size without penalizing short tails", () => {
+  assert.equal(reducedGoogleBulkBlockSize(12, 12, {}), 6);
+  assert.equal(reducedGoogleBulkBlockSize(6, 6, {}), 3);
+  assert.equal(reducedGoogleBulkBlockSize(12, 12, { acceptedEntries: [{}] }), 10);
+  assert.equal(reducedGoogleBulkBlockSize(12, 2, {}), 12);
+});
+
+test("removed managed offline providers leave no panel or runtime controls", () => {
+  assert.doesNotMatch(runtimeSource, /Argos Offline|CTranslate2 \+ OPUS-MT|providerUsesManagedOffline/);
+  assert.doesNotMatch(runtimeSource, /argosBox|argosActionButton|argosRemoveButton|prepareManagedOfflineTestPhraseTarget/);
+  assert.doesNotMatch(runtimeSource, /\/v1\/ctranslate2\//);
 });
 
 test("project website opens through the operating system browser", () => {
@@ -370,7 +458,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
     assert.equal(messageRestarts, 1);
     assert.equal(global.window.SceneManager._scene._messageWindow.pause, false);
     assert.equal(global.window.SceneManager._scene._messageWindow._waitCount, 0);
-    assert.equal(choiceRefreshes, 2);
+    assert.equal(choiceRefreshes, 1);
 
     global.window.$gameMessage._vnRevivalRawText = "Hello";
     global.window.$gameMessage._texts = [];
@@ -387,7 +475,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
     assert.equal(global.window.SceneManager._scene._messageWindow.pause, false);
     assert.equal(global.window.SceneManager._scene._messageWindow._waitCount, 0);
     assert.deepEqual(global.window.$gameMessage._texts, []);
-    assert.equal(choiceRefreshes, 4);
+    assert.equal(choiceRefreshes, 2);
 
     let directRedraws = 0;
     global.window.__vnRevivalRedrawCompletedMessage = (raw, mode) => {
@@ -402,7 +490,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
     adapter.onLanguageChanged("zh-CN", "google");
     assert.equal(directRedraws, 1);
     assert.equal(messageRestarts, 2);
-    assert.equal(choiceRefreshes, 6);
+    assert.equal(choiceRefreshes, 3);
   } finally {
     delete global.window;
   }

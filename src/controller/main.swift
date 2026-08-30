@@ -16,7 +16,7 @@ enum ControllerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .usage: return "Usage: VNRevivalTranslatorController <port> <translator.js> [argos-url argos-token]"
+        case .usage: return "Usage: VNRevivalTranslatorController <port> <translator.js> [local-service-url local-service-token]"
         case .scriptMissing(let path): return "Translator script not found: \(path)"
         case .noTarget: return "The game did not expose a matching debugging target in time"
         case .invalidResponse: return "Invalid response from Electron debugging endpoint"
@@ -51,7 +51,7 @@ struct VNRevivalTranslatorController {
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             throw ControllerError.scriptMissing(scriptPath)
         }
-        var bootstrap = "window.__vnRevivalLocalBridge = null; window.__vnRevivalArgosBridge = null;\n"
+        var bootstrap = "window.__vnRevivalLocalBridge = null;\n"
         if CommandLine.arguments.count == 5 {
             let bridge: [String: String] = [
                 "baseURL": CommandLine.arguments[3],
@@ -61,7 +61,7 @@ struct VNRevivalTranslatorController {
             guard let json = String(data: data, encoding: .utf8) else {
                 throw ControllerError.invalidResponse
             }
-            bootstrap = "window.__vnRevivalLocalBridge = \(json); window.__vnRevivalArgosBridge = window.__vnRevivalLocalBridge;\n"
+            bootstrap = "window.__vnRevivalLocalBridge = \(json);\n"
         }
         let source = bootstrap
             + (try String(contentsOfFile: scriptPath, encoding: .utf8))

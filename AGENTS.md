@@ -34,8 +34,8 @@ authoritative when documentation and code disagree.
 - `src/runtime-panel.js`: Shadow DOM panel markup and CSS only.
 - `src/translator-runtime.js`: orchestration, IndexedDB, Bulk, DOM/canvas hooks,
   panel controller, and provider state.
-- `src/service_router.py`: declarative local-helper POST routing.
-- `src/argos_service.py`: local engines, remote-provider bridge, asset extraction,
+- `src/local_router.py`: declarative local-helper POST routing.
+- `src/local_service.py`: remote-provider bridge, asset extraction,
   credentials, logs, updates, and loopback HTTP server.
 - `src/games/omori/adapter.js`: OMORI-specific DOM/canvas integration.
 - `launcher/` and `src/controller/`: platform startup and injection.

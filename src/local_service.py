@@ -5,33 +5,27 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import ipaddress
 import json
 import os
 import re
 import shutil
-import site
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import types
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from service_router import ArgosPostRouter, ServiceRouteError
+from local_router import LocalPostRouter, ServiceRouteError
 
 
-ARGOS_VERSION = "1.11.0"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
@@ -46,107 +40,11 @@ OPENAI_COMPATIBLE_PRESETS = {
 }
 MAX_REQUEST_BYTES = 1_048_576
 MAX_TEXT_CHARS = 120_000
-ARGOS_BATCH_MAX_ITEMS = 16
 ASSET_INDEX_SCHEMA = 1
 ASSET_INDEX_MAX_BYTES = 16 * 1024 * 1024
-MAX_MODEL_BYTES = 1_073_741_824
 UPDATE_MANIFEST_URL = "https://vnrevival.fun/downloads/omori/latest.json"
 UPDATE_MANIFEST_MAX_BYTES = 65_536
 UPDATE_CHECK_TIMEOUT = 10
-RUNTIME_REQUIREMENTS_PATH = Path(__file__).with_name("requirements-runtime-macos.txt")
-
-# Google language code -> Argos package language code. Only direct English models
-# from the official Argos package index are exposed.
-ARGOS_LANGUAGE_CODES = {
-    "ar": "ar", "az": "az", "bg": "bg", "bn": "bn", "ca": "ca",
-    "cs": "cs", "da": "da", "de": "de", "el": "el", "eo": "eo",
-    "es": "es", "et": "et", "eu": "eu", "fa": "fa", "fi": "fi",
-    "fr": "fr", "ga": "ga", "gl": "gl", "iw": "he", "hi": "hi",
-    "hu": "hu", "id": "id", "it": "it", "ja": "ja", "ko": "ko",
-    "ky": "ky", "lt": "lt", "lv": "lv", "ms": "ms", "no": "nb",
-    "nl": "nl", "pl": "pl", "pt": "pt", "ro": "ro", "ru": "ru",
-    "sk": "sk", "sl": "sl", "sq": "sq", "sv": "sv", "sw": "sw",
-    "th": "th", "tl": "tl", "tr": "tr", "uk": "uk", "ur": "ur",
-    "vi": "vi", "zh-CN": "zh", "zh-TW": "zt",
-}
-
-
-class BasicSentenceDetector:
-    """Small offline sentence splitter compatible with MiniSBD's interface."""
-
-    def __init__(self, language: str, use_gpu: bool = False):
-        self.language = language
-        self.use_gpu = use_gpu
-
-    def sentences(self, text: str) -> list[str]:
-        value = str(text or "").strip()
-        if not value:
-            return []
-        return [part for part in re.split(r"(?<=[.!?…])\s+", value) if part]
-
-
-def adaptive_argos_cpu_settings(cpu_count: int | None = None) -> dict[str, int]:
-    available = max(1, int(cpu_count or os.cpu_count() or 1))
-    return {
-        "interThreads": 1,
-        "intraThreads": min(4, available),
-        "batchSize": 32,
-    }
-
-
-def directory_size(path: Path) -> int:
-    if not path.exists():
-        return 0
-    total = 0
-    for entry in path.rglob("*"):
-        try:
-            if entry.is_file() and not entry.is_symlink():
-                total += entry.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while True:
-            chunk = source.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def normalize_target(target: Any) -> str | None:
-    if not isinstance(target, str):
-        return None
-    return ARGOS_LANGUAGE_CODES.get(target)
-
-
-def _safe_archive_path(destination: Path, name: str) -> Path:
-    if not isinstance(name, str) or not name or "\x00" in name:
-        raise BridgeError("model_archive_invalid", "The model archive contains an invalid path", 422)
-    candidate = (destination / name).resolve()
-    try:
-        candidate.relative_to(destination.resolve())
-    except ValueError as error:
-        raise BridgeError("model_archive_invalid", "The model archive contains an unsafe path", 422) from error
-    return candidate
-
-
-def safe_extract_zip(archive_path: Path, destination: Path) -> None:
-    total = 0
-    with zipfile.ZipFile(archive_path) as archive:
-        for member in archive.infolist():
-            _safe_archive_path(destination, member.filename)
-            unix_mode = member.external_attr >> 16
-            if stat.S_ISLNK(unix_mode):
-                raise BridgeError("model_archive_invalid", "The model archive contains unsupported links", 422)
-            total += max(0, member.file_size)
-            if total > MAX_MODEL_BYTES:
-                raise BridgeError("model_archive_too_large", "The extracted model exceeds the allowed size", 413)
-        archive.extractall(destination)
 
 
 _AES_SBOX = bytes.fromhex(
@@ -435,7 +333,7 @@ class OpenAICompatibleCredentialStore(GeminiCredentialStore):
         return f"VN Revival/OpenAI Compatible API/{self.credential_id}"
 
 
-class ArgosBridge:
+class LocalServiceBridge:
     def __init__(self, data_dir: Path, runtime_dir: Path | None = None,
                  credential_store: Any | None = None, credential_id: str = "default",
                  game_path: Path | None = None, lmstudio_base_url: str = LM_STUDIO_BASE_URL,
@@ -447,16 +345,7 @@ class ArgosBridge:
         self.state_dir = self.data_dir / "state"
         self.packages_dir = self.state_dir / "packages"
         self.cache_dir = self.data_dir / "cache"
-        self.ctranslate2_dir = self.data_dir / "ctranslate2-opus"
-        self.ctranslate2_models_dir = self.ctranslate2_dir / "models"
         self._lock = threading.RLock()
-        self._package_module = None
-        self._translate_module = None
-        self._runtime_bytes = None
-        self._ctranslate2_module = None
-        self._sentencepiece_module = None
-        self._opus_converter_class = None
-        self._ctranslate2_models: dict[str, tuple[Any, Any, Any]] = {}
         self.credential_store = credential_store or GeminiCredentialStore(credential_id)
         self.credential_id = credential_id
         self._injected_openai_credential_store = openai_credential_store
@@ -469,6 +358,7 @@ class ArgosBridge:
         self.activity_log = self.data_dir / "activity.log"
         self.translation_log = self.data_dir / "translation-history.jsonl"
         self.asset_index_path = self.data_dir / "omori-asset-index-v1.json"
+        self.credential_scopes_path = self.data_dir / "openai-credential-scopes.json"
         self._log_lock = threading.Lock()
         self._asset_index_lock = threading.Lock()
         self._translation_log_keys: set[str] | None = None
@@ -612,502 +502,7 @@ class ArgosBridge:
         }
 
     def _configure_environment(self) -> None:
-        for path in (
-            self.runtime_dir, self.state_dir, self.packages_dir, self.cache_dir,
-            self.ctranslate2_models_dir,
-        ):
-            path.mkdir(parents=True, exist_ok=True)
-        os.environ["XDG_DATA_HOME"] = str(self.state_dir)
-        os.environ["XDG_CACHE_HOME"] = str(self.cache_dir)
-        os.environ["ARGOS_PACKAGES_DIR"] = str(self.packages_dir)
-        os.environ["ARGOS_DEVICE_TYPE"] = "cpu"
-        os.environ["ARGOS_COMPUTE_TYPE"] = "int8"
-        cpu_settings = adaptive_argos_cpu_settings()
-        os.environ["ARGOS_INTER_THREADS"] = str(cpu_settings["interThreads"])
-        os.environ["ARGOS_INTRA_THREADS"] = str(cpu_settings["intraThreads"])
-        os.environ["ARGOS_BATCH_SIZE"] = str(cpu_settings["batchSize"])
-        os.environ["ARGOS_CHUNK_TYPE"] = "MINISBD"
-
-    def _load_runtime(self) -> bool:
-        with self._lock:
-            return self._load_runtime_unlocked()
-
-    def _load_runtime_unlocked(self) -> bool:
-        if self._package_module is not None and self._translate_module is not None:
-            return True
-        if not (self.runtime_dir / "argostranslate").is_dir():
-            return False
-        runtime_path = str(self.runtime_dir)
-        site.addsitedir(runtime_path)
-        if runtime_path in sys.path:
-            sys.path.remove(runtime_path)
-        sys.path.insert(0, runtime_path)
-        # Argos 1.11 imports Stanza and MiniSBD even when a lightweight detector
-        # is sufficient. Compatible stubs avoid Torch, ONNX and network downloads.
-        sys.modules.setdefault("stanza", types.ModuleType("stanza"))
-        minisbd = types.ModuleType("minisbd")
-        minisbd_models = types.ModuleType("minisbd.models")
-        minisbd_models.cache_dir = ""
-        minisbd_models.list_models = lambda: ["en"]
-        minisbd.SBDetect = BasicSentenceDetector
-        minisbd.models = minisbd_models
-        sys.modules["minisbd"] = minisbd
-        sys.modules["minisbd.models"] = minisbd_models
-        importlib.invalidate_caches()
-        try:
-            self._package_module = importlib.import_module("argostranslate.package")
-            self._translate_module = importlib.import_module("argostranslate.translate")
-        except Exception:
-            self._package_module = None
-            self._translate_module = None
-            return False
-        return True
-
-    def _runtime_size(self) -> int:
-        if self._runtime_bytes is not None:
-            return self._runtime_bytes
-        marker = self.runtime_dir / ".vnrevival-runtime-bytes"
-        try:
-            value = int(marker.read_text(encoding="ascii").strip())
-            if value >= 0:
-                self._runtime_bytes = value
-                return value
-        except (OSError, ValueError):
-            pass
-        self._runtime_bytes = directory_size(self.runtime_dir)
-        return self._runtime_bytes
-
-    def _require_runtime(self) -> None:
-        if not self._load_runtime():
-            raise BridgeError("runtime_missing", "The Argos engine is not installed yet", 409)
-
-    def _installed_package(self, target_code: str):
-        self._require_runtime()
-        for package in self._package_module.get_installed_packages():
-            if package.from_code == "en" and package.to_code == target_code:
-                return package
-        return None
-
-    def status(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        runtime_installed = self._load_runtime()
-        sentence_model_installed = runtime_installed
-        installed = None
-        if runtime_installed and target_code:
-            with self._lock:
-                installed = self._installed_package(target_code)
-        return {
-            "ok": True,
-            "runtimeInstalled": runtime_installed,
-            "runtimeVersion": ARGOS_VERSION if runtime_installed else None,
-            "runtimeBytes": self._runtime_size(),
-            "sentenceModelInstalled": sentence_model_installed,
-            "requestedLanguage": target if isinstance(target, str) else None,
-            "targetCode": target_code,
-            "supportedLanguages": sorted(ARGOS_LANGUAGE_CODES),
-            "supported": target_code is not None,
-            "modelInstalled": installed is not None,
-            "modelBytes": directory_size(installed.package_path) if installed else 0,
-            "offlineReady": runtime_installed and sentence_model_installed and installed is not None,
-            "offline": True,
-        }
-
-    def install_runtime(self) -> dict[str, Any]:
-        with self._lock:
-            if not self._load_runtime():
-                if self.runtime_is_bundled:
-                    raise BridgeError("runtime_broken", "The bundled Argos engine is damaged", 500)
-                self._pip_install_runtime()
-                if not self._load_runtime():
-                    raise BridgeError("runtime_install_failed", "Argos was installed but could not start", 500)
-            self._prepare_sentence_detector()
-        return self.status(None)
-
-    def _pip_install_runtime(self) -> list[str]:
-        if not RUNTIME_REQUIREMENTS_PATH.is_file():
-            raise BridgeError("runtime_lock_missing", "The hash-locked offline runtime manifest is missing", 500)
-        command = [
-            sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-            "--upgrade", "--ignore-installed", "--only-binary=:all:",
-            "--require-hashes", "--no-deps", "--target", str(self.runtime_dir),
-            "--requirement", str(RUNTIME_REQUIREMENTS_PATH),
-        ]
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=1_800,
-            check=False,
-        )
-        output = result.stdout.splitlines()
-        if result.returncode != 0:
-            tail = "\n".join(output[-12:])
-            raise BridgeError("runtime_install_failed", tail or "Could not install the offline engine", 500)
-        importlib.invalidate_caches()
-        self._runtime_bytes = None
-        return output
-
-    def install_model(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "Argos has no model for this language", 409)
-        with self._lock:
-            self._require_runtime()
-            self._prepare_sentence_detector()
-            if self._installed_package(target_code) is None:
-                self._package_module.update_package_index()
-                candidates = [
-                    package for package in self._package_module.get_available_packages()
-                    if package.from_code == "en" and package.to_code == target_code
-                ]
-                if not candidates:
-                    raise BridgeError("model_unavailable", "The model is not available in the Argos catalog", 404)
-                model_path = self._download_model(candidates[0], target_code)
-                try:
-                    self._package_module.install_from_path(model_path)
-                finally:
-                    model_path.unlink(missing_ok=True)
-                if self._installed_package(target_code) is None:
-                    raise BridgeError("model_install_failed", "The model was downloaded but could not be installed", 500)
-        return self.status(target)
-
-    def _prepare_sentence_detector(self) -> None:
-        self._require_runtime()
-        try:
-            detector_class = importlib.import_module("minisbd").SBDetect
-            detector_class("en", use_gpu=False).sentences("Ready. Another sentence.")
-        except Exception as error:
-            raise BridgeError("sentence_detector_failed", f"Could not initialize sentence splitting: {error}", 500)
-
-    def _download_model(self, package: Any, target_code: str) -> Path:
-        downloads_dir = self.cache_dir / "downloads"
-        downloads_dir.mkdir(parents=True, exist_ok=True)
-        destination = downloads_dir / f"translate-en_{target_code}.argosmodel"
-        return self._download_https(package.links, destination, MAX_MODEL_BYTES)
-
-    def _download_https(self, links: Any, destination: Path, max_bytes: int) -> Path:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_name(destination.name + ".part")
-        last_error: Exception | None = None
-        for link in links:
-            if not isinstance(link, str) or not link.startswith("https://"):
-                continue
-            for attempt in range(3):
-                try:
-                    request = urllib.request.Request(link, headers={"User-Agent": "VNRevival-Translator/1"})
-                    with urllib.request.urlopen(request, timeout=60) as response:
-                        expected = int(response.headers.get("Content-Length", "0") or 0)
-                        if expected > max_bytes:
-                            raise BridgeError("download_too_large", "The download exceeds the allowed size", 413)
-                        written = 0
-                        with partial.open("wb") as output:
-                            while True:
-                                chunk = response.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                written += len(chunk)
-                                if written > max_bytes:
-                                    raise BridgeError("download_too_large", "The download exceeds the allowed size", 413)
-                                output.write(chunk)
-                    if expected and written != expected:
-                        raise OSError(f"incomplete model download: {written} of {expected} bytes")
-                    partial.replace(destination)
-                    return destination
-                except BridgeError:
-                    partial.unlink(missing_ok=True)
-                    raise
-                except Exception as error:
-                    last_error = error
-                    partial.unlink(missing_ok=True)
-                    if attempt < 2:
-                        time.sleep(1.5 * (attempt + 1))
-        raise BridgeError("model_download_failed", f"Could not download the model: {last_error}", 502)
-
-    def uninstall_model(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "Argos has no model for this language", 409)
-        with self._lock:
-            package = self._installed_package(target_code)
-            if package is not None:
-                self._package_module.uninstall(package)
-        return self.status(target)
-
-    def translate(self, target: Any, text: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "Argos has no model for this language", 409)
-        if not isinstance(text, str) or not text.strip():
-            raise BridgeError("invalid_text", "The text to translate is empty", 400)
-        if len(text) > MAX_TEXT_CHARS:
-            raise BridgeError("text_too_large", "The text fragment is too large", 413)
-        with self._lock:
-            if self._installed_package(target_code) is None:
-                raise BridgeError("model_missing", "Download the selected language model first", 409)
-            translated = self._translate_module.translate(text, "en", target_code)
-        if not isinstance(translated, str) or not translated.strip():
-            raise BridgeError("empty_translation", "Argos returned an empty translation", 500)
-        return {"ok": True, "translatedText": translated, "offline": True}
-
-    @staticmethod
-    def _unwrap_argos_package_translation(translation: Any) -> Any | None:
-        current = translation
-        visited: set[int] = set()
-        while current is not None and id(current) not in visited:
-            visited.add(id(current))
-            if all(hasattr(current, name) for name in ("pkg", "sentencizer", "translator")):
-                return current
-            current = getattr(current, "underlying", None)
-        return None
-
-    @staticmethod
-    def _decode_argos_tokens(package: Any, tokens: list[str]) -> str:
-        value = package.tokenizer.decode(tokens)
-        prefix = str(getattr(package, "target_prefix", "") or "")
-        if prefix and value.startswith(prefix):
-            value = value[len(prefix):]
-        if value.startswith(" "):
-            value = value[1:]
-        return value
-
-    def translate_batch(self, target: Any, texts: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "Argos has no model for this language", 409)
-        if not isinstance(texts, list) or not 1 <= len(texts) <= ARGOS_BATCH_MAX_ITEMS:
-            raise BridgeError("invalid_batch", "Argos batch size is not allowed", 400)
-        if any(not isinstance(text, str) or not text.strip() for text in texts):
-            raise BridgeError("invalid_text", "Every Argos batch item must contain text", 400)
-        if any(len(text) > MAX_TEXT_CHARS for text in texts):
-            raise BridgeError("text_too_large", "An Argos batch item is too large", 413)
-
-        with self._lock:
-            if self._installed_package(target_code) is None:
-                raise BridgeError("model_missing", "Download the selected language model first", 409)
-            translation = self._translate_module.get_translation_from_codes("en", target_code)
-            package_translation = self._unwrap_argos_package_translation(translation)
-            if package_translation is None:
-                raise BridgeError("batch_unavailable", "This Argos model does not support safe batching", 409)
-            package = package_translation.pkg
-            if package_translation.translator is None:
-                ctranslate2 = importlib.import_module("ctranslate2")
-                settings = importlib.import_module("argostranslate.settings")
-                package_translation.translator = ctranslate2.Translator(
-                    str(package.package_path / "model"),
-                    device=settings.device,
-                    inter_threads=settings.inter_threads,
-                    intra_threads=settings.intra_threads,
-                    compute_type=settings.compute_type,
-                )
-            settings = importlib.import_module("argostranslate.settings")
-
-            paragraph_tokens: list[list[list[str]]] = []
-            tokenized: list[list[str]] = []
-            sentence_owners: list[tuple[int, int]] = []
-            for item_index, text in enumerate(texts):
-                paragraphs = text.split("\n")
-                paragraph_tokens.append([[] for _ in paragraphs])
-                for paragraph_index, paragraph in enumerate(paragraphs):
-                    sentences = package_translation.sentencizer.split_sentences(paragraph)
-                    for sentence in sentences:
-                        tokenized.append(package.tokenizer.encode(sentence))
-                        sentence_owners.append((item_index, paragraph_index))
-
-            if tokenized:
-                prefix = str(getattr(package, "target_prefix", "") or "")
-                target_prefix = [[prefix]] * len(tokenized) if prefix else None
-                translated = package_translation.translator.translate_batch(
-                    tokenized,
-                    target_prefix=target_prefix,
-                    replace_unknowns=True,
-                    max_batch_size=settings.batch_size,
-                    batch_type="tokens",
-                    beam_size=max(1, settings.beam_size),
-                    num_hypotheses=1,
-                    length_penalty=0.2,
-                    return_scores=True,
-                )
-                if len(translated) != len(sentence_owners):
-                    raise BridgeError("invalid_batch", "Argos returned a mismatched translation batch", 500)
-                for result, (item_index, paragraph_index) in zip(translated, sentence_owners):
-                    hypotheses = getattr(result, "hypotheses", None)
-                    if not hypotheses or not isinstance(hypotheses[0], list):
-                        raise BridgeError("invalid_batch", "Argos returned an invalid batch item", 500)
-                    paragraph_tokens[item_index][paragraph_index].extend(hypotheses[0])
-
-            translations = [
-                "\n".join(self._decode_argos_tokens(package, tokens) for tokens in paragraphs)
-                for paragraphs in paragraph_tokens
-            ]
-            if any(not translated.strip() for translated in translations):
-                raise BridgeError("empty_translation", "Argos returned an empty batch item", 500)
-        return {"ok": True, "translations": translations, "offline": True}
-
-    def _load_ctranslate2_runtime(self) -> bool:
-        if self._ctranslate2_module is not None:
-            return True
-        runtime_path = str(self.runtime_dir)
-        site.addsitedir(runtime_path)
-        if runtime_path in sys.path:
-            sys.path.remove(runtime_path)
-        sys.path.insert(0, runtime_path)
-        try:
-            self._ctranslate2_module = importlib.import_module("ctranslate2")
-            self._sentencepiece_module = importlib.import_module("sentencepiece")
-            self._opus_converter_class = importlib.import_module("ctranslate2.converters").OpusMTConverter
-        except Exception:
-            self._ctranslate2_module = None
-            self._sentencepiece_module = None
-            self._opus_converter_class = None
-            return False
-        return True
-
-    def ctranslate2_status(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        runtime_installed = self._load_ctranslate2_runtime()
-        directory = self.ctranslate2_models_dir / target_code if target_code else None
-        model_installed = bool(directory and all((directory / name).is_file() for name in (
-            "model.bin", "config.json", "source.spm", "target.spm",
-        )))
-        return {
-            "ok": True,
-            "engine": "CTranslate2 + OPUS-MT",
-            "runtimeInstalled": runtime_installed,
-            "runtimeVersion": getattr(self._ctranslate2_module, "__version__", None) if runtime_installed else None,
-            "runtimeBytes": self._runtime_size(),
-            "sentenceModelInstalled": runtime_installed,
-            "requestedLanguage": target if isinstance(target, str) else None,
-            "targetCode": target_code,
-            "supportedLanguages": sorted(ARGOS_LANGUAGE_CODES),
-            "supported": target_code is not None,
-            "modelInstalled": model_installed,
-            "modelBytes": directory_size(directory) if model_installed and directory else 0,
-            "offlineReady": runtime_installed and model_installed,
-            "offline": True,
-        }
-
-    def install_ctranslate2_runtime(self) -> dict[str, Any]:
-        if not self._load_ctranslate2_runtime():
-            if self.runtime_is_bundled:
-                raise BridgeError("runtime_broken", "The bundled CTranslate2 engine is damaged", 500)
-            self._pip_install_runtime()
-            if not self._load_ctranslate2_runtime():
-                raise BridgeError("runtime_install_failed", "CTranslate2 was installed but could not start", 500)
-        return self.ctranslate2_status(None)
-
-    def _opus_model_url(self, target_code: str) -> str:
-        pair = f"en-{target_code}"
-        readme_url = f"https://raw.githubusercontent.com/Helsinki-NLP/OPUS-MT-train/master/models/{pair}/README.md"
-        request = urllib.request.Request(readme_url, headers={"User-Agent": "VNRevival-Translator/1"})
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read(1_048_577)
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                raise BridgeError("model_unavailable", "OPUS-MT has no direct English model for this language", 404) from error
-            raise BridgeError("model_catalog_failed", "Could not read the OPUS-MT catalog", 502) from error
-        except (OSError, urllib.error.URLError) as error:
-            raise BridgeError("model_catalog_failed", "Could not read the OPUS-MT catalog", 502) from error
-        if len(raw) > 1_048_576:
-            raise BridgeError("model_catalog_invalid", "The OPUS-MT catalog response is too large", 502)
-        text = raw.decode("utf-8", errors="replace")
-        pattern = rf"https://object\.pouta\.csc\.fi/OPUS-MT-models/{re.escape(pair)}/opus-\d{{4}}-\d{{2}}-\d{{2}}\.zip"
-        matches = re.findall(pattern, text)
-        if not matches:
-            raise BridgeError("model_unavailable", "OPUS-MT has no downloadable model for this language", 404)
-        return matches[-1]
-
-    def install_ctranslate2_model(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "OPUS-MT has no model for this language", 409)
-        with self._lock:
-            self.install_ctranslate2_runtime()
-            destination = self.ctranslate2_models_dir / target_code
-            if self.ctranslate2_status(target)["modelInstalled"]:
-                return self.ctranslate2_status(target)
-            model_url = self._opus_model_url(target_code)
-            downloads = self.cache_dir / "downloads"
-            downloads.mkdir(parents=True, exist_ok=True)
-            archive_path = downloads / f"opus-mt-en-{target_code}.zip"
-            self._download_https([model_url], archive_path, MAX_MODEL_BYTES)
-            staging = self.ctranslate2_models_dir / f".{target_code}.installing"
-            shutil.rmtree(staging, ignore_errors=True)
-            try:
-                with tempfile.TemporaryDirectory(prefix="opus-mt-", dir=downloads) as temporary:
-                    extracted = Path(temporary)
-                    safe_extract_zip(archive_path, extracted)
-                    decoder_files = list(extracted.rglob("decoder.yml"))
-                    if len(decoder_files) != 1:
-                        raise BridgeError("model_archive_invalid", "The OPUS-MT archive has no unique decoder.yml", 422)
-                    model_root = decoder_files[0].parent
-                    source_spm = model_root / "source.spm"
-                    target_spm = model_root / "target.spm"
-                    if not source_spm.is_file():
-                        candidates = list(model_root.glob("*.spm"))
-                        if len(candidates) == 1:
-                            source_spm = target_spm = candidates[0]
-                    if not source_spm.is_file():
-                        raise BridgeError("model_archive_invalid", "The OPUS-MT source tokenizer is missing", 422)
-                    if not target_spm.is_file():
-                        target_spm = source_spm
-                    converter = self._opus_converter_class(str(model_root))
-                    converter.convert(str(staging), quantization="int8")
-                    shutil.copy2(source_spm, staging / "source.spm")
-                    shutil.copy2(target_spm, staging / "target.spm")
-                    (staging / "vnrevival-model.json").write_text(json.dumps({
-                        "engine": "ctranslate2-opus", "target": target_code,
-                        "source": model_url, "quantization": "int8",
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    shutil.rmtree(destination, ignore_errors=True)
-                    staging.replace(destination)
-            finally:
-                archive_path.unlink(missing_ok=True)
-                shutil.rmtree(staging, ignore_errors=True)
-            self._ctranslate2_models.pop(target_code, None)
-        return self.ctranslate2_status(target)
-
-    def uninstall_ctranslate2_model(self, target: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "OPUS-MT has no model for this language", 409)
-        with self._lock:
-            self._ctranslate2_models.pop(target_code, None)
-            shutil.rmtree(self.ctranslate2_models_dir / target_code, ignore_errors=True)
-        return self.ctranslate2_status(target)
-
-    def ctranslate2_translate(self, target: Any, text: Any) -> dict[str, Any]:
-        target_code = normalize_target(target)
-        if not target_code:
-            raise BridgeError("unsupported_language", "OPUS-MT has no model for this language", 409)
-        if not isinstance(text, str) or not text.strip():
-            raise BridgeError("invalid_text", "The text to translate is empty", 400)
-        if len(text) > MAX_TEXT_CHARS:
-            raise BridgeError("text_too_large", "The text fragment is too large", 413)
-        with self._lock:
-            if not self._load_ctranslate2_runtime():
-                raise BridgeError("runtime_missing", "Install CTranslate2 first", 409)
-            directory = self.ctranslate2_models_dir / target_code
-            if not self.ctranslate2_status(target)["modelInstalled"]:
-                raise BridgeError("model_missing", "Download the selected OPUS-MT model first", 409)
-            loaded = self._ctranslate2_models.get(target_code)
-            if loaded is None:
-                translator = self._ctranslate2_module.Translator(
-                    str(directory), device="cpu", compute_type="int8",
-                    inter_threads=1, intra_threads=max(1, min(4, os.cpu_count() or 1)),
-                )
-                source_tokenizer = self._sentencepiece_module.SentencePieceProcessor(model_file=str(directory / "source.spm"))
-                target_tokenizer = self._sentencepiece_module.SentencePieceProcessor(model_file=str(directory / "target.spm"))
-                loaded = (translator, source_tokenizer, target_tokenizer)
-                self._ctranslate2_models[target_code] = loaded
-            translator, source_tokenizer, target_tokenizer = loaded
-            tokens = source_tokenizer.encode(text, out_type=str)
-            result = translator.translate_batch([tokens], beam_size=2)[0]
-            translated = target_tokenizer.decode(result.hypotheses[0])
-        if not isinstance(translated, str) or not translated.strip():
-            raise BridgeError("empty_translation", "CTranslate2 returned an empty translation", 500)
-        return {"ok": True, "translatedText": translated, "offline": True}
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def gemini_status(self) -> dict[str, Any]:
         try:
@@ -1339,6 +734,46 @@ class ArgosBridge:
             return self._injected_openai_credential_store
         return OpenAICompatibleCredentialStore(self.credential_id, base_url)
 
+    def _saved_openai_credential_scopes(self) -> set[str]:
+        scopes = {
+            config["baseURL"] for config in OPENAI_COMPATIBLE_PRESETS.values()
+            if config.get("baseURL")
+        }
+        try:
+            payload = json.loads(self.credential_scopes_path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                for value in payload[:64]:
+                    if not isinstance(value, str):
+                        continue
+                    try:
+                        scopes.add(self._openai_connection("custom", value)["baseURL"])
+                    except BridgeError:
+                        continue
+        except (OSError, json.JSONDecodeError):
+            pass
+        return scopes
+
+    def _save_openai_credential_scopes(self, scopes: set[str]) -> None:
+        values = sorted(scopes)[:64]
+        temporary = self.credential_scopes_path.with_name(
+            f".{self.credential_scopes_path.name}.{os.getpid()}.tmp"
+        )
+        temporary.write_text(json.dumps(values, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, self.credential_scopes_path)
+
+    def _remember_openai_credential_scope(self, base_url: str) -> None:
+        scopes = self._saved_openai_credential_scopes()
+        scopes.add(base_url)
+        self._save_openai_credential_scopes(scopes)
+
+    def _forget_openai_credential_scope(self, base_url: str) -> None:
+        scopes = self._saved_openai_credential_scopes()
+        scopes.discard(base_url)
+        if scopes:
+            self._save_openai_credential_scopes(scopes)
+        else:
+            self.credential_scopes_path.unlink(missing_ok=True)
+
     def _openai_json(self, connection: dict[str, Any], path: str,
                      body: dict[str, Any] | None = None, timeout: int = 10) -> dict[str, Any]:
         key = self._openai_store(connection["baseURL"]).get()
@@ -1414,11 +849,13 @@ class ArgosBridge:
                 or any(ord(char) < 32 for char in api_key.strip()):
             raise BridgeError("invalid_api_key", "Enter a valid API key", 400)
         self._openai_store(connection["baseURL"]).set(api_key.strip())
+        self._remember_openai_credential_scope(connection["baseURL"])
         return self.openai_compatible_status(connection["preset"], connection["baseURL"])
 
     def remove_openai_compatible_key(self, preset: Any, base_url: Any) -> dict[str, Any]:
         connection = self._openai_connection(preset, base_url)
         self._openai_store(connection["baseURL"]).delete()
+        self._forget_openai_credential_scope(connection["baseURL"])
         return self.openai_compatible_status(connection["preset"], connection["baseURL"])
 
     @staticmethod
@@ -1631,6 +1068,85 @@ class ArgosBridge:
         marker.write_text("requested\n", encoding="utf-8")
         return {"ok": True, "reselectOnNextLaunch": True}
 
+    def _clear_saved_game_path(self) -> None:
+        """Remove launcher-owned path state without touching the selected game."""
+        try:
+            if sys.platform == "darwin":
+                saved_path = (
+                    Path.home() / "Library" / "Application Support" / "VN Revival"
+                    / "Translator Paths" / f"{self.credential_id}.txt"
+                )
+                saved_path.unlink(missing_ok=True)
+            elif os.name == "nt":
+                import winreg
+
+                key_path = rf"Software\VN Revival\Translator Paths\{self.credential_id}"
+                try:
+                    with winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+                    ) as key:
+                        winreg.DeleteValue(key, "Executable")
+                except FileNotFoundError:
+                    pass
+        except OSError as error:
+            raise BridgeError("reset_failed", "Could not clear the saved game path", 500) from error
+
+    def reset_all_data(self, openai_base_urls: Any) -> dict[str, Any]:
+        if openai_base_urls is None:
+            openai_base_urls = []
+        if not isinstance(openai_base_urls, list) or len(openai_base_urls) > 32:
+            raise BridgeError("reset_payload_invalid", "Reset credential scopes are invalid", 400)
+        scopes = self._saved_openai_credential_scopes()
+        for value in openai_base_urls:
+            if not isinstance(value, str):
+                continue
+            try:
+                scopes.add(self._openai_connection("custom", value)["baseURL"])
+            except BridgeError:
+                continue
+
+        self.credential_store.delete()
+        if self._injected_openai_credential_store is not None:
+            self._injected_openai_credential_store.delete()
+        else:
+            for base_url in scopes:
+                self._openai_store(base_url).delete()
+
+        with self._log_lock:
+            self.activity_log.unlink(missing_ok=True)
+            self.translation_log.unlink(missing_ok=True)
+            self._translation_log_keys = None
+        with self._asset_index_lock:
+            self.asset_index_path.unlink(missing_ok=True)
+
+        with self._lock:
+            runtime_path = str(self.runtime_dir)
+            while runtime_path in sys.path:
+                sys.path.remove(runtime_path)
+            # Reset All Data also clears directories created by providers that
+            # existed in earlier releases. Normal startup never touches them.
+            directories = [self.state_dir, self.cache_dir, self.data_dir / "ctranslate2-opus"]
+            if not self.runtime_is_bundled:
+                directories.append(self.runtime_dir)
+            for directory in directories:
+                shutil.rmtree(directory, ignore_errors=True)
+            self._configure_environment()
+
+        for path in (
+            self.credential_scopes_path,
+            self.data_dir / "argos-service.log",
+            self.data_dir / "local-service.log",
+            self.data_dir / ".reselect-game-executable",
+        ):
+            path.unlink(missing_ok=True)
+        self._clear_saved_game_path()
+        return {
+            "ok": True,
+            "factoryReset": True,
+            "restartRequired": True,
+            "gameFilesPreserved": True,
+        }
+
     @staticmethod
     def _game_asset_signature(lang_dir: Path, hero_files: list[Path]) -> list[dict[str, Any]]:
         signature = []
@@ -1763,11 +1279,11 @@ class ArgosBridge:
             }
 
 
-class ArgosRequestHandler(BaseHTTPRequestHandler):
+class LocalServiceRequestHandler(BaseHTTPRequestHandler):
     server_version = "VNRevivalLocalServices/1"
 
     @property
-    def bridge(self) -> ArgosBridge:
+    def bridge(self) -> LocalServiceBridge:
         return self.server.bridge
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -1871,18 +1387,6 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/update/check":
                 self._write_json(self.bridge.check_for_updates())
                 return
-            if self.path.startswith("/v1/status"):
-                target = None
-                if "?" in self.path:
-                    from urllib.parse import parse_qs, urlsplit
-                    target = parse_qs(urlsplit(self.path).query).get("target", [None])[0]
-                self._write_json(self.bridge.status(target))
-                return
-            if self.path.startswith("/v1/ctranslate2/status"):
-                from urllib.parse import parse_qs, urlsplit
-                target = parse_qs(urlsplit(self.path).query).get("target", [None])[0]
-                self._write_json(self.bridge.ctranslate2_status(target))
-                return
             if self.path.startswith("/v1/log/translations?"):
                 from urllib.parse import parse_qs, urlsplit
                 limit = parse_qs(urlsplit(self.path).query).get("limit", [200])[0]
@@ -1912,7 +1416,7 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
         try:
             self._require_auth()
             payload = self._read_json()
-            result = ArgosPostRouter(self.bridge).dispatch(self.path, payload)
+            result = LocalPostRouter(self.bridge).dispatch(self.path, payload)
             self._write_json(result)
         except BridgeError as error:
             self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
@@ -1924,10 +1428,10 @@ class ArgosRequestHandler(BaseHTTPRequestHandler):
             self._write_json({"ok": False, "error": "internal_error", "message": str(error)}, 500)
 
 
-class ArgosHTTPServer(ThreadingHTTPServer):
+class LocalServiceHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, handler, bridge: ArgosBridge, auth_token: str):
+    def __init__(self, address, handler, bridge: LocalServiceBridge, auth_token: str):
         super().__init__(address, handler)
         self.bridge = bridge
         self.auth_token = auth_token
@@ -1953,13 +1457,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    bridge = ArgosBridge(
+    bridge = LocalServiceBridge(
         args.data_dir,
         args.runtime_dir,
         credential_id=args.credential_id,
         game_path=args.game_path,
     )
-    server = ArgosHTTPServer(("127.0.0.1", args.port), ArgosRequestHandler, bridge, args.token)
+    server = LocalServiceHTTPServer(("127.0.0.1", args.port), LocalServiceRequestHandler, bridge, args.token)
     print(f"VN Revival local services listening on 127.0.0.1:{args.port}", flush=True)
     server.serve_forever(poll_interval=0.25)
 

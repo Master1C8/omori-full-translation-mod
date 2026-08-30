@@ -35,7 +35,7 @@ node --check src/translator-runtime.js
 node --check launcher/macos/steam-compat.js
 node --check scripts/browser-smoke-cdp.js
 [[ -s "$ROOT/$ICON_PNG" && -s "$ROOT/$ICON_ICNS" ]]
-[[ -s "$ROOT/src/runtime-ui.js" && -s "$ROOT/src/runtime-progress.js" && -s "$ROOT/src/runtime-panel.js" && -s "$ROOT/src/service_router.py" ]]
+[[ -s "$ROOT/src/runtime-ui.js" && -s "$ROOT/src/runtime-progress.js" && -s "$ROOT/src/runtime-panel.js" && -s "$ROOT/src/local_router.py" ]]
 mkdir -p "$ROOT/.build"
 python3 scripts/generate-game-config.py "$GAME_MANIFEST" "$ROOT/.build/game-config.js"
 node --check "$ROOT/.build/game-config.js"
@@ -70,19 +70,19 @@ fi
 
 if grep -RIniE "coc2|corruption of champions" \
   src/translation-core.js src/languages.js src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js \
-  src/argos_service.py src/controller launcher/macos launcher/windows/launcher.c; then
+  src/local_service.py src/controller launcher/macos launcher/windows/launcher.c; then
   echo "Found a CoC2-specific identity in the shared runtime" >&2
   exit 1
 fi
 
 if grep -RInE '[А-Яа-яЁё]' \
-  src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/argos_service.py src/service_router.py \
+  src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/local_service.py src/local_router.py \
   src/providers.js launcher/macos/launch.sh launcher/windows/launcher.c launcher/windows/README-Windows.txt "src/games/$GAME_ID/adapter.js"; then
   echo "The mod interface must remain English-only" >&2
   exit 1
 fi
 
-for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'privacyAccepted' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage'; do
+for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage'; do
   grep -Fq "$REQUIRED" src/translator-runtime.js || {
     echo "Missing runtime feature: $REQUIRED" >&2
     exit 1
@@ -104,35 +104,40 @@ grep -Fq 'const MEMORY_CACHE_LIMIT = 50000;' src/translator-runtime.js || {
   exit 1
 }
 
-for REQUIRED in 'google' 'gemini' 'argos' 'ctranslate2-opus' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
+for REQUIRED in 'google' 'gemini' 'lmstudio' 'openai-compatible' 'translateChunk' 'supportsLanguage' 'splitText'; do
   grep -Fq "$REQUIRED" src/providers.js || {
     echo "Missing provider feature: $REQUIRED" >&2
     exit 1
   }
 done
 
-for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXECUTABLE" 'argos_service.py' 'python.exe' '__vnRevivalLocalBridge' '--credential-id' '--game-path' 'GetOpenFileNameW' 'load_saved_game_path' 'consume_reselect_marker' 'debug_target_running'; do
+if rg -n -i 'argos|ctranslate|opus' src/providers.js src/runtime-panel.js src/translator-runtime.js; then
+  echo "Removed offline providers are still present in browser product code" >&2
+  exit 1
+fi
+
+for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXECUTABLE" 'local_service.py' 'python.exe' '__vnRevivalLocalBridge' '--credential-id' '--game-path' 'GetOpenFileNameW' 'load_saved_game_path' 'consume_reselect_marker' 'debug_target_running'; do
   grep -Fq -- "$REQUIRED" "$ROOT/.build/windows-launcher-smoke.c" || {
     echo "Missing Windows launcher feature: $REQUIRED" >&2
     exit 1
   }
 done
 
-for REQUIRED in 'ARGOS_PACKAGES_DIR' 'install_runtime' 'install_model' 'uninstall_model' 'translate' 'translate_batch' 'adaptive_argos_cpu_settings' 'ASSET_INDEX_SCHEMA' 'assetCache' 'install_ctranslate2_model' 'ctranslate2_translate' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'ArgosPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/ctranslate2/status' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings'; do
-  grep -Eq "$REQUIRED" src/argos_service.py || {
-    echo "Missing Argos bridge feature: $REQUIRED" >&2
+for REQUIRED in 'ASSET_INDEX_SCHEMA' 'assetCache' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'LocalPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings'; do
+  grep -Eq "$REQUIRED" src/local_service.py || {
+    echo "Missing local service feature: $REQUIRED" >&2
     exit 1
   }
 done
 
-for REQUIRED in '/v1/translate/batch' '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/launcher/reselect-executable'; do
-  grep -Fq "$REQUIRED" src/service_router.py || {
+for REQUIRED in '/v1/gemini/key' '/v1/gemini/translate' '/v1/lmstudio/translate' '/v1/openai-compatible/status' '/v1/openai-compatible/key' '/v1/openai-compatible/translate' '/v1/reset' '/v1/launcher/reselect-executable'; do
+  grep -Fq "$REQUIRED" src/local_router.py || {
     echo "Missing local service route: $REQUIRED" >&2
     exit 1
   }
 done
 
-if rg -n -i 'bergamot' src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/argos_service.py src/service_router.py; then
+if rg -n -i 'bergamot' src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js src/local_service.py src/local_router.py; then
   echo "Removed Bergamot provider is still present in product code" >&2
   exit 1
 fi
@@ -173,15 +178,15 @@ fi
 grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
 grep -Fq 'cat "$ROOT/src/runtime-progress.js"' scripts/build.sh
 grep -Fq 'cat "$ROOT/src/runtime-panel.js"' scripts/build.sh
-grep -Fq 'cp "$ROOT/src/service_router.py" "$APP/Contents/Resources/"' scripts/build.sh
-grep -Fq 'cp "$ROOT/src/service_router.py" "$RESOURCE_DIR/service_router.py"' scripts/build-windows.sh
+grep -Fq 'cp "$ROOT/src/local_router.py" "$APP/Contents/Resources/"' scripts/build.sh
+grep -Fq 'cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"' scripts/build-windows.sh
 grep -Fq 'ROOT_APP_STAGING="$BUILD_DIR/root-app-staging.app"' scripts/build.sh
 grep -Fq 'ROOT_APP_PREVIOUS="$BUILD_DIR/root-app-previous.app"' scripts/build.sh
 grep -Fq 'DEFAULT_NWJS_SHA256="d601cb05998c2ff69c0400d38af58dc7ba068c536f8e744aa3347e8b66a61483"' scripts/prepare-nwjs-macos.sh
 grep -Fq 'verify_archive' scripts/prepare-nwjs-macos.sh
 grep -Fq '.verified-archive-sha256' scripts/prepare-nwjs-macos.sh
 grep -Fq '/bin/rm -rf -- "$RUNTIME_APP"' scripts/prepare-nwjs-macos.sh
-grep -Fq 'kill "$ARGOS_PID"' launcher/macos/launch.sh
+grep -Fq 'kill "$LOCAL_SERVICE_PID"' launcher/macos/launch.sh
 grep -Fq "UNEXPECTED_CONTENTS=" scripts/verify.sh
 grep -Fq '"$ROOT/$PRODUCT_NAME.app"' scripts/build.sh
 grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh

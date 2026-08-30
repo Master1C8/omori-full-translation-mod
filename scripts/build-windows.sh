@@ -21,20 +21,17 @@ DEBUG_TARGET_TITLE=$(manifest_value debugTargetTitleContains)
 DEBUG_TARGET_URL=$(manifest_value debugTargetUrlContains)
 [[ "$LAUNCH_STRATEGY" == "electron-cdp" ]] || { echo "Unsupported launch strategy: $LAUNCH_STRATEGY" >&2; exit 1; }
 PYTHON_VERSION="3.11.9"
-PYTHON_ABI="311"
 BUILD_ROOT="$ROOT/.build/windows"
 DIST_NAME=$(manifest_value windowsDistributionName)
 DIST_DIR="$BUILD_ROOT/$DIST_NAME"
 RESOURCE_DIR="$DIST_DIR/resources"
 PYTHON_DIR="$RESOURCE_DIR/python"
-SITE_PACKAGES="$PYTHON_DIR/Lib/site-packages"
 READY_DIR="$ROOT/launcher/READY_TO_SHARE"
 ZIP_PATH="$READY_DIR/$ARCHIVE_PREFIX-Windows-$VERSION.zip"
 CHECKSUM_PATH="$ROOT/.build/checksums/${ZIP_PATH:t}.sha256"
 PYTHON_ZIP="$ROOT/.build/cache/python-$PYTHON_VERSION-embed-amd64.zip"
 PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
 PYTHON_ZIP_SHA256="009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
-WINDOWS_REQUIREMENTS="$ROOT/scripts/requirements-windows.txt"
 CC="${VNREVIVAL_WINDOWS_CC:-$(command -v x86_64-w64-mingw32-gcc)}"
 WINDRES="${VNREVIVAL_WINDOWS_WINDRES:-$(command -v x86_64-w64-mingw32-windres)}"
 PROJECT_PYTHON="$ROOT/.venv/bin/python"
@@ -50,7 +47,7 @@ if [[ ! -x "$HOST_PYTHON" || ! -x "$ICON_PYTHON" ]]; then
   echo "Python build environment is missing. Run 'uv sync' in $ROOT or set VNREVIVAL_HOST_PYTHON and VNREVIVAL_ICON_PYTHON." >&2
   exit 1
 fi
-[[ -x "$CC" && -x "$WINDRES" && -s "$BUNDLE" && -s "$ROOT/$ICON_PNG" && -s "$WINDOWS_REQUIREMENTS" ]]
+[[ -x "$CC" && -x "$WINDRES" && -s "$BUNDLE" && -s "$ROOT/$ICON_PNG" ]]
 mkdir -p "$ROOT/.build/cache" "$ROOT/.build/checksums" "$READY_DIR"
 verify_sha256() {
   local expected="$1"
@@ -73,37 +70,12 @@ else
 fi
 
 rm -rf "$BUILD_ROOT"
-mkdir -p "$SITE_PACKAGES"
+mkdir -p "$PYTHON_DIR"
 unzip -q "$PYTHON_ZIP" -d "$PYTHON_DIR"
 
-PTH_FILE=$(find "$PYTHON_DIR" -maxdepth 1 -name 'python*._pth' -print -quit)
-[[ -n "$PTH_FILE" ]]
-sed -e 's/\r$//' -e '/^#import site$/i\
-Lib/site-packages' -e 's/^#import site$/import site/' "$PTH_FILE" > "$PTH_FILE.tmp"
-mv "$PTH_FILE.tmp" "$PTH_FILE"
-
-PIP_TARGET=(
-  --disable-pip-version-check
-  --upgrade
-  --ignore-installed
-  --only-binary=:all:
-  --platform win_amd64
-  --python-version 3.11
-  --implementation cp
-  --abi cp311
-  --target "$SITE_PACKAGES"
-)
-"$HOST_PYTHON" -m pip install "${PIP_TARGET[@]}" \
-  --require-hashes --no-deps --requirement "$WINDOWS_REQUIREMENTS"
-rm -rf "$SITE_PACKAGES/bin" "$SITE_PACKAGES/tests"
-find "$SITE_PACKAGES" -type d -name '__pycache__' -prune -exec rm -rf {} +
-RUNTIME_BYTES=$(find "$SITE_PACKAGES" -type f -exec stat -f '%z' {} + | awk '{ total += $1 } END { print total + 0 }')
-print -r -- "$RUNTIME_BYTES" > "$SITE_PACKAGES/.vnrevival-runtime-bytes"
-
 cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
-cp "$ROOT/src/argos_service.py" "$RESOURCE_DIR/argos_service.py"
-cp "$ROOT/src/service_router.py" "$RESOURCE_DIR/service_router.py"
-cp "$ROOT/src/requirements-runtime-macos.txt" "$RESOURCE_DIR/requirements-runtime-macos.txt"
+cp "$ROOT/src/local_service.py" "$RESOURCE_DIR/local_service.py"
+cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"
 cp "$GAME_MANIFEST" "$RESOURCE_DIR/game.json"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" \
   PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS"
@@ -159,7 +131,7 @@ if grep -qi 'bergamot' "$BUILD_ROOT/archive-contents.txt"; then
 fi
 grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" "$BUILD_ROOT/archive-contents.txt"
 grep -Fqx "$DIST_NAME/resources/python/python.exe" "$BUILD_ROOT/archive-contents.txt"
-grep -Fqx "$DIST_NAME/resources/argos_service.py" "$BUILD_ROOT/archive-contents.txt"
+grep -Fqx "$DIST_NAME/resources/local_service.py" "$BUILD_ROOT/archive-contents.txt"
 grep -Fqx "$DIST_NAME/resources/translator.bundle.js" "$BUILD_ROOT/archive-contents.txt"
 grep -Fqx "$DIST_NAME/resources/game.json" "$BUILD_ROOT/archive-contents.txt"
 

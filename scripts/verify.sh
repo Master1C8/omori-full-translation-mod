@@ -19,9 +19,8 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 
 [[ -x "$APP/Contents/MacOS/$PRODUCT_NAME" ]]
 [[ -x "$APP/Contents/Resources/VNRevivalTranslatorController" ]]
-[[ -x "$APP/Contents/Resources/argos_service.py" ]]
-[[ -s "$APP/Contents/Resources/service_router.py" ]]
-[[ -s "$APP/Contents/Resources/requirements-runtime-macos.txt" ]]
+[[ -x "$APP/Contents/Resources/local_service.py" ]]
+[[ -s "$APP/Contents/Resources/local_router.py" ]]
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
 [[ -s "$APP/Contents/Resources/steam-compat.js" ]]
@@ -59,9 +58,8 @@ if grep -qi 'bergamot' <<< "$WINDOWS_CONTENTS"; then
 fi
 grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/argos_service.py" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/service_router.py" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/requirements-runtime-macos.txt" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/local_service.py" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/local_router.py" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
 WINDOWS_NOTICES=$(unzip -p "$WINDOWS_ZIP" "$DIST_NAME/THIRD_PARTY_NOTICES.txt")
 grep -Fq "$PRODUCT_NAME bundles the Python embeddable runtime" <<< "$WINDOWS_NOTICES"
@@ -80,5 +78,5 @@ grep -Eq 'PE32\+ executable.*GUI.*x86-64' <<< "$(file "$WINDOWS_EXE")"
 
 USAGE_OUTPUT=$("$APP/Contents/Resources/VNRevivalTranslatorController" 2>&1 || true)
 grep -Eq "Usage:" <<< "$USAGE_OUTPUT"
-PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m py_compile "$APP/Contents/Resources/argos_service.py"
+PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m py_compile "$APP/Contents/Resources/local_service.py"
 echo "Product verification passed"

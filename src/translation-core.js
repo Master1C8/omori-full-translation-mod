@@ -16,6 +16,7 @@
     "ps", "si", "ta", "te", "th", "ti", "ur"
   ]);
   const CJK_LANGUAGES = new Set(["ja", "ko", "yue", "zh-CN", "zh-TW"]);
+  const CYRILLIC_TARGET_LANGUAGES = new Set(["be", "bg", "kk", "ky", "mk", "mn", "ru", "sr", "tg", "uk"]);
   const CONTEXT_MARKER_PREFIX = "VRCTXSEP";
   const CONTEXT_MARKER_SUFFIX = "X";
   const PROTECTED_MARKUP_VERSION = "omori-markup-v3";
@@ -104,11 +105,10 @@
     return code;
   }
 
-  function providerSupportsLanguage(provider, language, argosLanguages) {
+  function providerSupportsLanguage(provider, language) {
     const selected = String(provider || "google");
     const code = providerLanguageCode(selected, language);
     if (!code) return false;
-    if (selected === "argos") return Array.isArray(argosLanguages) && argosLanguages.includes(code);
     return selected === "google";
   }
 
@@ -164,8 +164,15 @@
     return /ABCDEFGHIJKLMNOPQRSTUVWXYZ/.test(text) && /abcdefghijklmnopqrstuvwxyz/.test(text);
   }
 
+  function isTechnicalIdentifierText(value) {
+    const text = plainProtectedText(value).replace(/\s+/g, " ").trim();
+    if (/^\d{1,3}F$/i.test(text)) return true;
+    return /^(?:[A-Z][A-Z0-9_]{1,15}\s+)?[a-z_$][A-Za-z0-9_$]*(?:Message|Prompt|Label|Text)$/i.test(text)
+      && (/[a-z][A-Z]/.test(text) || /^[A-Z][A-Z0-9_]{1,15}\s+/.test(text));
+  }
+
   function hasTranslatableText(value) {
-    if (isOpaqueEncodedText(value) || isFontCoverageText(value)) return false;
+    if (isOpaqueEncodedText(value) || isFontCoverageText(value) || isTechnicalIdentifierText(value)) return false;
     return tokenizeProtectedMarkup(value).some((segment) =>
       segment.type === "text" && (hasEnglishText(segment.value) || /^[AIai]$/.test(segment.value.trim()))
     );
@@ -309,7 +316,49 @@
     return (text.match(/[!?！？]+|[.。]+(?=\s|$)/g) || []).length;
   }
 
-  function translationQualityMatches(source, translation) {
+  function englishWordStem(value) {
+    const word = String(value || "").toLowerCase();
+    if (word.endsWith("s") && word.length > 5) return word.slice(0, -1);
+    return word;
+  }
+
+  function isElongatedVocalizationWord(value) {
+    return /([A-Za-z])\1{2,}/.test(String(value || ""));
+  }
+
+  function repeatedStylizedTermStems(value) {
+    const counts = new Map();
+    const terms = plainProtectedText(value).match(/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b/g) || [];
+    for (const term of terms) counts.set(term, (counts.get(term) || 0) + 1);
+    const stems = new Set();
+    for (const [term, count] of counts) {
+      if (count < 2) continue;
+      for (const word of term.split("-")) {
+        if (word.length >= 4) stems.add(englishWordStem(word));
+      }
+    }
+    return stems;
+  }
+
+  function hasSuspiciousEnglishCarryover(source, translation, language) {
+    if (!CYRILLIC_TARGET_LANGUAGES.has(String(language || ""))) return false;
+    const target = plainProtectedText(translation);
+    const cyrillicLetters = (target.match(/[А-ЯЁ]/giu) || []).length;
+    if (!cyrillicLetters) return false;
+    const preservedStems = repeatedStylizedTermStems(source);
+    const sourceWords = new Set((plainProtectedText(source).match(/[A-Za-z]{4,}/g) || [])
+      .filter((word) => !isElongatedVocalizationWord(word))
+      .map(englishWordStem)
+      .filter((stem) => !preservedStems.has(stem)));
+    const carried = (target.match(/[A-Za-z]{4,}/g) || []).filter((word) =>
+      !isElongatedVocalizationWord(word) && sourceWords.has(englishWordStem(word))
+    );
+    if (!carried.length) return false;
+    const latinLetters = carried.join("").length;
+    return carried.length >= 2 || latinLetters / (latinLetters + cyrillicLetters) >= 0.18;
+  }
+
+  function translationQualityMatches(source, translation, language) {
     if (!protectedMarkupLayoutMatches(source, translation)) return false;
     const sourceLetters = visibleLetterCount(source);
     const targetLetters = visibleLetterCount(translation);
@@ -323,9 +372,12 @@
     const sourceCurrency = String(source).match(/[$€£¥₽]/gu) || [];
     const targetCurrency = String(translation).match(/[$€£¥₽]/gu) || [];
     if (sourceCurrency.join("") !== targetCurrency.join("")) return false;
+    if (hasSuspiciousEnglishCarryover(source, translation, language)) return false;
     const repeatedTarget = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(translation));
     const repeatedSource = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(source));
-    if (repeatedTarget && !repeatedSource) return false;
+    const elongatedSource = (plainProtectedText(source).match(/[A-Za-z]+/g) || [])
+      .some(isElongatedVocalizationWord);
+    if (repeatedTarget && !repeatedSource && !elongatedSource) return false;
     if (sourceLetters >= 15 && ratio > 2.5) return false;
     if (visibleWordCount(source) >= 8 && ratio < (compactTarget ? 0.15 : 0.32)) return false;
     const sourceSentences = visibleSentenceCount(source);
@@ -374,9 +426,10 @@
     return { prefix, body: text, suffix };
   }
 
-  async function translateProtectedText(value, translatePlain) {
+  async function translateProtectedText(value, translatePlain, options) {
     if (typeof translatePlain !== "function") throw new TypeError("translatePlain must be a function");
     const source = String(value == null ? "" : value);
+    const settings = options && typeof options === "object" ? options : {};
     if (!hasTranslatableText(source)) return { text: source, segmented: true, skipped: true };
     const segments = tokenizeProtectedMarkup(source);
     const hasProtectedTokens = segments.some((segment) => segment.type === "token");
@@ -384,15 +437,16 @@
       const prepared = prepareProviderText(source);
       const translated = prepared.restore(String(await translatePlain(prepared.text) || "").trim());
       if (!translated || !protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
-      if (!translationQualityMatches(source, translated)) throw translationQualityError();
+      if (!translationQualityMatches(source, translated, settings.language)) throw translationQualityError();
       return { text: translated, segmented: false };
     }
 
-    const parts = [];
+    const parts = new Array(segments.length);
+    const entries = [];
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       if (segment.type === "token") {
-        parts.push(segment.value);
+        parts[index] = segment.value;
         continue;
       }
       const adjacent = splitAdjacentLiterals(
@@ -402,17 +456,48 @@
       );
       const body = adjacent.body;
       if (!hasEnglishText(body) && !/^[AIai]$/.test(body)) {
-        parts.push(segment.value);
+        parts[index] = segment.value;
         continue;
       }
       const prepared = prepareProviderText(body);
-      const translated = prepared.restore(String(await translatePlain(prepared.text) || "").trim());
-      if (!translated) throw protectedMarkupError();
-      parts.push(adjacent.prefix + translated + adjacent.suffix);
+      entries.push({ index, adjacent, prepared });
     }
-    const translated = parts.join("");
+
+    function assemble(translations) {
+      const result = parts.slice();
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const translated = entry.prepared.restore(String(translations[index] || "").trim());
+        if (!translated) return "";
+        result[entry.index] = entry.adjacent.prefix + translated + entry.adjacent.suffix;
+      }
+      return result.join("");
+    }
+
+    if (settings.contextual === true && entries.length > 1) {
+      const contextSource = buildContextSource(entries.map((entry) => entry.prepared.text));
+      const contextTranslation = String(await translatePlain(contextSource) || "").trim();
+      const translations = parseContextTranslation(contextTranslation, entries.length);
+      const contextual = translations ? assemble(translations) : "";
+      const contextualLayoutMatches = contextual && protectedMarkupLayoutMatches(source, contextual);
+      const contextualQualityMatches = settings.contextualQuality === false
+        || translationQualityMatches(source, contextual, settings.language);
+      if (contextualLayoutMatches && contextualQualityMatches) {
+        return { text: contextual, segmented: true, contextual: true };
+      }
+      if (settings.contextFallback === false) {
+        if (!contextualLayoutMatches) throw protectedMarkupError();
+        throw translationQualityError();
+      }
+    }
+
+    const translations = [];
+    for (const entry of entries) {
+      translations.push(String(await translatePlain(entry.prepared.text) || "").trim());
+    }
+    const translated = assemble(translations);
     if (!protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
-    if (!translationQualityMatches(source, translated)) throw translationQualityError();
+    if (!translationQualityMatches(source, translated, settings.language)) throw translationQualityError();
     return { text: translated, segmented: true };
   }
 
@@ -654,6 +739,7 @@
     hasTranslatableText,
     isOpaqueEncodedText,
     isFontCoverageText,
+    isTechnicalIdentifierText,
     tokenizeProtectedMarkup,
     protectedMarkupTokens,
     protectedMarkupMatches,

@@ -9,10 +9,6 @@ https://vnrevival.fun/
 If the Steam installation cannot be found, select the game's Windows EXE in
 the file dialog. The translator remembers that path for the next launch.
 
-For local translation, open "...", choose a language and Argos Offline,
-then click "Install Argos and model". The Argos engine is already included;
-internet access is only required to download the selected language model.
-
 For Gemini AI, create your own API key in Google AI Studio, choose Gemini AI
 in the translator settings, enter the key, and click "Save API key". The key
 is stored in Windows Credential Manager and can be removed from the same panel.
@@ -22,7 +18,7 @@ text may still be blocked.
 Do not move the EXE by itself: the resources folder must remain beside it.
 Administrator rights are not required and game files are not modified.
 
-Argos data and language models:
+Translator data:
 %LOCALAPPDATA%\__DATA_DIRECTORY_WINDOWS__
 
-This project is not affiliated with OMOCAT, Steam, CodeWeavers, Google, Translated, or Argos Open Technologies.
+This project is not affiliated with OMOCAT, Steam, CodeWeavers, Google, or the listed translation providers.
