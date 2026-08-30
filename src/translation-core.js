@@ -183,6 +183,12 @@
     let match = rest.match(/^VRCTXSEP\d+X/);
     if (match) return match[0];
 
+    match = rest.match(/^[A-Za-z0-9_-]+\.rpgsave\b/i);
+    if (match) return match[0];
+
+    match = rest.match(/^(?:[$€£¥₽]\s*\d[\d,.]*|\d[\d,.]*\s*[$€£¥₽]|\d{1,2}(?:AM|PM)\b|\d+(?:[.,]\d+)?\s*(?:mcg|mg|kg|ml|g|l)\b|\d{1,3}(?:,\d{3})+|\d{4,}|\d\b|\d+(?:ST|ND|RD|TH)\b)/i);
+    if (match) return match[0];
+
     if (rest[0] === "\\") {
       for (const command of OMORI_BARE_COMMANDS) {
         if (rest.slice(1, command.length + 1).toLowerCase() === command) {
@@ -211,11 +217,6 @@
     let offset = 0;
     while (offset < text.length) {
       let token = protectedTokenAt(text, offset);
-      const previous = segments.length ? segments[segments.length - 1] : null;
-      if (!token && previous && previous.type === "token" && isWhitespaceRigidToken(previous.value)) {
-        const boundary = text.slice(offset).match(/^[!?…]+(?=\s)/u);
-        if (boundary) token = boundary[0];
-      }
       if (!token) {
         offset += 1;
         continue;
@@ -291,15 +292,33 @@
     return true;
   }
 
-  function protectedMarkupError() {
+  function adaptTranslationToSourceLayout(source, translation) {
+    const sourceText = String(source == null ? "" : source);
+    const translatedText = String(translation == null ? "" : translation);
+    if (!translatedText) return null;
+    if (protectedMarkupLayoutMatches(sourceText, translatedText)) return translatedText;
+    const wordWrapPattern = /^\s*<wordwrap(?:\s*:[^>]*)?>/i;
+    const sourcePrefix = (sourceText.match(wordWrapPattern) || [""])[0];
+    const translatedPrefix = (translatedText.match(wordWrapPattern) || [""])[0];
+    if (!sourcePrefix && !translatedPrefix) return null;
+    const sourceBody = sourceText.slice(sourcePrefix.length);
+    const translatedBody = translatedText.slice(translatedPrefix.length);
+    if (!protectedMarkupLayoutMatches(sourceBody, translatedBody)) return null;
+    return sourcePrefix + translatedBody;
+  }
+
+  function protectedMarkupError(candidate) {
     const error = new Error("Translation changed protected OMORI markup");
     error.code = "markup_format_invalid";
+    if (typeof candidate === "string") error.candidate = candidate;
     return error;
   }
 
-  function translationQualityError() {
+  function translationQualityError(candidate, qualityReason) {
     const error = new Error("Translation lost or duplicated visible source text");
     error.code = "translation_quality_invalid";
+    if (typeof candidate === "string") error.candidate = candidate;
+    if (typeof qualityReason === "string" && qualityReason) error.qualityReason = qualityReason;
     return error;
   }
 
@@ -340,12 +359,36 @@
     return stems;
   }
 
+  function preservedSourceTermStems(value) {
+    const text = plainProtectedText(value);
+    const stems = repeatedStylizedTermStems(value);
+    const namedPhrases = text.match(/\b[A-Z][A-Z0-9'’-]{2,}(?:\s+[A-Z][A-Z0-9'’-]{2,})+\b/g) || [];
+    for (const phrase of namedPhrases) {
+      for (const word of phrase.match(/[A-Z]{3,}/g) || []) stems.add(englishWordStem(word));
+    }
+    for (const match of text.matchAll(/\b([A-Z][a-z]{3,})\s+key\b/g)) {
+      stems.add(englishWordStem(match[1]));
+    }
+    const uncolored = plainProtectedText(String(value || "").replace(
+      /\\c\[\d+\][\s\S]*?\\c\[0\]/gi, " "
+    ));
+    for (const word of uncolored.match(/\b[A-Z][A-Z0-9'’-]{3,}\b/g) || []) {
+      stems.add(englishWordStem(word));
+    }
+    for (const quoted of text.match(/[“”"]([^“”"]+)[“”"]/g) || []) {
+      for (const word of quoted.match(/[A-Z][A-Za-z'’-]{3,}/g) || []) {
+        stems.add(englishWordStem(word));
+      }
+    }
+    return stems;
+  }
+
   function hasSuspiciousEnglishCarryover(source, translation, language) {
     if (!CYRILLIC_TARGET_LANGUAGES.has(String(language || ""))) return false;
     const target = plainProtectedText(translation);
     const cyrillicLetters = (target.match(/[А-ЯЁ]/giu) || []).length;
     if (!cyrillicLetters) return false;
-    const preservedStems = repeatedStylizedTermStems(source);
+    const preservedStems = preservedSourceTermStems(source);
     const sourceWords = new Set((plainProtectedText(source).match(/[A-Za-z]{4,}/g) || [])
       .filter((word) => !isElongatedVocalizationWord(word))
       .map(englishWordStem)
@@ -358,39 +401,49 @@
     return carried.length >= 2 || latinLetters / (latinLetters + cyrillicLetters) >= 0.18;
   }
 
-  function translationQualityMatches(source, translation, language) {
-    if (!protectedMarkupLayoutMatches(source, translation)) return false;
+  function translationQualityFailureReason(source, translation, language) {
+    if (!protectedMarkupLayoutMatches(source, translation)) return "markup_layout";
     const sourceLetters = visibleLetterCount(source);
     const targetLetters = visibleLetterCount(translation);
-    if (!sourceLetters || !targetLetters) return sourceLetters === targetLetters;
+    if (!sourceLetters || !targetLetters) return sourceLetters === targetLetters ? "" : "visible_text_missing";
     const ratio = targetLetters / sourceLetters;
     const compactTarget = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(plainProtectedText(translation));
-    const sourceNumbers = String(source).match(/\d+/g) || [];
-    const targetNumbers = String(translation).match(/\d+/g) || [];
+    const numericLiterals = (value) => Array.from(
+      String(value).matchAll(/(?:^|[^A-Za-z])(\d+)(?![A-Za-z])/g),
+      (match) => match[1]
+    );
+    const sourceNumbers = numericLiterals(source);
+    const targetNumbers = numericLiterals(translation);
     if (sourceNumbers.length !== targetNumbers.length
-      || sourceNumbers.some((number, index) => number !== targetNumbers[index])) return false;
+      || sourceNumbers.some((number, index) => number !== targetNumbers[index])) return "numbers_changed";
     const sourceCurrency = String(source).match(/[$€£¥₽]/gu) || [];
     const targetCurrency = String(translation).match(/[$€£¥₽]/gu) || [];
-    if (sourceCurrency.join("") !== targetCurrency.join("")) return false;
-    if (hasSuspiciousEnglishCarryover(source, translation, language)) return false;
+    if (sourceCurrency.join("") !== targetCurrency.join("")) return "currency_changed";
+    if (hasSuspiciousEnglishCarryover(source, translation, language)) return "english_carryover";
     const repeatedTarget = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(translation));
     const repeatedSource = /(\p{L})(?:[^\p{L}]*\1){7,}/iu.test(plainProtectedText(source));
     const elongatedSource = (plainProtectedText(source).match(/[A-Za-z]+/g) || [])
       .some(isElongatedVocalizationWord);
-    if (repeatedTarget && !repeatedSource && !elongatedSource) return false;
-    if (sourceLetters >= 15 && ratio > 2.5) return false;
-    if (visibleWordCount(source) >= 8 && ratio < (compactTarget ? 0.15 : 0.32)) return false;
+    if (repeatedTarget && !repeatedSource && !elongatedSource) return "runaway_repetition";
+    if (sourceLetters >= 15 && ratio > 2.5) return "expanded_too_far";
+    if (visibleWordCount(source) >= 8 && ratio < (compactTarget ? 0.15 : 0.32)) return "truncated";
     const sourceSentences = visibleSentenceCount(source);
     const targetSentences = visibleSentenceCount(translation);
-    if (sourceSentences >= 2 && targetSentences < sourceSentences && ratio < (compactTarget ? 0.35 : 0.62)) return false;
-    return true;
+    if (sourceSentences >= 2 && targetSentences < sourceSentences
+      && ratio < (compactTarget ? 0.35 : 0.62)) return "sentences_missing";
+    return "";
+  }
+
+  function translationQualityMatches(source, translation, language) {
+    return !translationQualityFailureReason(source, translation, language);
   }
 
   function prepareProviderText(value) {
     const source = String(value == null ? "" : value);
     const letters = source.match(/[A-Za-z]/g) || [];
     const allCaps = letters.length >= 2 && letters.every((letter) => letter === letter.toUpperCase());
-    const text = source.replace(/[A-Z][A-Z'’-]*/g, (word) => {
+    const providerSource = source.replace(/\b2geter\b/gi, "together");
+    const text = providerSource.replace(/[A-Z][A-Z'’-]*/g, (word) => {
       const wordLetters = word.replace(/[^A-Z]/g, "");
       if (!allCaps && wordLetters.length < 3) return word;
       return word.charAt(0) + word.slice(1).toLowerCase();
@@ -436,8 +489,9 @@
     if (!hasProtectedTokens) {
       const prepared = prepareProviderText(source);
       const translated = prepared.restore(String(await translatePlain(prepared.text) || "").trim());
-      if (!translated || !protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
-      if (!translationQualityMatches(source, translated, settings.language)) throw translationQualityError();
+      if (!translated || !protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError(translated);
+      const qualityReason = translationQualityFailureReason(source, translated, settings.language);
+      if (qualityReason) throw translationQualityError(translated, qualityReason);
       return { text: translated, segmented: false };
     }
 
@@ -460,16 +514,23 @@
         continue;
       }
       const prepared = prepareProviderText(body);
-      entries.push({ index, adjacent, prepared });
+      entries.push({
+        index, adjacent, prepared,
+        nextToken: index + 1 < segments.length && segments[index + 1].type === "token"
+          ? segments[index + 1].value : ""
+      });
     }
 
     function assemble(translations) {
       const result = parts.slice();
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index];
-        const translated = entry.prepared.restore(String(translations[index] || "").trim());
-        if (!translated) return "";
-        result[entry.index] = entry.adjacent.prefix + translated + entry.adjacent.suffix;
+        let translated = entry.prepared.restore(String(translations[index] || "").trim());
+        if (/^[!?…]+$/u.test(entry.nextToken)) translated = translated.replace(/[!?…]+$/u, "");
+        const spacing = translated
+          ? entry.adjacent.prefix + translated + entry.adjacent.suffix
+          : (entry.adjacent.prefix && entry.adjacent.suffix ? entry.adjacent.prefix : "");
+        result[entry.index] = spacing;
       }
       return result.join("");
     }
@@ -486,18 +547,55 @@
         return { text: contextual, segmented: true, contextual: true };
       }
       if (settings.contextFallback === false) {
-        if (!contextualLayoutMatches) throw protectedMarkupError();
-        throw translationQualityError();
+        if (!contextualLayoutMatches) throw protectedMarkupError(contextual);
+        throw translationQualityError(
+          contextual, translationQualityFailureReason(source, contextual, settings.language)
+        );
       }
     }
 
-    const translations = [];
-    for (const entry of entries) {
-      translations.push(String(await translatePlain(entry.prepared.text) || "").trim());
+    let translations = [];
+    if (entries.length > 1 && typeof settings.translateBatch === "function") {
+      try {
+        const translatedBatch = await settings.translateBatch(entries.map((entry) => entry.prepared.text));
+        if (!Array.isArray(translatedBatch) || translatedBatch.length !== entries.length) {
+          throw protectedMarkupError("");
+        }
+        translations = translatedBatch.map((translation) => String(translation || "").trim());
+      } catch (error) {
+        if (!error || error.code !== "google_batch_format_invalid") throw error;
+        for (const entry of entries) {
+          translations.push(String(await translatePlain(entry.prepared.text) || "").trim());
+        }
+      }
+    } else {
+      for (const entry of entries) {
+        translations.push(String(await translatePlain(entry.prepared.text) || "").trim());
+      }
     }
     const translated = assemble(translations);
-    if (!protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError();
-    if (!translationQualityMatches(source, translated, settings.language)) throw translationQualityError();
+    if (!protectedMarkupLayoutMatches(source, translated)) throw protectedMarkupError(translated);
+    const qualityReason = translationQualityFailureReason(source, translated, settings.language);
+    if (qualityReason === "english_carryover"
+      && entries.length > 1
+      && settings.contextRepair === true) {
+      try {
+        const contextual = String(await translatePlain(
+          entries.map((entry) => entry.prepared.text).join(" / ")
+        ) || "").trim();
+        const repairedParts = contextual.split(/\s+\/\s+/);
+        if (repairedParts.length === entries.length) {
+          const repaired = assemble(repairedParts);
+          if (protectedMarkupLayoutMatches(source, repaired)
+            && !translationQualityFailureReason(source, repaired, settings.language)) {
+            return { text: repaired, segmented: true, repaired: true };
+          }
+        }
+      } catch (error) {
+        if (error && error.name === "AbortError") throw error;
+      }
+    }
+    if (qualityReason) throw translationQualityError(translated, qualityReason);
     return { text: translated, segmented: true };
   }
 
@@ -603,9 +701,29 @@
     return "https://translate.googleapis.com/translate_a/single?" + params.toString();
   }
 
+  function buildGoogleBatchUrl(texts, targetLanguage, sourceLanguage) {
+    if (!Array.isArray(texts) || !texts.length) throw new Error("Google batch requires text entries");
+    const params = new URLSearchParams({
+      client: "gtx", sl: sourceLanguage || "en", tl: targetLanguage, format: "text", v: "1.0"
+    });
+    for (const text of texts) params.append("q", String(text == null ? "" : text));
+    return `https://translate.googleapis.com/translate_a/t?${params.toString()}`;
+  }
+
   function parseGoogleResponse(payload) {
     if (!Array.isArray(payload) || !Array.isArray(payload[0])) throw new Error("Unexpected Google response");
     return payload[0].map((part) => Array.isArray(part) ? String(part[0] || "") : "").join("");
+  }
+
+  function parseGoogleBatchResponse(payload, expectedLength) {
+    if (!Array.isArray(payload)
+      || payload.length !== expectedLength
+      || payload.some((translation) => typeof translation !== "string")) {
+      const error = new Error("Google returned an invalid translation batch");
+      error.code = "google_batch_format_invalid";
+      throw error;
+    }
+    return payload;
   }
 
   function normalizeRateLimitDelay(value, initialDelay, maximumDelay) {
@@ -744,7 +862,9 @@
     protectedMarkupTokens,
     protectedMarkupMatches,
     protectedMarkupLayoutMatches,
+    adaptTranslationToSourceLayout,
     translationQualityMatches,
+    translationQualityFailureReason,
     prepareProviderText,
     translateProtectedText,
     fingerprint,
@@ -752,7 +872,9 @@
     splitLongText,
     utf8Length,
     buildGoogleUrl,
+    buildGoogleBatchUrl,
     parseGoogleResponse,
+    parseGoogleBatchResponse,
     parseRateLimitState,
     createRateLimitState,
     buildContextSource,

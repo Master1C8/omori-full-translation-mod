@@ -16,6 +16,10 @@ const runtimeSource = ["translator-runtime.js", "runtime-panel.js"]
   .join("\n");
 const runtimeUISource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-ui.js"), "utf8");
 const runtimeProgressSource = fs.readFileSync(path.join(__dirname, "..", "src", "runtime-progress.js"), "utf8");
+const createRequestPacerSource = runtimeSource.match(
+  /function createRequestPacer\(initialDelay, maximumDelay, delayJitter\) \{[\s\S]*?\n  \}/
+);
+assert.ok(createRequestPacerSource, "shared request pacer must exist");
 const reducedGoogleBulkBlockSizeSource = runtimeSource.match(
   /function reducedGoogleBulkBlockSize\(currentSize, blockLength, error\) \{[\s\S]*?\n  \}/
 );
@@ -23,6 +27,13 @@ assert.ok(reducedGoogleBulkBlockSizeSource, "adaptive Google Bulk size helper mu
 const reducedGoogleBulkBlockSize = Function(
   `"use strict"; return (${reducedGoogleBulkBlockSizeSource[0]});`
 )();
+const buildGoogleBulkBlocksSource = runtimeSource.match(
+  /function buildGoogleBulkBlocks\(entries, providerConfig\) \{[\s\S]*?\n  \}/
+);
+assert.ok(buildGoogleBulkBlocksSource, "Google Bulk block builder must exist");
+const buildGoogleBulkBlocks = Function(
+  "core", `"use strict"; return (${buildGoogleBulkBlocksSource[0]});`
+)(core);
 
 test("selected game manifest supplies universal runtime identity", () => {
   assert.equal(manifest.id, gameId);
@@ -30,6 +41,8 @@ test("selected game manifest supplies universal runtime identity", () => {
   assert.equal(manifest.launchStrategy, "electron-cdp");
   assert.ok(manifest.translatorName);
   assert.ok(manifest.storageNamespace);
+  assert.deepEqual(manifest.officialLocalizations, ["en", "ja", "ko", "zh-CN"]);
+  assert.ok(manifest.officialLocalizations.includes(manifest.sourceLanguage));
   assert.ok(manifest.windowsExecutable.toLowerCase().endsWith(".exe"));
   assert.ok(manifest.debugTargetTitleContains || manifest.debugTargetUrlContains);
 });
@@ -82,6 +95,17 @@ test("full-translation mode keeps gameplay cache-only and starts explicit transl
   assert.doesNotMatch(runtimeSource, /allowAuto/);
 });
 
+test("official game localizations disable translator activity except language selection", () => {
+  assert.match(runtimeSource, /const OFFICIAL_LOCALIZATIONS = new Set\(game\.officialLocalizations \|\| \[\]\)/);
+  assert.match(runtimeSource, /function hasOfficialLocalization\(language = settings\.language\)/);
+  assert.match(runtimeSource, /if \(hasOfficialLocalization\(language\)\) \{\s*return \{ text: source, cached: true, officialLocalization: true \};/);
+  assert.match(runtimeSource, /if \(control !== languageSelect\) control\.disabled = true/);
+  assert.match(runtimeSource, /languageSelect\.disabled = false/);
+  assert.match(runtimeSource, /!hasOfficialLocalization\(code\) && providerConfig\.supportsLanguage\(code\)/);
+  assert.match(runtimeSource, /!hasOfficialLocalization\(\) && settings\.autoScreenTranslation/);
+  assert.match(runtimeSource, /if \(!hasOfficialLocalization\(\) && settings\.mode === "translated"/);
+});
+
 test("natural OMORI dialogue is not rejected by broad code punctuation heuristics", () => {
   assert.doesNotMatch(runtimeSource, /source\.includes\("this\."\)/);
   assert.doesNotMatch(runtimeSource, /\/\[\\\+\\\*\\\/\]\/\.test\(source\)/);
@@ -97,12 +121,26 @@ test("cache mutations wait for IndexedDB commit before updating in-memory state"
     runtimeSource.indexOf("async function clearAllCache"),
     runtimeSource.indexOf("function sleep")
   );
-  assert.ok(cachePutBody.indexOf("transaction.oncomplete") < cachePutBody.indexOf("memoryCacheSet(key, value)"));
+  assert.ok(cachePutBody.indexOf("transaction.oncomplete") < cachePutBody.indexOf("memoryCacheSet(entry.key, entry.value)"));
   assert.match(cachePutBody, /transaction\.onabort/);
   assert.doesNotMatch(cachePutBody, /catch \(_\) \{ return false; \}/);
   assert.ok(clearAllBody.indexOf("transaction.oncomplete") < clearAllBody.indexOf("memoryCache.clear()"));
   assert.match(clearAllBody, /transaction\.onabort/);
   assert.doesNotMatch(clearAllBody, /catch \(_\)/);
+  assert.match(cachePutBody, /async function cachePutBatch\(entries\)/);
+  assert.match(cachePutBody, /for \(const entry of normalized\)/);
+  assert.match(runtimeSource, /knownCacheKeysComplete\s*&& knownCacheScope === translationCacheScope/);
+  assert.match(runtimeSource, /!cacheKeyIsKnownMissing\(key, language, provider\)/);
+});
+
+test("cache-only gameplay does not write per-frame activity logs", () => {
+  const cachedBranch = runtimeSource.slice(
+    runtimeSource.indexOf("if (cached) {", runtimeSource.indexOf("async function translateText")),
+    runtimeSource.indexOf("if (!allowNetwork)", runtimeSource.indexOf("async function translateText"))
+  );
+  assert.match(cachedBranch, /if \(logCachedResult\)/);
+  assert.match(cachedBranch, /logActivityToBridge\(provider, source, cached, true\)/);
+  assert.doesNotMatch(cachedBranch, /}\s*logActivityToBridge\(provider, source, cached, true\)/);
 });
 
 test("every provider path protects OMORI markup and rejects unsafe cached output", () => {
@@ -110,8 +148,8 @@ test("every provider path protects OMORI markup and rejects unsafe cached output
   assert.match(runtimeSource, /\{ language, contextual: true \}/);
   assert.match(runtimeSource, /translateWithProtectedMarkup\(\s*source, language, provider/);
   assert.match(runtimeSource, /translateWithProtectedMarkup\(\s*LANGUAGE_TEST_PHRASE_SOURCE/);
-  assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, cached\)/);
-  assert.match(runtimeSource, /core\.protectedMarkupLayoutMatches\(source, hit\)/);
+  assert.match(runtimeSource, /core\.adaptTranslationToSourceLayout\(source, cached\)/);
+  assert.match(runtimeSource, /core\.adaptTranslationToSourceLayout\(source, hit\)/);
   assert.match(runtimeSource, /core\.PROTECTED_MARKUP_VERSION/);
   assert.match(runtimeSource, /indexedDB\.open\(DB_NAME, 5\)/);
   assert.match(runtimeSource, /event\.oldVersion < 5/);
@@ -209,6 +247,10 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /\.panel\.bulkBusy>\.bulkCancelBar\{display:flex!important;flex:0 0 auto!important/);
   assert.match(runtimeSource, /bulkCancelButton\.addEventListener\("click"/);
   assert.match(runtimeSource, /bulkCancelButton\.style\.background = cancelButton\.style\.background/);
+  assert.match(runtimeSource, /function setBulkUiFinished\(\) \{[\s\S]{0,500}bulkCancelButton\.textContent = "Finish";[\s\S]{0,300}bulkCancelButton\.classList\.add\("finished"\)/);
+  assert.match(runtimeSource, /setStatus\(`Bulk complete:[\s\S]{0,220}keepWorkspaceOpen = true;\s*workspaceFinished = true;/);
+  assert.match(runtimeSource, /setStatus\(`Test phrase ready[\s\S]{0,220}keepWorkspaceOpen = true;\s*workspaceFinished = true;/);
+  assert.match(runtimeSource, /if \(workspaceFinished\) setBulkUiFinished\(\);\s*else setBulkUiStopped\(\);/);
   assert.match(runtimeSource, /function countTranslationWords\(value\)/);
   assert.match(runtimeSource, /runtimeProgress\.countTranslationWords\(value, core\.tokenizeProtectedMarkup\)/);
   assert.match(runtimeSource, /function createTranslationEtaTracker\(\)/);
@@ -351,15 +393,17 @@ test("test phrase control builds one exact live-dialogue cache entry for every a
   assert.match(runtimeSource, /core\.createRateLimitState/);
   assert.match(runtimeSource, /retryDelay = googleRateLimitState\(\)\.nextDelay/);
   assert.match(runtimeSource, /rememberGoogleRateLimit/);
-  assert.match(runtimeSource, /Google processes one language every second/);
+  assert.match(runtimeSource, /Google waits a random 1\.2–1\.8 seconds between languages/);
   assert.match(runtimeSource, /etaTracker\.pause\(\);\s*setStatus\(translationProgressText\(\s*done \* phraseWords, totalWords, etaTracker\.current\(\), seconds/);
   assert.match(runtimeSource, /const concurrency = 1/);
-  assert.match(runtimeSource, /Math\.max\(TEST_PHRASE_GOOGLE_DELAY, providerConfig\.delay\)/);
+  assert.match(runtimeSource, /createRequestPacer\(\s*TEST_PHRASE_GOOGLE_DELAY,\s*TEST_PHRASE_GOOGLE_DELAY,\s*TEST_PHRASE_GOOGLE_DELAY_JITTER/);
+  assert.match(runtimeSource, /requestPacer \? 0 : undefined/);
+  assert.doesNotMatch(runtimeSource, /Math\.max\(TEST_PHRASE_GOOGLE_DELAY, providerConfig\.delay\)/);
   assert.match(runtimeSource, /Test phrase ready in \$\{targets\.length\} languages/);
 });
 
 test("Bulk pauses and retries the current request when a provider rate-limits", () => {
-  assert.match(runtimeSource, /requestRateLimitedChunk\(provider, chunk, language, signal, onRateLimitWait\)/);
+  assert.match(runtimeSource, /requestRateLimitedChunk\(provider, text, language, signal, onRateLimitWait, requestOptions\)/);
   assert.match(runtimeSource, /waitReported = true/);
   assert.match(runtimeSource, /rateLimitSeconds: seconds/);
   assert.match(runtimeSource, /done, completedWords, totalWords, newlyTranslated, failed, rateLimitSeconds: seconds/);
@@ -375,21 +419,38 @@ test("Google Bulk groups only fresh strings into paced validated blocks", () => 
   assert.match(runtimeSource, /if \(length < 3\) return current/);
   assert.match(runtimeSource, /acceptedCount > 0\s*\? Math\.max\(3, current - 2\)\s*:\s*Math\.max\(3, Math\.ceil\(Math\.min\(current, length\) \/ 2\)\)/);
   assert.match(runtimeSource, /providerConfig\.bulkMaxItems/);
+  assert.match(runtimeSource, /providerConfig\.bulkMaxSegments/);
+  assert.match(runtimeSource, /blockSegments \+ entrySegments <= maximumSegments/);
+  assert.match(runtimeSource, /core\.tokenizeProtectedMarkup\(entry\.source\)/);
   assert.match(runtimeSource, /core\.utf8Length\(contextSource\) <= maximumSize/);
-  assert.match(runtimeSource, /translateText\(entry\.source, language, provider, signal, false, true\)/);
-  assert.match(runtimeSource, /nextRequestAt = Date\.now\(\) \+ Math\.max\(0, Number\(providerConfig\.bulkDelay\) \|\| 5000\)/);
+  assert.match(runtimeSource, /translateText\(entry\.source, language, provider, signal, false, false\)/);
+  assert.match(runtimeSource, /createRequestPacer\(\s*providerConfig\.bulkDelay,\s*providerConfig\.bulkMaxDelay \|\| providerConfig\.bulkDelay/);
+  assert.match(runtimeSource, /providerConfig\.bulkDelayJitter/);
+  assert.match(runtimeSource, /nextRequestAt = Date\.now\(\) \+ delay \+ Math\.random\(\) \* jitter/);
+  assert.match(runtimeSource, /beforeAttempt: options\.pacer \? \(\) => options\.pacer\.wait\(signal\) : null/);
+  assert.match(runtimeSource, /requestPacer\.setDelay\(requestPacer\.maximum\)/);
   assert.match(runtimeSource, /core\.buildContextSource\(entries\.map\(\(entry\) => entry\.source\)\)/);
   assert.match(runtimeSource, /core\.parseContextTranslation\(result\.text, entries\.length\)/);
   assert.match(runtimeSource, /core\.translationQualityMatches\(entries\[index\]\.source, translations\[index\], language\)/);
-  assert.match(runtimeSource, /cachePut\(makeTranslationCacheKey\(source, language, provider\), translated\)/);
-  assert.match(runtimeSource, /const blockOptions = \{ contextFallback: false, contextualQuality: false \}/);
+  assert.match(runtimeSource, /await cachePutBatch\(acceptedEntries\.map/);
+  assert.match(runtimeSource, /await logTranslationBatchToBridge\(logEntries\)/);
+  assert.match(runtimeSource, /contextual: entries\.length > 1 && requestOptions\.isolatedSegments !== true/);
+  assert.match(runtimeSource, /contextFallback: entries\.length === 1/);
   assert.match(runtimeSource, /acceptedEntries: acceptedEntries\.map\(\(accepted\) => accepted\.entry\)/);
   assert.match(runtimeSource, /error\.rejectedEntries = saved\.rejectedEntries/);
   assert.match(runtimeSource, /async function finishAdaptiveGoogleBlock\(entries, error\)/);
-  assert.match(runtimeSource, /rejectedEntries\.length < entries\.length/);
-  assert.match(runtimeSource, /retrying only \$\{rejectedEntries\.length\} rejected strings/);
+  assert.match(runtimeSource, /error && error\.code === "translation_quality_invalid"/);
+  assert.match(runtimeSource, /error\.code !== "markup_format_invalid"\s*&& error\.code !== "google_context_format_invalid"/);
+  assert.match(runtimeSource, /quality-rejected strings once, individually/);
+  assert.match(runtimeSource, /requestFor\("quality-retry", 1\)/);
+  assert.match(runtimeSource, /\{ isolatedSegments: true, contextRepair: true \}/);
+  assert.match(runtimeSource, /measured\.batch = async function requestMeasuredGoogleBatch/);
+  assert.match(runtimeSource, /requestRateLimitedChunks\(/);
+  assert.match(runtimeSource, /options\.translateBatch = \(texts\) => request\.batch\(texts\)/);
+  assert.match(runtimeSource, /logFailureBatchToBridge\(entries\.slice/);
   assert.match(runtimeSource, /const middle = Math\.ceil\(rejectedEntries\.length \/ 2\)/);
   assert.match(runtimeSource, /rejectedEntries\.slice\(0, middle\), rejectedEntries\.slice\(middle\)/);
+  assert.match(runtimeSource, /requestFor\("structural-split", part\.length\)/);
   assert.match(runtimeSource, /await finishAdaptiveGoogleBlock\(part, partError\)/);
   assert.match(runtimeSource, /providerConfig\.bulkConsecutiveFailureLimit/);
   assert.match(runtimeSource, /const pendingBlocks = buildGoogleBulkBlocks\(freshEntries, providerConfig\)/);
@@ -401,11 +462,48 @@ test("Google Bulk groups only fresh strings into paced validated blocks", () => 
   assert.match(runtimeSource, /const translatedBeforeFallback = newlyTranslated/);
   assert.match(runtimeSource, /await finishAdaptiveGoogleBlock\(block, error\)/);
   assert.match(runtimeSource, /const fallbackTranslated = newlyTranslated - translatedBeforeFallback/);
-  assert.match(runtimeSource, /const blockFailedAfterFallback = fallbackTranslated === 0 && fallbackFailed >= block\.length/);
+  assert.match(runtimeSource, /terminalSystemicFailures \+= await finishAdaptiveGoogleBlock\(part, partError\)/);
+  assert.match(runtimeSource, /const blockFailedAfterFallback = fallbackTranslated === 0\s*&& fallbackFailed >= block\.length\s*&& terminalSystemicFailures >= block\.length/);
+  assert.match(runtimeSource, /if \(blockFailedAfterFallback\) \{\s*requestPacer\.setDelay\(requestPacer\.getDelay\(\) \+ 1000\);/);
+  assert.doesNotMatch(runtimeSource, /if \(isSystemicGoogleBulkFailure\(error\)\) \{\s*requestPacer\.setDelay/);
   assert.match(runtimeSource, /consecutiveFullBlockFailures >= consecutiveFailureLimit/);
-  assert.match(runtimeSource, /Google Bulk stopped after \$\{consecutiveFailureLimit\} consecutive blocks failed after fallback/);
+  assert.match(runtimeSource, /Google Bulk stopped after \$\{consecutiveFailureLimit\} consecutive systemic block failures/);
+  assert.match(runtimeSource, /logPerformanceToBridge\(events\.slice/);
+  assert.match(runtimeSource, /averageAcceptedPerRequest/);
   assert.doesNotMatch(runtimeSource, /consecutiveFullBlockFailures = acceptedCount \? 0/);
   assert.match(runtimeSource, /function setStatus\(text\) \{\s*if \(bulkWorkspaceAwaitingDismissal\) return;/);
+});
+
+test("Google request pacer adds independent jitter above its minimum delay", async () => {
+  let now = 1000;
+  const waits = [];
+  const createRequestPacer = Function(
+    "sleep", "Date", "Math",
+    `"use strict"; return (${createRequestPacerSource[0]});`
+  )(
+    async (milliseconds) => { waits.push(milliseconds); now += milliseconds; },
+    { now: () => now },
+    { max: Math.max, min: Math.min, random: () => 0.5 }
+  );
+  const pacer = createRequestPacer(1200, 5000, 600);
+
+  await pacer.wait({ aborted: false });
+  await pacer.wait({ aborted: false });
+
+  assert.deepEqual(waits, [1500]);
+  assert.equal(pacer.minimum, 1200);
+  assert.equal(pacer.maximum, 5000);
+  assert.equal(pacer.getDelay(), 1200);
+});
+
+test("OpenAI-compatible usage displays only exact provider-reported values", () => {
+  assert.match(runtimeSource, /function formatOpenAICompatibleUsage\(summary\)/);
+  assert.match(runtimeSource, /Exact usage: no provider responses recorded/);
+  assert.match(runtimeSource, /tokens not reported/);
+  assert.match(runtimeSource, /cost not reported/);
+  assert.match(runtimeSource, /payload && payload\.usageSummary/);
+  assert.match(runtimeSource, /error\.code === "openai_usage_tracking_failed"/);
+  assert.doesNotMatch(runtimeSource, /estimateOpenAI|estimated.*(?:token|cost)|pricePerToken/i);
 });
 
 test("Google Bulk adapts future block size without penalizing short tails", () => {
@@ -413,6 +511,19 @@ test("Google Bulk adapts future block size without penalizing short tails", () =
   assert.equal(reducedGoogleBulkBlockSize(6, 6, {}), 3);
   assert.equal(reducedGoogleBulkBlockSize(12, 12, { acceptedEntries: [{}] }), 10);
   assert.equal(reducedGoogleBulkBlockSize(12, 2, {}), 12);
+});
+
+test("Google Bulk limits protected text segments as well as source lines", () => {
+  const entries = Array.from({ length: 6 }, (_, index) => ({
+    source: `A \\c[4]DISC ${index}\\c[0].\\! Buy it now?`
+  }));
+  const blocks = buildGoogleBulkBlocks(entries, {
+    bulkMaxItems: 12, bulkMaxSegments: 16, contextLimit: 3200
+  });
+  assert.deepEqual(blocks.map((block) => block.length), [5, 1]);
+  assert.ok(blocks.every((block) => block.reduce((count, entry) =>
+    count + Math.max(1, core.tokenizeProtectedMarkup(entry.source).filter((segment) =>
+      segment.type === "text" && core.hasTranslatableText(segment.value)).length), 0) <= 16));
 });
 
 test("removed managed offline providers leave no panel or runtime controls", () => {

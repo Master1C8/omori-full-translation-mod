@@ -44,6 +44,7 @@
       const activeTime = currentTime - pausedDuration;
       const completed = Math.max(0, Math.floor(Number(completedUnits) || 0));
       const total = Math.max(completed, Math.floor(Number(totalUnits) || 0));
+      if (completed <= 0) return lastEstimate;
       const previous = points[points.length - 1];
       if (!previous || completed > previous.words) points.push({ time: activeTime, words: completed });
       while (points.length > 2

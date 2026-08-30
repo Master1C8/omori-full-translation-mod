@@ -82,6 +82,21 @@ class LocalServiceTests(unittest.TestCase):
         })
         self.assertEqual(result, {"ok": True, "appended": True})
         bridge.log_translation.assert_called_once_with("google", "ru", "Hello", "Привет", True)
+        bridge.log_batch.return_value = {"processed": 2, "appended": 1}
+        self.assertEqual(
+            router.dispatch("/v1/log/batch", {"entries": [{"source": "Hello"}]}),
+            {"ok": True, "processed": 2, "appended": 1},
+        )
+        bridge.log_performance.return_value = 2
+        self.assertEqual(
+            router.dispatch("/v1/log/performance", {"events": [{"requests": 2}]}),
+            {"ok": True, "appended": 2},
+        )
+        bridge.log_failures.return_value = 1
+        self.assertEqual(
+            router.dispatch("/v1/log/failures", {"entries": [{"source": "Hello"}]}),
+            {"ok": True, "appended": 1},
+        )
 
     def test_post_router_rejects_unknown_paths(self):
         router = local_service.LocalPostRouter(mock.Mock())
@@ -114,6 +129,90 @@ class LocalServiceTests(unittest.TestCase):
                 next(path for path in local_service.game_language_candidates(executable) if path.is_dir()),
                 language_dir,
             )
+
+    def test_system_asset_extraction_includes_structured_ui_but_skips_internal_values(self):
+        system_yaml = b'''terms:
+  command:
+    6: "EQUIP"
+    11: "OPTIONS"
+  param:
+    0: "Max HP"
+    6: "Speed"
+plugins:
+  mainMenu:
+    commands:
+      - ['???', 'TAG', 'STAB']
+      - POCKET
+  itemMenu:
+    categories: [SNACKS, TOYS, IMPORTANT]
+  optionsMenu:
+    inputWarning:
+      keyboardMessage: "You can't edit KEYBOARD inputs using your GAMEPAD!"
+    itemTrash:
+      text: 'ARE YOU SURE?'
+  itemShopMenu:
+    shopName: WE'RE FAMILY-OWNED!
+    texts:
+      maxItemMessage: 'dreamworld_extras_shop.message_185'
+InputNames:
+  keyboard:
+    16: shift
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "System.HERO"
+            path.write_bytes(b"encrypted")
+            with mock.patch.object(local_service, "decrypt_omori_data", return_value=system_yaml):
+                values = local_service.extract_strings_from_hero(path)
+
+        self.assertTrue({
+            "EQUIP", "OPTIONS", "HEART:", "SPEED:", "TAG", "STAB", "POCKET",
+            "SNACKS", "TOYS", "IMPORTANT",
+            "You can't edit KEYBOARD inputs using your GAMEPAD!", "ARE YOU SURE?", "WE'RE FAMILY-OWNED!",
+        }.issubset(values))
+        self.assertNotIn("???", values)
+        self.assertNotIn("dreamworld_extras_shop.message_185", values)
+        self.assertNotIn("shift", values)
+
+    def test_database_extraction_includes_visible_fields_and_constructed_stat_labels(self):
+        weapons = [
+            None,
+            {
+                "id": 2,
+                "name": "SHINY KNIFE",
+                "description": "A shiny new knife.<br>\nYou can see your reflection in the blade.",
+                "note": "<IconIndex:0>",
+            },
+            {"id": 3, "name": "// WEAPONS //", "description": "", "note": "internal"},
+        ]
+        system = {
+            "terms": {"params": ["Max HP", "Max MP", "Attack", "Defense", "Hit"]},
+            "currencyUnit": "CLAMS",
+            "gameTitle": "OMORI",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weapon_path = root / "Weapons.KEL"
+            system_path = root / "System.KEL"
+            weapon_path.write_bytes(b"encrypted weapons")
+            system_path.write_bytes(b"encrypted system")
+            payloads = {
+                b"encrypted weapons": json.dumps(weapons).encode(),
+                b"encrypted system": json.dumps(system).encode(),
+            }
+            with mock.patch.object(
+                local_service, "decrypt_omori_data", side_effect=lambda value: payloads[value]
+            ):
+                weapon_values = local_service.extract_strings_from_kel(weapon_path)
+                system_values = local_service.extract_strings_from_kel(system_path)
+
+        self.assertEqual(weapon_values, [
+            "SHINY KNIFE", "A shiny new knife.<br>\nYou can see your reflection in the blade.",
+        ])
+        self.assertNotIn("<IconIndex:0>", weapon_values)
+        self.assertNotIn("// WEAPONS //", weapon_values)
+        self.assertTrue({
+            "HEART:", "JUICE:", "ATTACK:", "DEFENSE:", "HIT:", "CLAMS", "OMORI",
+        }.issubset(system_values))
 
     def test_bulk_extraction_uses_selected_game_and_reports_asset_failures(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -198,7 +297,9 @@ class LocalServiceTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("generated", encoding="utf-8")
             for path in (
-                bridge.activity_log, bridge.translation_log, bridge.asset_index_path,
+                bridge.activity_log, bridge.translation_log, bridge.performance_log,
+                bridge.failure_log,
+                bridge.openai_usage_log, bridge.asset_index_path,
                 bridge.credential_scopes_path, bridge.data_dir / "argos-service.log",
                 bridge.data_dir / ".reselect-game-executable",
             ):
@@ -216,6 +317,9 @@ class LocalServiceTests(unittest.TestCase):
             self.assertTrue(all(not path.exists() for path in generated))
             self.assertFalse(bridge.activity_log.exists())
             self.assertFalse(bridge.translation_log.exists())
+            self.assertFalse(bridge.performance_log.exists())
+            self.assertFalse(bridge.failure_log.exists())
+            self.assertFalse(bridge.openai_usage_log.exists())
             self.assertFalse(bridge.asset_index_path.exists())
             self.assertFalse(bridge.credential_scopes_path.exists())
             self.assertFalse((bridge.data_dir / "argos-service.log").exists())
@@ -447,6 +551,10 @@ class LocalServiceTests(unittest.TestCase):
             self.assertEqual(result["translatedText"], translated)
             self.assertFalse(result["offline"])
             self.assertEqual(result["promptVersion"], local_service.OPENAI_COMPATIBLE_PROMPT_VERSION)
+            self.assertIsNone(result["usage"])
+            self.assertEqual(result["usageSummary"]["requests"], 1)
+            self.assertEqual(result["usageSummary"]["usageReports"], 0)
+            self.assertEqual(result["usageSummary"]["costs"], [])
             self.assertEqual(
                 captured["request"].full_url,
                 "https://opencode.ai/zen/go/v1/chat/completions",
@@ -457,6 +565,91 @@ class LocalServiceTests(unittest.TestCase):
             self.assertNotIn("RPG Maker", request_body["messages"][0]["content"])
             self.assertNotIn("VRCTXSEP", request_body["messages"][0]["content"])
             self.assertEqual(captured["request"].get_header("Authorization"), "Bearer secret-key-123456")
+
+    def test_openai_compatible_records_only_exact_provider_reported_usage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            translated = "Привет"
+            response = {
+                "id": "gen-exact-usage",
+                "choices": [{"message": {"content": json.dumps({"translation": translated})}}],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150,
+                    "prompt_tokens_details": {"cached_tokens": 20},
+                    "completion_tokens_details": {"reasoning_tokens": 7},
+                    "cost": 0.000123,
+                    "cost_details": {"upstream_inference_cost": 0.0001},
+                },
+            }
+            with mock.patch.object(
+                local_service.urllib.request, "urlopen", return_value=FakeHTTPResponse(response)
+            ):
+                result = bridge.openai_compatible_translate(
+                    "ru", "Russian", "Hello", "openai/gpt-test", "openrouter", ""
+                )
+
+            self.assertEqual(result["usage"], {
+                "promptTokens": 120,
+                "promptTokensField": "prompt_tokens",
+                "completionTokens": 30,
+                "completionTokensField": "completion_tokens",
+                "totalTokens": 150,
+                "totalTokensField": "total_tokens",
+                "cachedTokens": 20,
+                "reasoningTokens": 7,
+                "cost": "0.000123",
+                "costUnit": "credits",
+                "upstreamInferenceCost": "0.0001",
+            })
+            self.assertEqual(result["usageSummary"]["requests"], 1)
+            self.assertEqual(result["usageSummary"]["usageReports"], 1)
+            self.assertEqual(result["usageSummary"]["tokens"]["totalTokens"], {
+                "value": 150, "reports": 1,
+            })
+            self.assertEqual(result["usageSummary"]["costs"], [{
+                "unit": "credits", "value": "0.000123", "reports": 1,
+            }])
+
+            record = json.loads(bridge.openai_usage_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(record["responseId"], "gen-exact-usage")
+            self.assertEqual(record["usage"], result["usage"])
+            self.assertNotIn("source", record)
+            self.assertNotIn("translation", record)
+
+            reloaded = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            self.assertEqual(
+                reloaded.openai_usage_summary("openrouter", "https://openrouter.ai/api/v1"),
+                result["usageSummary"],
+            )
+
+    def test_openai_compatible_records_usage_before_rejecting_invalid_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            response = {
+                "choices": [{"message": {"content": json.dumps({"translation": "Привет"})}}],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10},
+            }
+            with mock.patch.object(
+                local_service.urllib.request, "urlopen", return_value=FakeHTTPResponse(response)
+            ):
+                with self.assertRaises(local_service.BridgeError) as caught:
+                    bridge.openai_compatible_translate(
+                        "ru", "Russian", r"Hello \\N[1]", "kimi-k3", "opencode-go", ""
+                    )
+
+            self.assertEqual(caught.exception.code, "openai_format_invalid")
+            self.assertEqual(caught.exception.details["usage"]["totalTokens"], 10)
+            self.assertEqual(caught.exception.details["usageSummary"]["requests"], 1)
+            record = json.loads(bridge.openai_usage_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(record["usage"]["totalTokens"], 10)
 
     def test_openai_compatible_remote_provider_requires_saved_key(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -493,6 +686,43 @@ class LocalServiceTests(unittest.TestCase):
             reloaded = local_service.LocalServiceBridge(Path(directory))
             self.assertFalse(reloaded.log_translation("google", "ru", "Hello", "Привет", cached=True))
             self.assertEqual(len(reloaded.translation_log.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_batched_translation_and_performance_logs_use_bounded_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(Path(directory))
+            result = bridge.log_batch([
+                {"provider": "google", "language": "ru", "source": "Hello", "translation": "Привет"},
+                {"provider": "google", "language": "ru", "source": "Bye", "translation": "Пока", "cached": True},
+                {"provider": "google", "language": "ru", "source": "Hello", "translation": "Привет"},
+            ])
+            self.assertEqual(result, {"processed": 3, "appended": 2})
+            self.assertEqual(len(bridge.activity_log.read_text(encoding="utf-8").splitlines()), 3)
+            self.assertEqual(len(bridge.translation_log.read_text(encoding="utf-8").splitlines()), 2)
+
+            self.assertEqual(bridge.log_performance([
+                {"type": "request", "requests": 1, "durationMs": 125.4, "ignored": ["unsafe"]},
+                "invalid",
+            ]), 1)
+            event = json.loads(bridge.performance_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(event["type"], "request")
+            self.assertEqual(event["requests"], 1)
+            self.assertNotIn("ignored", event)
+
+            self.assertEqual(bridge.log_failures([
+                {
+                    "provider": "google", "language": "ru", "source": "\\c[4]Hello\\c[0]",
+                    "code": "markup_format_invalid", "reason": "Protected markup failed",
+                    "detail": "markup_layout", "candidate": "\\c[4]Привет\\c[0]",
+                },
+                {"provider": "google", "source": ""},
+                "invalid",
+            ]), 1)
+            failure = json.loads(bridge.failure_log.read_text(encoding="utf-8").strip())
+            self.assertEqual(failure["source"], "\\c[4]Hello\\c[0]")
+            self.assertEqual(failure["code"], "markup_format_invalid")
+            self.assertEqual(failure["reason"], "Protected markup failed")
+            self.assertEqual(failure["detail"], "markup_layout")
+            self.assertEqual(failure["candidate"], "\\c[4]Привет\\c[0]")
 
     def test_update_check_validates_manifest_and_reports_network_failure(self):
         class FakeResponse:

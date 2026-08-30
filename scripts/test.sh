@@ -200,8 +200,15 @@ fi
 grep -Fq 'makeTranslationCacheKey(source, language, provider)' src/translator-runtime.js
 
 COUNT=$(wc -l < src/languages.txt | tr -d ' ')
-if [[ "$COUNT" != "249" ]]; then
-  echo "Language catalog is unexpectedly short: $COUNT" >&2
+if [[ "$COUNT" != "30" ]]; then
+  echo "Language catalog must match the 30 VN Revival Stardew Valley editions: $COUNT" >&2
+  exit 1
+fi
+
+EXPECTED_LANGUAGE_CODES="en ru fr de es pl tr ar pt ja ko zh-CN zh-TW it th vi id fa hi bn ur ta te my mr ml kn uz sw am"
+ACTUAL_LANGUAGE_CODES=$(cut -d'|' -f1 src/languages.txt | paste -sd' ' -)
+if [[ "$ACTUAL_LANGUAGE_CODES" != "$EXPECTED_LANGUAGE_CODES" ]]; then
+  echo "Language catalog does not match the VN Revival Stardew Valley editions" >&2
   exit 1
 fi
 

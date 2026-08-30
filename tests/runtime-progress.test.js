@@ -29,10 +29,24 @@ test("ETA tracks active work and excludes paused time", () => {
   const tracker = progress.createEtaTracker(() => currentTime);
   tracker.update(0, 100);
   currentTime = 2000;
-  assert.equal(tracker.update(10, 100), 18000);
+  assert.equal(tracker.update(10, 100), null);
+  currentTime = 4000;
+  assert.equal(tracker.update(20, 100), 16000);
   tracker.pause();
-  currentTime = 12000;
-  assert.equal(tracker.update(20, 100), 14500);
   currentTime = 14000;
+  assert.equal(tracker.update(30, 100), 12850);
+  currentTime = 16000;
   assert.equal(tracker.update(100, 100), 0);
+});
+
+test("ETA does not count cache-only preparation before the first fresh result", () => {
+  let currentTime = 0;
+  const tracker = progress.createEtaTracker(() => currentTime);
+  tracker.update(0, 100);
+  currentTime = 60000;
+  tracker.update(0, 100);
+  currentTime = 62000;
+  assert.equal(tracker.update(10, 100), null);
+  currentTime = 64000;
+  assert.equal(tracker.update(20, 100), 16000);
 });

@@ -24,7 +24,17 @@ class GameManifestTests(unittest.TestCase):
         return path
 
     def test_current_manifest_is_valid(self):
-        self.assertEqual(MODULE.load_manifest(self.manifest_path)["id"], "omori")
+        manifest = MODULE.load_manifest(self.manifest_path)
+        self.assertEqual(manifest["id"], "omori")
+        self.assertEqual(manifest["officialLocalizations"], ["en", "ja", "ko", "zh-CN"])
+
+    def test_official_localizations_are_required_unique_and_include_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for localizations in ([], ["ja"], ["en", "ja", "ja"], ["en", "invalid-code"]):
+                value = copy.deepcopy(self.valid)
+                value["officialLocalizations"] = localizations
+                with self.subTest(localizations=localizations), self.assertRaises(ValueError):
+                    MODULE.load_manifest(self.write_manifest(directory, value))
 
     def test_executable_filename_is_allowed_but_paths_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -9,9 +9,13 @@
       id: "google",
       label: "Google Translate",
       concurrency: 1,
-      delay: 1000,
-      bulkDelay: 5000,
+      delay: 1200,
+      delayJitter: 600,
+      bulkDelay: 1200,
+      bulkDelayJitter: 600,
+      bulkMaxDelay: 5000,
       bulkMaxItems: 12,
+      bulkMaxSegments: 16,
       bulkConsecutiveFailureLimit: 3,
       retries: 3,
       contextLimit: 3200,
@@ -32,6 +36,17 @@
         });
         if (!response.ok) throw new Error("HTTP " + response.status);
         return context.decodeHtmlEntities(core.parseGoogleResponse(await response.json()));
+      },
+      async translateChunks(context) {
+        const target = core.providerLanguageCode("google", context.language);
+        if (!target) throw new Error("The selected language is not supported by this service");
+        const response = await context.fetch(
+          core.buildGoogleBatchUrl(context.texts, target, context.sourceLanguage),
+          { signal: context.signal, cache: "no-store" }
+        );
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return core.parseGoogleBatchResponse(await response.json(), context.texts.length)
+          .map((translation) => context.decodeHtmlEntities(translation));
       }
     },
     {

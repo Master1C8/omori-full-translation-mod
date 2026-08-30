@@ -29,7 +29,7 @@ def main() -> int:
         key: manifest[key]
         for key in (
             "id", "title", "shortTitle", "translatorName", "sourceLanguage",
-            "supportedVersions", "storageNamespace", "cacheDatabase",
+            "officialLocalizations", "supportedVersions", "storageNamespace", "cacheDatabase",
         )
     }
     if "legacyCompatibility" in manifest:

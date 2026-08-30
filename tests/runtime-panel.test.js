@@ -27,5 +27,11 @@ test("runtime panel renders product-owned labels and links", () => {
   assert.match(html, /class="packModal" role="dialog"/);
   assert.match(html, /class="screenAuto" type="checkbox"/);
   assert.match(html, /Automatically translate completed dialogue/);
+  assert.match(html, /class="languageControl"/);
+  assert.match(html, /class="officialLocalizationNotice" role="status" hidden/);
+  assert.match(html, /class="openAICompatibleUsage">Exact usage: no provider responses recorded\.<\/div>/);
+  assert.match(html, /\.openAICompatibleUsage\{margin-top:5px/);
+  assert.match(html, /\.bulkCancel\.finished\{border-color:#69b77f!important;background:#2f7d4a!important/);
+  assert.match(html, /\.panel\.officialLocalization>\.settings>\*:not\(\.languageControl\)/);
   assert.doesNotMatch(html, /Allow online translation|allowBulk|cancelBulk|class="privacy"/);
 });

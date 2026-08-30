@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
+from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,18 @@ OPENAI_COMPATIBLE_PRESETS = {
 }
 MAX_REQUEST_BYTES = 1_048_576
 MAX_TEXT_CHARS = 120_000
-ASSET_INDEX_SCHEMA = 1
+ASSET_INDEX_SCHEMA = 3
 ASSET_INDEX_MAX_BYTES = 16 * 1024 * 1024
+OMORI_DATABASE_FIELDS = {
+    "actors.kel": ("name", "nickname", "profile"),
+    "armors.kel": ("name", "description"),
+    "classes.kel": ("name",),
+    "enemies.kel": ("name",),
+    "items.kel": ("name", "description"),
+    "skills.kel": ("name", "description", "message1", "message2"),
+    "states.kel": ("name", "message1", "message2", "message3", "message4"),
+    "weapons.kel": ("name", "description"),
+}
 UPDATE_MANIFEST_URL = "https://vnrevival.fun/downloads/omori/latest.json"
 UPDATE_MANIFEST_MAX_BYTES = 65_536
 UPDATE_CHECK_TIMEOUT = 10
@@ -140,6 +151,100 @@ def decrypt_omori_data(data: bytes) -> bytes:
     return bytes(output)
 
 
+def _quoted_yaml_values(value: str) -> list[str]:
+    """Read quoted YAML scalars without requiring PyYAML in the bundled helper."""
+    values = []
+    index = 0
+    while index < len(value):
+        quote = value[index]
+        if (quote not in ("'", '"')
+                or (index > 0 and value[index - 1] not in " \t[,{:")):
+            index += 1
+            continue
+        index += 1
+        decoded = []
+        closed = False
+        while index < len(value):
+            character = value[index]
+            if quote == "'" and character == "'" and index + 1 < len(value) and value[index + 1] == "'":
+                decoded.append("'")
+                index += 2
+                continue
+            if character == quote:
+                index += 1
+                closed = True
+                break
+            if quote == '"' and character == "\\" and index + 1 < len(value):
+                escaped = value[index + 1]
+                replacements = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+                if escaped in replacements:
+                    decoded.append(replacements[escaped])
+                    index += 2
+                    continue
+            decoded.append(character)
+            index += 1
+        if closed:
+            values.append("".join(decoded))
+    return values
+
+
+def _system_yaml_values(value: str) -> list[str]:
+    quoted = _quoted_yaml_values(value)
+    if quoted:
+        return quoted
+    value = value.split(" #", 1)[0].strip()
+    if value.startswith("[") and value.endswith("]"):
+        return [part.strip() for part in value[1:-1].split(",")]
+    if not value or value.startswith(("{", "[")):
+        return []
+    return [value]
+
+
+def extract_system_ui_strings(decrypted: str) -> list[str]:
+    """Extract visible UI scalars from the two translatable System.HERO sections."""
+    texts = []
+    top_level = ""
+    parameter_indent: int | None = None
+    for line in decrypted.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if len(line) == len(line.lstrip()) and stripped.endswith(":"):
+            top_level = stripped[:-1]
+            parameter_indent = None
+            continue
+        if top_level not in ("terms", "plugins"):
+            continue
+        if top_level == "terms" and stripped == "param:":
+            parameter_indent = indent
+            continue
+        if parameter_indent is not None and indent <= parameter_indent:
+            parameter_indent = None
+        if stripped.startswith("- "):
+            value = stripped[2:].strip()
+        elif ":" in stripped:
+            value = stripped.split(":", 1)[1].strip()
+        else:
+            continue
+        for candidate in _system_yaml_values(value):
+            candidate = candidate.strip()
+            alpha_count = sum(character.isalpha() for character in candidate)
+            if (not candidate or len(candidate) > MAX_TEXT_CHARS or alpha_count < 2
+                    or candidate.casefold() in ("null", "true", "false")
+                    or re.fullmatch(r"[a-z0-9_/-]+(?:\.[a-z0-9_/-]+)+", candidate)):
+                continue
+            texts.append(candidate)
+            if parameter_indent is not None:
+                label = candidate
+                if candidate.casefold() == "max hp":
+                    label = "HEART"
+                elif candidate.casefold() == "max mp":
+                    label = "JUICE"
+                texts.append(label.upper() + ":")
+    return texts
+
+
 def extract_strings_from_hero(path: Path) -> list[str]:
     data = path.read_bytes()
     decrypted = decrypt_omori_data(data).decode("utf-8", errors="strict").replace("\r", "")
@@ -153,7 +258,64 @@ def extract_strings_from_hero(path: Path) -> list[str]:
                     text = text[1:-1]
                 if text:
                     texts.append(text)
+    if path.name.casefold() == "system.hero":
+        texts.extend(extract_system_ui_strings(decrypted))
     return texts
+
+
+def _visible_database_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\r", "").strip()
+    if (not text or len(text) > MAX_TEXT_CHARS
+            or re.fullmatch(r"//.*//", text, flags=re.DOTALL)):
+        return None
+    return text
+
+
+def _nested_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [text for entry in value for text in _nested_strings(entry)]
+    if isinstance(value, dict):
+        return [text for entry in value.values() for text in _nested_strings(entry)]
+    return []
+
+
+def extract_strings_from_kel(path: Path) -> list[str]:
+    """Extract only player-visible database fields from encrypted RPG Maker JSON."""
+    data = json.loads(decrypt_omori_data(path.read_bytes()).decode("utf-8", errors="strict"))
+    name = path.name.casefold()
+    texts: list[Any] = []
+    if name == "system.kel":
+        if not isinstance(data, dict):
+            raise ValueError("OMORI System.KEL must contain an object")
+        for key in ("terms", "currencyUnit", "gameTitle", "armorTypes", "equipTypes", "skillTypes", "weaponTypes"):
+            texts.extend(_nested_strings(data.get(key)))
+        terms = data.get("terms")
+        params = terms.get("params") if isinstance(terms, dict) else None
+        if isinstance(params, list):
+            for value in params:
+                if not isinstance(value, str) or not value:
+                    continue
+                label = value
+                if value.casefold() == "max hp":
+                    label = "HEART"
+                elif value.casefold() == "max mp":
+                    label = "JUICE"
+                texts.append(label.upper() + ":")
+    else:
+        fields = OMORI_DATABASE_FIELDS.get(name)
+        if fields is None:
+            return []
+        if not isinstance(data, list):
+            raise ValueError(f"OMORI {path.name} must contain an array")
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            texts.extend(entry.get(field) for field in fields)
+    return [text for value in texts if (text := _visible_database_string(value)) is not None]
 
 
 def game_language_candidates(game_path: Path | None = None) -> list[Path]:
@@ -187,10 +349,12 @@ def game_language_candidates(game_path: Path | None = None) -> list[Path]:
 
 
 class BridgeError(Exception):
-    def __init__(self, code: str, message: str, status: int = 400):
+    def __init__(self, code: str, message: str, status: int = 400,
+                 details: dict[str, Any] | None = None):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.details = dict(details or {})
 
 
 class GeminiCredentialStore:
@@ -357,11 +521,15 @@ class LocalServiceBridge:
         self.lmstudio_base_url = lmstudio_base_url
         self.activity_log = self.data_dir / "activity.log"
         self.translation_log = self.data_dir / "translation-history.jsonl"
+        self.performance_log = self.data_dir / "translation-performance.jsonl"
+        self.failure_log = self.data_dir / "translation-failures.jsonl"
+        self.openai_usage_log = self.data_dir / "openai-compatible-usage.jsonl"
         self.asset_index_path = self.data_dir / "omori-asset-index-v1.json"
         self.credential_scopes_path = self.data_dir / "openai-credential-scopes.json"
         self._log_lock = threading.Lock()
         self._asset_index_lock = threading.Lock()
         self._translation_log_keys: set[str] | None = None
+        self._openai_usage_summaries: dict[tuple[str, str], dict[str, Any]] | None = None
         self._configure_environment()
 
     def log_activity(self, provider: str, source: str, translation: str, cached: bool) -> None:
@@ -428,6 +596,114 @@ class LocalServiceBridge:
                 output.write(json.dumps(entry, ensure_ascii=False) + "\n")
             keys.add(key)
         return True
+
+    def log_batch(self, entries: Any) -> dict[str, int]:
+        if not isinstance(entries, list):
+            return {"processed": 0, "appended": 0}
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        activity_lines: list[str] = []
+        translations: list[tuple[str, dict[str, Any]]] = []
+        for raw in entries[:250]:
+            if not isinstance(raw, dict):
+                continue
+            provider, language, source, translation = (
+                raw.get("provider", "unknown"), raw.get("language", ""),
+                raw.get("source", ""), raw.get("translation", ""),
+            )
+            if not all(isinstance(value, str) for value in (provider, language, source, translation)):
+                continue
+            if not source or not translation or len(source) > MAX_TEXT_CHARS or len(translation) > MAX_TEXT_CHARS:
+                continue
+            provider = provider[:100]
+            language = language[:50]
+            cached = raw.get("cached") is True
+            activity_lines.append(json.dumps({
+                "timestamp": timestamp, "provider": provider, "cached": cached,
+                "source": source, "translation": translation,
+            }, ensure_ascii=False))
+            history_entry = {
+                "timestamp": timestamp, "provider": provider, "language": language,
+                "source": source, "translation": translation, "cached": cached,
+            }
+            translations.append((self._translation_log_key(provider, language, source, translation), history_entry))
+
+        appended = 0
+        with self._log_lock:
+            keys = self._load_translation_log_keys_locked()
+            if activity_lines:
+                with self.activity_log.open("a", encoding="utf-8") as output:
+                    output.write("\n".join(activity_lines) + "\n")
+            history_lines: list[str] = []
+            for key, entry in translations:
+                if key in keys:
+                    continue
+                keys.add(key)
+                history_lines.append(json.dumps(entry, ensure_ascii=False))
+                appended += 1
+            if history_lines:
+                with self.translation_log.open("a", encoding="utf-8") as output:
+                    output.write("\n".join(history_lines) + "\n")
+        return {"processed": len(activity_lines), "appended": appended}
+
+    def log_performance(self, events: Any) -> int:
+        if not isinstance(events, list):
+            return 0
+        lines: list[str] = []
+        for raw in events[:250]:
+            if not isinstance(raw, dict):
+                continue
+            event: dict[str, Any] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or len(key) > 50:
+                    continue
+                if isinstance(value, str):
+                    event[key] = value[:200]
+                elif value is None or isinstance(value, (bool, int, float)):
+                    event[key] = value
+            if event:
+                lines.append(json.dumps(event, ensure_ascii=False))
+        if lines:
+            with self._log_lock:
+                with self.performance_log.open("a", encoding="utf-8") as output:
+                    output.write("\n".join(lines) + "\n")
+        return len(lines)
+
+    def log_failures(self, entries: Any) -> int:
+        if not isinstance(entries, list):
+            return 0
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        lines: list[str] = []
+        for raw in entries[:250]:
+            if not isinstance(raw, dict):
+                continue
+            provider, language, source, code, reason, detail, candidate = (
+                raw.get("provider", "unknown"), raw.get("language", ""),
+                raw.get("source", ""), raw.get("code", "translation_failed"),
+                raw.get("reason", "Translation failed"),
+                raw.get("detail", ""), raw.get("candidate", ""),
+            )
+            if not all(isinstance(value, str) for value in (
+                provider, language, source, code, reason, detail, candidate
+            )):
+                continue
+            if not source or len(source) > MAX_TEXT_CHARS or len(candidate) > MAX_TEXT_CHARS:
+                continue
+            entry = {
+                "timestamp": timestamp,
+                "provider": provider[:100],
+                "language": language[:50],
+                "code": code[:120],
+                "reason": reason[:500],
+                "detail": detail[:120],
+                "source": source,
+                "candidate": candidate,
+            }
+            lines.append(json.dumps(entry, ensure_ascii=False))
+        if lines:
+            with self._log_lock:
+                with self.failure_log.open("a", encoding="utf-8") as output:
+                    output.write("\n".join(lines) + "\n")
+        return len(lines)
 
     def read_translation_log(self, limit: Any = 200) -> dict[str, Any]:
         try:
@@ -812,6 +1088,201 @@ class LocalServiceBridge:
                     models.append(model_id)
         return models
 
+    @staticmethod
+    def _reported_token_count(value: Any) -> int | None:
+        if type(value) is int and 0 <= value <= 10**15:
+            return value
+        return None
+
+    @staticmethod
+    def _reported_decimal(value: Any) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
+        text = str(value).strip()
+        if not text or len(text) > 80:
+            return None
+        try:
+            amount = Decimal(text)
+        except InvalidOperation:
+            return None
+        if not amount.is_finite() or amount < 0:
+            return None
+        return format(amount, "f")
+
+    @classmethod
+    def _normalized_openai_usage(cls, payload: dict[str, Any], preset: str) -> dict[str, Any] | None:
+        raw = payload.get("usage")
+        if not isinstance(raw, dict):
+            return None
+        usage: dict[str, Any] = {}
+        token_fields = {
+            "promptTokens": ("prompt_tokens", "input_tokens"),
+            "completionTokens": ("completion_tokens", "output_tokens"),
+            "totalTokens": ("total_tokens",),
+        }
+        for output_name, candidates in token_fields.items():
+            for input_name in candidates:
+                value = cls._reported_token_count(raw.get(input_name))
+                if value is not None:
+                    usage[output_name] = value
+                    usage[output_name + "Field"] = input_name
+                    break
+
+        prompt_details = raw.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached = cls._reported_token_count(prompt_details.get("cached_tokens"))
+            if cached is not None:
+                usage["cachedTokens"] = cached
+        completion_details = raw.get("completion_tokens_details")
+        if isinstance(completion_details, dict):
+            reasoning = cls._reported_token_count(completion_details.get("reasoning_tokens"))
+            if reasoning is not None:
+                usage["reasoningTokens"] = reasoning
+
+        cost = cls._reported_decimal(raw.get("cost"))
+        if cost is not None:
+            currency = raw.get("currency")
+            if isinstance(currency, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9 _.-]{0,31}", currency.strip()):
+                cost_unit = currency.strip()
+            elif preset == "openrouter":
+                cost_unit = "credits"
+            else:
+                cost_unit = "provider units"
+            usage["cost"] = cost
+            usage["costUnit"] = cost_unit
+
+        cost_details = raw.get("cost_details")
+        if isinstance(cost_details, dict):
+            upstream = cls._reported_decimal(cost_details.get("upstream_inference_cost"))
+            if upstream is not None:
+                usage["upstreamInferenceCost"] = upstream
+
+        return usage or None
+
+    @staticmethod
+    def _empty_openai_usage_summary() -> dict[str, Any]:
+        return {
+            "requests": 0,
+            "usageReports": 0,
+            "tokens": {
+                name: {"value": 0, "reports": 0}
+                for name in ("promptTokens", "completionTokens", "totalTokens", "cachedTokens", "reasoningTokens")
+            },
+            "costs": {},
+        }
+
+    @staticmethod
+    def _apply_openai_usage_record(summary: dict[str, Any], usage: Any) -> None:
+        summary["requests"] += 1
+        if not isinstance(usage, dict) or not usage:
+            return
+        summary["usageReports"] += 1
+        for name, aggregate in summary["tokens"].items():
+            value = usage.get(name)
+            if type(value) is int and value >= 0:
+                aggregate["value"] += value
+                aggregate["reports"] += 1
+        cost = usage.get("cost")
+        unit = usage.get("costUnit")
+        if isinstance(cost, str) and isinstance(unit, str):
+            try:
+                amount = Decimal(cost)
+            except InvalidOperation:
+                return
+            aggregate = summary["costs"].setdefault(unit, {"value": Decimal(0), "reports": 0})
+            aggregate["value"] += amount
+            aggregate["reports"] += 1
+
+    @staticmethod
+    def _public_openai_usage_summary(summary: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "requests": summary["requests"],
+            "usageReports": summary["usageReports"],
+            "tokens": {
+                name: {"value": aggregate["value"], "reports": aggregate["reports"]}
+                for name, aggregate in summary["tokens"].items()
+            },
+            "costs": [
+                {"unit": unit, "value": format(aggregate["value"], "f"), "reports": aggregate["reports"]}
+                for unit, aggregate in sorted(summary["costs"].items())
+            ],
+        }
+
+    def _load_openai_usage_summaries_locked(self) -> dict[tuple[str, str], dict[str, Any]]:
+        if self._openai_usage_summaries is not None:
+            return self._openai_usage_summaries
+        summaries: dict[tuple[str, str], dict[str, Any]] = {}
+        try:
+            with self.openai_usage_log.open("r", encoding="utf-8") as source:
+                for line in source:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    preset = record.get("preset")
+                    base_url = record.get("baseURL")
+                    if not isinstance(preset, str) or not isinstance(base_url, str):
+                        continue
+                    summary = summaries.setdefault((preset, base_url), self._empty_openai_usage_summary())
+                    self._apply_openai_usage_record(summary, record.get("usage"))
+        except FileNotFoundError:
+            pass
+        self._openai_usage_summaries = summaries
+        return summaries
+
+    def openai_usage_summary(self, preset: str, base_url: str) -> dict[str, Any]:
+        with self._log_lock:
+            summaries = self._load_openai_usage_summaries_locked()
+            summary = summaries.get((preset, base_url), self._empty_openai_usage_summary())
+            return self._public_openai_usage_summary(summary)
+
+    def _prepare_openai_usage_log(self) -> None:
+        try:
+            with self._log_lock:
+                with self.openai_usage_log.open("a", encoding="utf-8"):
+                    pass
+        except OSError as error:
+            raise BridgeError(
+                "openai_usage_tracking_failed",
+                "Exact provider usage cannot be recorded; the request was not sent",
+                507,
+            ) from error
+
+    def _record_openai_usage(self, connection: dict[str, Any], model: str,
+                             payload: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        usage = self._normalized_openai_usage(payload, connection["preset"])
+        record: dict[str, Any] = {
+            "schemaVersion": 1,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "preset": connection["preset"],
+            "baseURL": connection["baseURL"],
+            "model": model,
+            "usage": usage,
+        }
+        response_id = payload.get("id")
+        if isinstance(response_id, str) and 1 <= len(response_id) <= 512:
+            record["responseId"] = response_id
+        try:
+            with self._log_lock:
+                summaries = self._load_openai_usage_summaries_locked()
+                with self.openai_usage_log.open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(record, ensure_ascii=False) + "\n")
+                summary = summaries.setdefault(
+                    (connection["preset"], connection["baseURL"]), self._empty_openai_usage_summary()
+                )
+                self._apply_openai_usage_record(summary, usage)
+                public_summary = self._public_openai_usage_summary(summary)
+        except OSError as error:
+            raise BridgeError(
+                "openai_usage_tracking_failed",
+                "The provider responded, but its exact usage could not be recorded; the request will not be retried",
+                507,
+                {"usage": usage},
+            ) from error
+        return usage, public_summary
+
     def openai_compatible_status(self, preset: Any, base_url: Any) -> dict[str, Any]:
         connection = self._openai_connection(preset, base_url)
         store = self._openai_store(connection["baseURL"])
@@ -824,6 +1295,7 @@ class LocalServiceBridge:
             "models": [],
             "available": False,
             "promptVersion": OPENAI_COMPATIBLE_PROMPT_VERSION,
+            "usageSummary": self.openai_usage_summary(connection["preset"], connection["baseURL"]),
         }
         if connection["requiresKey"] and not configured:
             return {**base, "message": f"Add the {connection['name']} API key first"}
@@ -921,6 +1393,7 @@ class LocalServiceBridge:
                 },
             },
         }
+        self._prepare_openai_usage_log()
         structured = True
         try:
             try:
@@ -945,23 +1418,29 @@ class LocalServiceBridge:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise BridgeError("openai_unavailable", "Could not connect to the OpenAI-compatible provider", 503) from error
 
-        content = self._openai_completion_content(payload)
-        if not content:
-            raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
-        if structured:
-            try:
-                translation = json.loads(content).get("translation")
-            except (AttributeError, json.JSONDecodeError) as error:
-                raise BridgeError("openai_invalid_response", "The provider returned invalid structured output", 502) from error
-        else:
-            translation = content
-        if not isinstance(translation, str) or not translation.strip():
-            raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
-        translation = translation.strip()
-        if self._translation_control_tokens(text) != self._translation_control_tokens(translation):
-            raise BridgeError("openai_format_invalid", "The provider changed an RPG Maker control code", 422)
-        if self._translation_context_markers(text) != self._translation_context_markers(translation):
-            raise BridgeError("openai_format_invalid", "The provider changed a context marker", 422)
+        usage, usage_summary = self._record_openai_usage(connection, model.strip(), payload)
+        usage_details = {"usage": usage, "usageSummary": usage_summary}
+        try:
+            content = self._openai_completion_content(payload)
+            if not content:
+                raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
+            if structured:
+                try:
+                    translation = json.loads(content).get("translation")
+                except (AttributeError, json.JSONDecodeError) as error:
+                    raise BridgeError("openai_invalid_response", "The provider returned invalid structured output", 502) from error
+            else:
+                translation = content
+            if not isinstance(translation, str) or not translation.strip():
+                raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
+            translation = translation.strip()
+            if self._translation_control_tokens(text) != self._translation_control_tokens(translation):
+                raise BridgeError("openai_format_invalid", "The provider changed an RPG Maker control code", 422)
+            if self._translation_context_markers(text) != self._translation_context_markers(translation):
+                raise BridgeError("openai_format_invalid", "The provider changed a context marker", 422)
+        except BridgeError as error:
+            error.details.update(usage_details)
+            raise
         return {
             "ok": True,
             "translatedText": translation,
@@ -970,6 +1449,7 @@ class LocalServiceBridge:
             "baseURL": connection["baseURL"],
             "offline": connection["offline"],
             "promptVersion": OPENAI_COMPATIBLE_PROMPT_VERSION,
+            **usage_details,
         }
 
     def lmstudio_translate(self, target: Any, target_name: Any, text: Any, model: Any) -> dict[str, Any]:
@@ -1115,7 +1595,11 @@ class LocalServiceBridge:
         with self._log_lock:
             self.activity_log.unlink(missing_ok=True)
             self.translation_log.unlink(missing_ok=True)
+            self.performance_log.unlink(missing_ok=True)
+            self.failure_log.unlink(missing_ok=True)
+            self.openai_usage_log.unlink(missing_ok=True)
             self._translation_log_keys = None
+            self._openai_usage_summaries = None
         with self._asset_index_lock:
             self.asset_index_path.unlink(missing_ok=True)
 
@@ -1148,9 +1632,9 @@ class LocalServiceBridge:
         }
 
     @staticmethod
-    def _game_asset_signature(lang_dir: Path, hero_files: list[Path]) -> list[dict[str, Any]]:
+    def _game_asset_signature(lang_dir: Path, asset_files: list[Path]) -> list[dict[str, Any]]:
         signature = []
-        for entry in hero_files:
+        for entry in asset_files:
             metadata = entry.stat()
             signature.append({
                 "name": entry.name,
@@ -1232,10 +1716,19 @@ class LocalServiceBridge:
         hero_files = sorted(entry for entry in lang_dir.iterdir() if entry.is_file() and entry.suffix.upper() == ".HERO")
         if not hero_files:
             raise BridgeError("game_assets_missing", "The OMORI language directory contains no .HERO files.", 404)
+        database_dir = lang_dir.parent.parent / "data"
+        database_files = []
+        if database_dir.is_dir():
+            allowed = set(OMORI_DATABASE_FIELDS) | {"system.kel"}
+            database_files = sorted(
+                entry for entry in database_dir.iterdir()
+                if entry.is_file() and entry.name.casefold() in allowed
+            )
+        asset_files = hero_files + database_files
         try:
-            signature = self._game_asset_signature(lang_dir, hero_files)
+            signature = self._game_asset_signature(lang_dir, asset_files)
         except OSError as error:
-            raise BridgeError("game_assets_unreadable", "Could not inspect OMORI dialogue files.", 422) from error
+            raise BridgeError("game_assets_unreadable", "Could not inspect OMORI text assets.", 422) from error
 
         with self._asset_index_lock:
             cached = self._read_game_asset_index(lang_dir, signature)
@@ -1244,36 +1737,39 @@ class LocalServiceBridge:
 
             all_texts = set()
             failed_files = []
-            for entry in hero_files:
+            for entry in asset_files:
                 try:
-                    all_texts.update(extract_strings_from_hero(entry))
-                except (OSError, UnicodeError, ValueError):
+                    if entry.suffix.casefold() == ".hero":
+                        all_texts.update(extract_strings_from_hero(entry))
+                    else:
+                        all_texts.update(extract_strings_from_kel(entry))
+                except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
                     failed_files.append(entry.name)
 
             if not all_texts and failed_files:
                 raise BridgeError(
                     "game_asset_decode_failed",
-                    f"Could not decrypt OMORI dialogue files ({len(failed_files)} failed).",
+                    f"Could not decrypt OMORI text assets ({len(failed_files)} failed).",
                     422,
                 )
 
             filtered = sorted(s for s in all_texts if any(c.isalpha() for c in s))
             if not failed_files:
                 try:
-                    final_signature = self._game_asset_signature(lang_dir, hero_files)
+                    final_signature = self._game_asset_signature(lang_dir, asset_files)
                 except OSError as error:
-                    raise BridgeError("game_assets_unreadable", "Could not inspect OMORI dialogue files.", 422) from error
+                    raise BridgeError("game_assets_unreadable", "Could not inspect OMORI text assets.", 422) from error
                 if final_signature != signature:
                     raise BridgeError(
                         "game_assets_changed",
-                        "OMORI dialogue files changed during extraction. Start Bulk again.",
+                        "OMORI text assets changed during extraction. Start Bulk again.",
                         409,
                     )
                 self._write_game_asset_index(lang_dir, signature, filtered)
             return {
                 "ok": True,
                 "strings": filtered,
-                "assetFiles": len(hero_files),
+                "assetFiles": len(asset_files),
                 "failedFiles": len(failed_files),
                 "assetCache": "rebuilt",
             }
@@ -1408,7 +1904,9 @@ class LocalServiceRequestHandler(BaseHTTPRequestHandler):
                 return
             raise BridgeError("not_found", "Unknown endpoint", 404)
         except BridgeError as error:
-            self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
+            self._write_json({
+                "ok": False, "error": error.code, "message": str(error), **error.details
+            }, error.status)
         except Exception as error:
             self._write_json({"ok": False, "error": "internal_error", "message": str(error)}, 500)
 
@@ -1419,7 +1917,9 @@ class LocalServiceRequestHandler(BaseHTTPRequestHandler):
             result = LocalPostRouter(self.bridge).dispatch(self.path, payload)
             self._write_json(result)
         except BridgeError as error:
-            self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
+            self._write_json({
+                "ok": False, "error": error.code, "message": str(error), **error.details
+            }, error.status)
         except ServiceRouteError as error:
             self._write_json({"ok": False, "error": error.code, "message": str(error)}, error.status)
         except subprocess.TimeoutExpired:

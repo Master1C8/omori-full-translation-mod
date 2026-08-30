@@ -76,7 +76,8 @@
   const TRANSLATION_LOG_LIMIT = 40;
   const TRANSLATION_LOG_VIEW_LIMIT = 200;
   const UPDATE_CHECK_TIMEOUT = 12000;
-  const TEST_PHRASE_GOOGLE_DELAY = 1000;
+  const TEST_PHRASE_GOOGLE_DELAY = 1200;
+  const TEST_PHRASE_GOOGLE_DELAY_JITTER = 600;
   const TEST_PHRASE_RATE_LIMIT_DELAY = 15000;
   const TEST_PHRASE_RATE_LIMIT_MAX_DELAY = 120000;
   const TEST_PHRASE_GOOGLE_RATE_LIMIT_DELAY = 15 * 60 * 1000;
@@ -87,6 +88,7 @@
   const GOOGLE_RATE_LIMIT_STATE_KEY = `${game.storageNamespace}.google-rate-limit-state.v2`;
   const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
+  const OFFICIAL_LOCALIZATIONS = new Set(game.officialLocalizations || []);
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
   const injectedLocalBridge = window.__vnRevivalLocalBridge;
@@ -111,7 +113,13 @@
     y: null
   };
 
-  if (!Array.isArray(LANGUAGES) || LANGUAGES.length < 200) throw new Error("VN Revival language catalog is missing");
+  if (!Array.isArray(LANGUAGES) || LANGUAGES.length !== 30) {
+    throw new Error("VN Revival language catalog is missing or out of date");
+  }
+  if (!OFFICIAL_LOCALIZATIONS.size || Array.from(OFFICIAL_LOCALIZATIONS).some((code) =>
+    !LANGUAGES.some(([language]) => language === code))) {
+    throw new Error("Official localization catalog is missing or invalid");
+  }
   if (!PROVIDERS.google || !PROVIDER_LIST.every((provider) => provider && provider.id && provider.label
     && typeof provider.supportsLanguage === "function" && typeof provider.splitText === "function"
     && typeof provider.translateChunk === "function")) throw new Error("VN Revival provider contract is invalid");
@@ -156,6 +164,9 @@
   }
   const memoryCache = new Map();
   const fuzzyMemoryCache = new Map();
+  const knownCacheKeys = new Set();
+  let knownCacheScope = "";
+  let knownCacheKeysComplete = false;
   const importedPackCache = new Map();
   const importedPackFuzzyCache = new Map();
   const observedTranslationContainers = new WeakSet();
@@ -324,6 +335,10 @@
     localStorage.removeItem(LEGACY_SETTINGS_KEY);
   }
 
+  function hasOfficialLocalization(language = settings.language) {
+    return OFFICIAL_LOCALIZATIONS.has(String(language || ""));
+  }
+
   function providerUsesLMStudio(provider) {
     return !!(PROVIDERS[provider] && PROVIDERS[provider].modelManager === "lmstudio");
   }
@@ -369,6 +384,16 @@
     return core.makeCacheKey(source, language, provider, game.id, providerCacheVariant(provider));
   }
 
+  function translationCacheScope(language, provider) {
+    return `${language}\n${provider}\n${core.fingerprint(providerCacheVariant(provider))}`;
+  }
+
+  function cacheKeyIsKnownMissing(key, language, provider) {
+    return knownCacheKeysComplete
+      && knownCacheScope === translationCacheScope(language, provider)
+      && !knownCacheKeys.has(key);
+  }
+
   function openExternalUrl(url) {
     const target = String(url || "");
     if (!/^https?:\/\//i.test(target)) return false;
@@ -409,7 +434,7 @@
           packStore.createIndex("packId", "packId", { unique: false });
           packStore.createIndex("packFuzzy", ["packId", "fuzzy"], { unique: false });
         }
-      };
+      }
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -507,7 +532,7 @@
         }
       } catch (_) { return null; }
     }
-    return translation && core.protectedMarkupLayoutMatches(source, translation) ? translation : null;
+    return core.adaptTranslationToSourceLayout(source, translation);
   }
 
   function importedPackMemoryGet(source, language) {
@@ -516,42 +541,69 @@
     const fuzzy = core.stripOmoriPrefixes(source);
     const translation = importedPackCache.get(normalized)
       || (fuzzy ? importedPackFuzzyCache.get(fuzzy) : null);
-    return translation && core.protectedMarkupLayoutMatches(source, translation) ? translation : null;
+    return core.adaptTranslationToSourceLayout(source, translation);
   }
 
-  async function cachePut(key, value) {
-    if (!key || !value) return false;
+  async function cachePutBatch(entries) {
+    const normalized = [];
+    const positions = new Map();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const key = entry && typeof entry.key === "string" ? entry.key : "";
+      const value = entry && typeof entry.value === "string" ? entry.value : "";
+      if (!key || !value) continue;
+      if (positions.has(key)) normalized[positions.get(key)] = { key, value };
+      else {
+        positions.set(key, normalized.length);
+        normalized.push({ key, value });
+      }
+    }
+    if (!normalized.length) return 0;
     const metadata = await getCacheMetadata();
     const db = await openDb();
     markCacheMetadataDirty();
-    const previous = await new Promise((resolve, reject) => {
+    const previous = new Map();
+    await new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, "readwrite");
       const store = transaction.objectStore(STORE_NAME);
-      let oldValue = null;
-      transaction.oncomplete = () => resolve(oldValue);
+      transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error || new Error("Cache transaction failed"));
       transaction.onabort = () => reject(transaction.error || new Error("Cache transaction aborted"));
-      const getRequest = store.get(key);
-      getRequest.onerror = () => reject(getRequest.error || new Error("Could not read the existing cache entry"));
-      getRequest.onsuccess = () => {
-        oldValue = typeof getRequest.result === "string" ? getRequest.result : null;
-        store.put(value, key);
+      for (const entry of normalized) {
+        const getRequest = store.get(entry.key);
+        getRequest.onerror = () => {
+          try { transaction.abort(); } catch (_) {}
+        };
+        getRequest.onsuccess = () => {
+          previous.set(entry.key, typeof getRequest.result === "string" ? getRequest.result : null);
+          store.put(entry.value, entry.key);
+        };
       };
     });
-    memoryCacheSet(key, value);
-    if (previous !== null) adjustCacheMetadata(metadata, key, previous, -1);
-    adjustCacheMetadata(metadata, key, value, 1);
+    for (const entry of normalized) {
+      memoryCacheSet(entry.key, entry.value);
+      knownCacheKeys.add(entry.key);
+      const oldValue = previous.get(entry.key);
+      if (oldValue !== null && oldValue !== undefined) adjustCacheMetadata(metadata, entry.key, oldValue, -1);
+      adjustCacheMetadata(metadata, entry.key, entry.value, 1);
+    }
     scheduleCacheMetadataSave();
-    return true;
+    return normalized.length;
+  }
+
+  async function cachePut(key, value) {
+    return (await cachePutBatch([{ key, value }])) === 1;
   }
 
   async function preloadMemoryCache() {
     let loaded = 0;
+    knownCacheKeys.clear();
+    knownCacheKeysComplete = false;
     try {
       const language = settings.language;
       const provider = settings.provider;
       const variant = providerCacheVariant(provider);
       const variantFingerprint = variant ? core.fingerprint(variant) : "";
+      knownCacheScope = translationCacheScope(language, provider);
       const db = await openDb();
       await new Promise((resolve, reject) => {
         const transaction = db.transaction(STORE_NAME, "readonly");
@@ -566,6 +618,7 @@
             if (core.cacheKeyLanguage(key) === language && core.cacheKeyProvider(key) === provider
               && (!variantFingerprint || core.cacheKeyVariant(key) === variantFingerprint)) {
               if (core.cacheKeyGame(key) === game.id || !core.cacheKeyGame(key)) {
+                knownCacheKeys.add(key);
                 memoryCacheSet(key, cursor.value);
                 loaded += 1;
               }
@@ -574,6 +627,7 @@
           cursor.continue();
         };
       });
+      knownCacheKeysComplete = true;
     } catch (_) {}
     return loaded;
   }
@@ -581,6 +635,7 @@
   async function cacheDelete(key) {
     if (!key) return;
     memoryCache.delete(key);
+    knownCacheKeys.delete(key);
     try {
       const metadata = await getCacheMetadata();
       const db = await openDb();
@@ -726,6 +781,8 @@
       transaction.onerror = () => reject(transaction.error);
     });
     memoryCache.clear();
+    knownCacheKeys.clear();
+    knownCacheKeysComplete = false;
     const removed = metadata.languages[language];
     if (removed) {
       metadata.records = Math.max(0, metadata.records - removed.records);
@@ -762,6 +819,8 @@
     });
     memoryCache.clear();
     fuzzyMemoryCache.clear();
+    knownCacheKeys.clear();
+    knownCacheKeysComplete = false;
     await rebuildCacheMetadata();
     return removed;
   }
@@ -787,6 +846,9 @@
     });
     memoryCache.clear();
     fuzzyMemoryCache.clear();
+    knownCacheKeys.clear();
+    knownCacheKeysComplete = true;
+    knownCacheScope = translationCacheScope(settings.language, settings.provider);
     cacheMetadata = emptyCacheMetadata();
     cacheMetadataVerified = true;
     saveCacheMetadata(cacheMetadata);
@@ -808,6 +870,41 @@
     return textarea.value;
   }
 
+  function formatOpenAICompatibleUsage(summary) {
+    const requests = summary && Number.isSafeInteger(summary.requests) && summary.requests >= 0
+      ? summary.requests : 0;
+    if (!requests) return "Exact usage: no provider responses recorded.";
+    const tokens = summary && summary.tokens && typeof summary.tokens === "object"
+      ? summary.tokens : {};
+    const tokenParts = [];
+    function addTokenPart(name, label) {
+      const aggregate = tokens[name];
+      if (!aggregate || !Number.isSafeInteger(aggregate.value) || aggregate.value < 0
+        || !Number.isSafeInteger(aggregate.reports) || aggregate.reports < 1) return false;
+      tokenParts.push(`${label} ${aggregate.value.toLocaleString("en-US")} (${aggregate.reports}/${requests} responses)`);
+      return true;
+    }
+    if (!addTokenPart("totalTokens", "total tokens")) {
+      addTokenPart("promptTokens", "input tokens");
+      addTokenPart("completionTokens", "output tokens");
+    }
+    addTokenPart("cachedTokens", "cached tokens");
+    addTokenPart("reasoningTokens", "reasoning tokens");
+    const costs = Array.isArray(summary && summary.costs) ? summary.costs.filter((entry) =>
+      entry && typeof entry.value === "string" && /^\d+(?:\.\d+)?$/.test(entry.value)
+      && typeof entry.unit === "string" && entry.unit
+      && Number.isSafeInteger(entry.reports) && entry.reports > 0) : [];
+    const costText = costs.length
+      ? costs.map((entry) => `cost ${entry.value} ${entry.unit} (${entry.reports}/${requests} responses)`).join(", ")
+      : "cost not reported";
+    return `Exact usage: ${requests} responses · ${tokenParts.join(", ") || "tokens not reported"} · ${costText}`;
+  }
+
+  function renderOpenAICompatibleUsage(summary) {
+    if (!openAICompatibleUsageElement) return;
+    openAICompatibleUsageElement.textContent = formatOpenAICompatibleUsage(summary);
+  }
+
   async function requestLocalHelper(path, options) {
     if (!LOCAL_BRIDGE) throw new Error("The local translation helper is unavailable");
     const requestOptions = options || {};
@@ -820,9 +917,12 @@
     const response = await fetch(LOCAL_BRIDGE.baseURL + path, init);
     let payload = null;
     try { payload = await response.json(); } catch (_) {}
+    if (payload && payload.usageSummary) renderOpenAICompatibleUsage(payload.usageSummary);
     if (!response.ok || !payload || payload.ok === false) {
       const error = new Error(payload && payload.message ? payload.message : "Local translation helper error");
       error.code = payload && payload.error ? payload.error : "local_helper_error";
+      if (payload && Object.prototype.hasOwnProperty.call(payload, "usage")) error.usage = payload.usage;
+      if (payload && payload.usageSummary) error.usageSummary = payload.usageSummary;
       throw error;
     }
     return payload;
@@ -846,6 +946,27 @@
     } catch (_) {}
   }
 
+  async function logTranslationBatchToBridge(entries) {
+    if (!LOCAL_BRIDGE || !Array.isArray(entries) || !entries.length) return;
+    try {
+      await requestLocalHelper("/v1/log/batch", { body: { entries } });
+    } catch (_) {}
+  }
+
+  async function logPerformanceToBridge(events) {
+    if (!LOCAL_BRIDGE || !Array.isArray(events) || !events.length) return;
+    try {
+      await requestLocalHelper("/v1/log/performance", { body: { events } });
+    } catch (_) {}
+  }
+
+  async function logFailureBatchToBridge(entries) {
+    if (!LOCAL_BRIDGE || !Array.isArray(entries) || !entries.length) return;
+    try {
+      await requestLocalHelper("/v1/log/failures", { body: { entries } });
+    } catch (_) {}
+  }
+
   function isTranslationRateLimited(error) {
     const code = String(error && error.code || "");
     const message = String(error && error.message || "");
@@ -859,8 +980,14 @@
     let lastError = null;
     const retries = Math.max(1, Number(selectedProvider.retries) || 1);
     for (let attempt = 0; attempt < retries; attempt += 1) {
+      if (typeof requestOptions.beforeAttempt === "function") {
+        await requestOptions.beforeAttempt({ attempt, text, language, provider });
+      }
+      const startedAt = performance.now();
+      const attemptToken = typeof requestOptions.onAttempt === "function"
+        ? requestOptions.onAttempt({ attempt, text, language, provider }) : null;
       try {
-        return await selectedProvider.translateChunk({
+        const result = await selectedProvider.translateChunk({
           text, language, sourceLanguage: SOURCE_LANGUAGE, signal,
           model: providerUsesLMStudio(provider) ? settings.lmStudioModel : "",
           openAICompatible: providerUsesOpenAICompatible(provider) ? openAICompatibleConnection() : null,
@@ -869,14 +996,74 @@
           localRequest: requestLocalHelper,
           decodeHtmlEntities
         });
+        if (typeof requestOptions.onAttemptResult === "function") {
+          requestOptions.onAttemptResult(attemptToken, {
+            ok: true, durationMs: performance.now() - startedAt
+          });
+        }
+        return result;
       } catch (error) {
+        if (typeof requestOptions.onAttemptResult === "function") {
+          requestOptions.onAttemptResult(attemptToken, {
+            ok: false,
+            durationMs: performance.now() - startedAt,
+            code: String(error && (error.code || error.message) || "translation_failed").slice(0, 120)
+          });
+        }
         if (error && error.name === "AbortError") throw error;
         lastError = error;
+        if (error && error.code === "openai_usage_tracking_failed") break;
         if (requestOptions.deferRateLimits && isTranslationRateLimited(error)) break;
         if (attempt + 1 < retries) await sleep(350 * Math.pow(2, attempt), signal);
       }
     }
     throw lastError || new Error("Translation failed");
+  }
+
+  async function requestChunks(provider, texts, language, signal, options) {
+    const selectedProvider = PROVIDERS[provider];
+    if (!selectedProvider || typeof selectedProvider.translateChunks !== "function") {
+      throw new Error("Translation service does not support protocol batches");
+    }
+    if (!Array.isArray(texts) || !texts.length) throw new Error("Translation batch is empty");
+    const requestOptions = options || {};
+    let lastError = null;
+    const retries = Math.max(1, Number(selectedProvider.retries) || 1);
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      if (typeof requestOptions.beforeAttempt === "function") {
+        await requestOptions.beforeAttempt({ attempt, texts, language, provider });
+      }
+      const startedAt = performance.now();
+      const attemptToken = typeof requestOptions.onAttempt === "function"
+        ? requestOptions.onAttempt({ attempt, texts, language, provider }) : null;
+      try {
+        const result = await selectedProvider.translateChunks({
+          texts, language, sourceLanguage: SOURCE_LANGUAGE, signal,
+          fetch: (input, init) => fetch(input, init),
+          decodeHtmlEntities
+        });
+        if (typeof requestOptions.onAttemptResult === "function") {
+          requestOptions.onAttemptResult(attemptToken, {
+            ok: true, durationMs: performance.now() - startedAt
+          });
+        }
+        return result;
+      } catch (error) {
+        if (typeof requestOptions.onAttemptResult === "function") {
+          requestOptions.onAttemptResult(attemptToken, {
+            ok: false,
+            durationMs: performance.now() - startedAt,
+            code: String(error && (error.code || error.message) || "translation_failed").slice(0, 120)
+          });
+        }
+        if (error && error.name === "AbortError") throw error;
+        lastError = error;
+        if (error && error.code === "google_batch_format_invalid") break;
+        if (requestOptions.deferRateLimits && isTranslationRateLimited(error)) break;
+        if (attempt + 1 < retries) await sleep(350 * Math.pow(2, attempt), signal);
+      }
+    }
+    throw lastError || new Error("Translation batch failed");
   }
 
   function describeTranslationFailure(error, provider) {
@@ -891,8 +1078,9 @@
     if (code === "openai_key_missing") return "Add the OpenAI-compatible API key";
     if (code === "openai_key_invalid") return "The OpenAI-compatible API key was rejected";
     if (code === "openai_model_missing" || code === "openai_model_unavailable") return "Select an available OpenAI-compatible model";
+    if (code === "openai_usage_tracking_failed") return "Exact OpenAI-compatible usage could not be recorded";
     if (code === "openai_format_invalid") return "The provider changed a protected game control code";
-    if (code === "markup_format_invalid") return "The provider changed protected OMORI markup";
+    if (code === "markup_format_invalid") return "Protected OMORI markup could not be reconstructed safely";
     if (code === "translation_quality_invalid") return "The provider lost or duplicated visible source text";
     if (code === "openai_rate_limited") return "The provider rate limit was reached";
     if (code === "openai_unavailable") return "The OpenAI-compatible provider is unavailable";
@@ -913,6 +1101,28 @@
       if (typeof onWait === "function") onWait(Math.max(1, Math.ceil(remaining / 1000)));
       await sleep(Math.min(1000, remaining), signal);
     }
+  }
+
+  function createRequestPacer(initialDelay, maximumDelay, delayJitter) {
+    const minimum = Math.max(1000, Number(initialDelay) || 1000);
+    const maximum = Math.max(minimum, Number(maximumDelay) || minimum);
+    const jitter = Math.max(0, Number(delayJitter) || 0);
+    let delay = minimum;
+    let nextRequestAt = 0;
+    return Object.freeze({
+      async wait(signal) {
+        const remaining = Math.max(0, nextRequestAt - Date.now());
+        if (remaining) await sleep(remaining, signal);
+        nextRequestAt = Date.now() + delay + Math.random() * jitter;
+      },
+      setDelay(value) {
+        delay = Math.max(minimum, Math.min(maximum, Number(value) || minimum));
+        return delay;
+      },
+      getDelay() { return delay; },
+      minimum,
+      maximum
+    });
   }
 
   function googleRateLimitState() {
@@ -964,8 +1174,9 @@
     });
   }
 
-  async function requestRateLimitedChunk(provider, text, language, signal, onRateLimitWait) {
+  async function requestRateLimitedChunk(provider, text, language, signal, onRateLimitWait, requestOptions) {
     const isGoogle = provider === "google";
+    const options = requestOptions || {};
     let retryDelay = isGoogle ? googleRateLimitState().nextDelay : TEST_PHRASE_RATE_LIMIT_DELAY;
     const maximumRetryDelay = isGoogle
       ? TEST_PHRASE_GOOGLE_RATE_LIMIT_MAX_DELAY
@@ -976,7 +1187,12 @@
         if (remaining) await waitForRateLimitRetry(remaining, signal, onRateLimitWait);
       }
       try {
-        const translated = await requestChunk(provider, text, language, signal, { deferRateLimits: true });
+        const translated = await requestChunk(provider, text, language, signal, {
+          deferRateLimits: true,
+          beforeAttempt: options.pacer ? () => options.pacer.wait(signal) : null,
+          onAttempt: options.onAttempt,
+          onAttemptResult: options.onAttemptResult
+        });
         if (isGoogle) clearGoogleRateLimit();
         return translated;
       } catch (error) {
@@ -993,6 +1209,32 @@
     throw new DOMException("Aborted", "AbortError");
   }
 
+  async function requestRateLimitedChunks(provider, texts, language, signal, onRateLimitWait, requestOptions) {
+    const options = requestOptions || {};
+    let retryDelay = googleRateLimitState().nextDelay;
+    while (!signal.aborted) {
+      const remaining = googleRateLimitRemaining();
+      if (remaining) await waitForRateLimitRetry(remaining, signal, onRateLimitWait);
+      try {
+        const translated = await requestChunks(provider, texts, language, signal, {
+          deferRateLimits: true,
+          beforeAttempt: options.pacer ? () => options.pacer.wait(signal) : null,
+          onAttempt: options.onAttempt,
+          onAttemptResult: options.onAttemptResult
+        });
+        clearGoogleRateLimit();
+        return translated;
+      } catch (error) {
+        if (error && error.name === "AbortError") throw error;
+        if (!isTranslationRateLimited(error)) throw error;
+        retryDelay = googleRateLimitState().nextDelay;
+        rememberGoogleRateLimit(retryDelay);
+        await waitForRateLimitRetry(retryDelay, signal, onRateLimitWait);
+      }
+    }
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   async function translateProviderText(provider, text, language, signal, request, delayOverride) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) throw new Error("Unknown translation service");
@@ -1001,9 +1243,10 @@
     const delay = Number.isFinite(delayOverride)
       ? Math.max(0, delayOverride)
       : selectedProvider.delay;
-    for (const chunk of chunks) {
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
       parts.push(await request(chunk));
-      if (delay) await sleep(delay, signal);
+      if (delay && index + 1 < chunks.length) await sleep(delay, signal);
     }
     const translated = parts.join(" ").replace(/ +\n/g, "\n").trim();
     if (translated.toLowerCase().includes("undefined") && !text.toLowerCase().includes("undefined")) {
@@ -1015,17 +1258,26 @@
   async function translateWithProtectedMarkup(
     source, language, provider, signal, request, delayOverride, protectedOptions
   ) {
+    const options = Object.assign({ language, contextual: true }, protectedOptions || {});
+    if (request && typeof request.batch === "function") {
+      options.translateBatch = (texts) => request.batch(texts);
+    }
     return core.translateProtectedText(
       source,
       (text) => translateProviderText(
         provider, text, language, signal, (chunk) => request(chunk), delayOverride
       ),
-      Object.assign({ language, contextual: true }, protectedOptions || {})
+      options
     );
   }
 
-  async function translateText(source, language, provider, signal, allowNetwork, logCachedResult, onRateLimitWait) {
+  async function translateText(
+    source, language, provider, signal, allowNetwork, logCachedResult, onRateLimitWait, requestPacer
+  ) {
     if (!source || typeof source !== "string" || source.length < 2) return { text: source, cached: true };
+    if (hasOfficialLocalization(language)) {
+      return { text: source, cached: true, officialLocalization: true };
+    }
 
     // Source assets are English. Avoid re-translating an already translated value,
     // while leaving path and identifier detection to the shared source-text filter.
@@ -1042,21 +1294,22 @@
     const key = makeTranslationCacheKey(source, language, provider);
     const fuzzyKey = `${game.id}\n${providerCacheScope(provider)}\n${language}\n${core.stripOmoriPrefixes(source)}`;
 
-    let cached = memoryCache.get(key) || fuzzyMemoryCache.get(fuzzyKey);
-    if (cached && !core.protectedMarkupLayoutMatches(source, cached)) cached = null;
+    let cached = core.adaptTranslationToSourceLayout(
+      source, memoryCache.get(key) || fuzzyMemoryCache.get(fuzzyKey)
+    );
 
-    if (!cached) {
+    if (!cached && !cacheKeyIsKnownMissing(key, language, provider)) {
       cached = await cacheGet(key);
       if (!cached) {
         const legacyKey = providerCacheVariant(provider) ? "" : core.makeCacheKey(source, language, provider);
         cached = legacyKey ? await cacheGet(legacyKey) : null;
-        if (cached && !core.protectedMarkupLayoutMatches(source, cached)) cached = null;
+        cached = core.adaptTranslationToSourceLayout(source, cached);
         if (cached) {
           if (await cachePut(key, cached)) await cacheDelete(legacyKey);
         }
       }
     }
-    if (cached && !core.protectedMarkupLayoutMatches(source, cached)) {
+    if (cached && !core.adaptTranslationToSourceLayout(source, cached)) {
       await cacheDelete(key);
       cached = null;
     }
@@ -1065,8 +1318,8 @@
       if (logCachedResult) {
         appendTranslationLog(source, cached, language, provider, true);
         await logTranslationToBridge(provider, language, source, cached, true);
+        logActivityToBridge(provider, source, cached, true);
       }
-      logActivityToBridge(provider, source, cached, true);
       return { text: cached, cached: true };
     }
 
@@ -1074,9 +1327,10 @@
 
     const protectedResult = await translateWithProtectedMarkup(
       source, language, provider, signal,
-      (chunk) => onRateLimitWait
-        ? requestRateLimitedChunk(provider, chunk, language, signal, onRateLimitWait)
-        : requestChunk(provider, chunk, language, signal)
+      (chunk) => onRateLimitWait || requestPacer
+        ? requestRateLimitedChunk(provider, chunk, language, signal, onRateLimitWait, { pacer: requestPacer })
+        : requestChunk(provider, chunk, language, signal),
+      requestPacer ? 0 : undefined
     );
     const translated = protectedResult.text;
 
@@ -1359,6 +1613,11 @@
   }
 
   function showTranslations() {
+    if (hasOfficialLocalization()) {
+      invalidateAppliedTranslations();
+      setStatus(`Official ${languageName(settings.language)} localization is available for ${GAME_SHORT_TITLE}`);
+      return;
+    }
     settings.mode = "translated";
     pruneAppliedNodes();
     for (const node of appliedNodes) {
@@ -1448,7 +1707,7 @@
   }
 
   function queryMemoryTranslation(source, language = settings.language, provider = settings.provider) {
-    if (!core.normalizeText(source)) return null;
+    if (hasOfficialLocalization(language) || !core.normalizeText(source)) return null;
     const imported = importedPackMemoryGet(source, language);
     if (imported) return imported;
     const key = makeTranslationCacheKey(source, language, provider);
@@ -1460,7 +1719,7 @@
         hit = fuzzyMemoryCache.get(fuzzyKey);
       }
     }
-    return hit && core.protectedMarkupLayoutMatches(source, hit) ? hit : null;
+    return core.adaptTranslationToSourceLayout(source, hit);
   }
 
   function buildScreenAdapterJobs(sources) {
@@ -1501,9 +1760,11 @@
     return cachedJobs.concat(freshJobs);
   }
 
-  async function applyJobTranslation(job, language, provider, signal, generation, allowNetwork, onRateLimitWait) {
+  async function applyJobTranslation(
+    job, language, provider, signal, generation, allowNetwork, onRateLimitWait, requestPacer
+  ) {
     const result = await translateText(
-      job.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait
+      job.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer
     );
     if (generation !== settingsGeneration) throw new DOMException("Settings changed", "AbortError");
     if (result.skipped) {
@@ -1541,7 +1802,7 @@
     let allCached = true;
     for (const part of job.parts) {
       const fallback = await translateText(
-        part.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait
+        part.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer
       );
       allCached = allCached && fallback.cached;
       if (part.node && part.node.isConnected && sourceForNode(part.node) === part.source) {
@@ -1579,6 +1840,12 @@
     lastFailedJobsAllowNetwork = allowNetwork;
     const language = settings.language;
     const provider = settings.provider;
+    const requestPacer = allowNetwork && provider === "google"
+      ? createRequestPacer(
+        PROVIDERS.google.delay,
+        PROVIDERS.google.delay,
+        PROVIDERS.google.delayJitter
+      ) : null;
     const generation = settingsGeneration;
     let nextIndex = 0;
     let done = 0;
@@ -1598,7 +1865,8 @@
         try {
           const outcome = await applyJobTranslation(
             job, language, provider, abortController.signal, generation, allowNetwork,
-            (seconds) => setStatus(`Rate limited · retrying in ${Math.max(1, Number(seconds) || 1)} s`)
+            (seconds) => setStatus(`Rate limited · retrying in ${Math.max(1, Number(seconds) || 1)} s`),
+            requestPacer
           );
           if (outcome === "hit") cacheHits += 1;
           else if (outcome === "missing") cacheMisses += 1;
@@ -1687,7 +1955,7 @@
   }
 
   async function translateAdapterText(source) {
-    if (settings.mode !== "translated" || !hasSourceText(source)) return null;
+    if (hasOfficialLocalization() || settings.mode !== "translated" || !hasSourceText(source)) return null;
     const result = await translateText(source, settings.language, settings.provider, null, false);
     pendingAdapterTexts.delete(source);
     if (typeof adapter.onTranslationsChanged === "function") adapter.onTranslationsChanged();
@@ -1710,7 +1978,7 @@
 
   function registerCompletedScreenText(source) {
     const text = String(source == null ? "" : source).trim();
-    if (!settings.autoScreenTranslation || settings.translationScope !== "screen"
+    if (hasOfficialLocalization() || !settings.autoScreenTranslation || settings.translationScope !== "screen"
       || settings.mode !== "translated" || !hasSourceText(text)) return false;
     pendingCompletedScreenTexts.add(text);
     scheduleCompletedScreenTranslation(250);
@@ -1756,6 +2024,10 @@
 
   function translateScreen(manual) {
     const isManual = manual !== false;
+    if (hasOfficialLocalization()) {
+      if (isManual) setStatus(`Official ${languageName(settings.language)} localization is available for ${GAME_SHORT_TITLE}`);
+      return Promise.resolve();
+    }
     if (running) {
       if (isManual) abortActiveOperation("cancelled by user");
       else pendingAutoRun = true;
@@ -1821,7 +2093,7 @@
   }
 
   function scheduleAutoTranslation(delay) {
-    if (document.hidden || scanTimer) return;
+    if (hasOfficialLocalization() || document.hidden || scanTimer) return;
     scanTimer = setTimeout(() => {
       scanTimer = 0;
       if (document.hidden) return;
@@ -2175,20 +2447,29 @@
 
   function buildGoogleBulkBlocks(entries, providerConfig) {
     const maximumItems = Math.max(1, Number(providerConfig.bulkMaxItems) || 1);
+    const maximumSegments = Math.max(
+      maximumItems, Number(providerConfig.bulkMaxSegments) || maximumItems
+    );
     const maximumSize = Math.max(64, Number(providerConfig.contextLimit) || core.GOOGLE_MAX_CHARS);
     const blocks = [];
     let block = [];
+    let blockSegments = 0;
     for (const entry of entries) {
       const candidate = block.concat(entry);
+      const entrySegments = Math.max(1, core.tokenizeProtectedMarkup(entry.source).filter((segment) =>
+        segment.type === "text" && core.hasTranslatableText(segment.value)).length);
       const contextSource = core.buildContextSource(candidate.map((item) => item.source));
       const candidateFits = candidate.length <= maximumItems
+        && blockSegments + entrySegments <= maximumSegments
         && contextSource.length <= maximumSize
         && core.utf8Length(contextSource) <= maximumSize;
       if (block.length && !candidateFits) {
         blocks.push(block);
         block = [entry];
+        blockSegments = entrySegments;
       } else {
         block = candidate;
+        blockSegments += entrySegments;
       }
     }
     if (block.length) blocks.push(block);
@@ -2214,7 +2495,7 @@
 
   async function saveGoogleBulkTranslations(entries, translations, language, provider) {
     if (!Array.isArray(translations) || translations.length !== entries.length) {
-      throw googleBulkFormatError("Google returned an incomplete translation block");
+      throw googleBulkFormatError("Google returned an incomplete translation block", "google_context_format_invalid");
     }
     const acceptedEntries = [];
     const rejectedEntries = [];
@@ -2225,22 +2506,32 @@
         acceptedEntries.push({ entry: entries[index], translation: translations[index] });
       }
     }
+    await cachePutBatch(acceptedEntries.map((accepted) => ({
+      key: makeTranslationCacheKey(accepted.entry.source, language, provider),
+      value: accepted.translation
+    })));
+    const logEntries = [];
     for (const accepted of acceptedEntries) {
       const source = accepted.entry.source;
       const translated = accepted.translation;
-      await cachePut(makeTranslationCacheKey(source, language, provider), translated);
       appendTranslationLog(source, translated, language, provider, false);
-      logActivityToBridge(provider, source, translated, false);
-      await logTranslationToBridge(provider, language, source, translated, false);
+      logEntries.push({ provider, language, source, translation: translated, cached: false });
     }
+    await logTranslationBatchToBridge(logEntries);
     return {
       acceptedEntries: acceptedEntries.map((accepted) => accepted.entry),
       rejectedEntries
     };
   }
 
-  async function translateGoogleBulkBlock(entries, language, provider, signal, request) {
-    const blockOptions = { contextFallback: false, contextualQuality: false };
+  async function translateGoogleBulkBlock(entries, language, provider, signal, request, options) {
+    const requestOptions = options || {};
+    const blockOptions = {
+      contextual: entries.length > 1 && requestOptions.isolatedSegments !== true,
+      contextFallback: entries.length === 1,
+      contextualQuality: false,
+      contextRepair: requestOptions.contextRepair === true
+    };
     if (entries.length === 1) {
       const result = await translateWithProtectedMarkup(
         entries[0].source, language, provider, signal, request, 0, blockOptions
@@ -2250,6 +2541,10 @@
         const error = googleBulkFormatError(
           "Google lost or duplicated text inside a translation block",
           "translation_quality_invalid"
+        );
+        error.candidate = result.text;
+        error.qualityReason = core.translationQualityFailureReason(
+          entries[0].source, result.text, language
         );
         error.acceptedEntries = saved.acceptedEntries;
         error.rejectedEntries = saved.rejectedEntries;
@@ -2262,7 +2557,11 @@
       contextSource, language, provider, signal, request, 0, blockOptions
     );
     const translations = core.parseContextTranslation(result.text, entries.length);
-    if (!translations) throw googleBulkFormatError("Google changed the translation block separators");
+    if (!translations) {
+      throw googleBulkFormatError(
+        "Google changed the translation block separators", "google_context_format_invalid"
+      );
+    }
     const saved = await saveGoogleBulkTranslations(entries, translations, language, provider);
     if (saved.rejectedEntries.length) {
       const error = googleBulkFormatError(
@@ -2286,7 +2585,17 @@
     let failed = 0;
     const failureReasons = new Map();
     const freshEntries = [];
-    let nextRequestAt = 0;
+    const requestPacer = createRequestPacer(
+      providerConfig.bulkDelay,
+      providerConfig.bulkMaxDelay || providerConfig.bulkDelay,
+      providerConfig.bulkDelayJitter
+    );
+    const metrics = {
+      startedAt: Date.now(), requests: 0, requestErrors: 0, cacheHits: 0, cacheMisses: 0
+    };
+    let performanceEvents = [];
+    let cachedLogEntries = [];
+    let failureLogEntries = [];
 
     function reportProgress(rateLimitSeconds, force) {
       if (onProgress && (force || done % 5 === 0 || done === strings.length)) {
@@ -2299,8 +2608,16 @@
 
     function recordFailure(error, entries) {
       const reason = describeTranslationFailure(error, provider);
+      const code = String(error && error.code || "translation_failed").slice(0, 120);
+      const detail = String(error && error.qualityReason || "").slice(0, 120);
+      const candidate = typeof (error && error.candidate) === "string" ? error.candidate : "";
       failed += entries.length;
       failureReasons.set(reason, (failureReasons.get(reason) || 0) + entries.length);
+      for (const entry of entries) {
+        failureLogEntries.push({
+          provider, language, source: entry.source, code, reason, detail, candidate
+        });
+      }
     }
 
     function complete(entries, translatedCount) {
@@ -2309,23 +2626,102 @@
       newlyTranslated += translatedCount;
     }
 
-    async function requestPacedChunk(chunk) {
-      const remaining = Math.max(0, nextRequestAt - Date.now());
-      if (remaining) await sleep(remaining, signal);
-      nextRequestAt = Date.now() + Math.max(0, Number(providerConfig.bulkDelay) || 5000);
-      return requestRateLimitedChunk(
-        provider, chunk, language, signal,
-        (seconds) => reportProgress(seconds, true)
-      );
+    async function flushPerformanceEvents(force) {
+      if (!performanceEvents.length || (!force && performanceEvents.length < 50)) return;
+      const events = performanceEvents;
+      performanceEvents = [];
+      for (let offset = 0; offset < events.length; offset += 100) {
+        await logPerformanceToBridge(events.slice(offset, offset + 100));
+      }
     }
 
-    function isSplittableGoogleBulkFailure(error) {
+    async function flushCachedLogs(force) {
+      if (!cachedLogEntries.length || (!force && cachedLogEntries.length < 100)) return;
+      const entries = cachedLogEntries;
+      cachedLogEntries = [];
+      await logTranslationBatchToBridge(entries);
+    }
+
+    async function flushFailureLogs(force) {
+      if (!failureLogEntries.length || (!force && failureLogEntries.length < 100)) return;
+      const entries = failureLogEntries;
+      failureLogEntries = [];
+      for (let offset = 0; offset < entries.length; offset += 250) {
+        await logFailureBatchToBridge(entries.slice(offset, offset + 250));
+      }
+    }
+
+    function requestFor(stage, blockSize) {
+      function trackingOptions(payloadBytes, itemCount) {
+        return {
+          pacer: requestPacer,
+          onAttempt(info) {
+            metrics.requests += 1;
+            return {
+              type: "request",
+              operation: "google-bulk",
+              timestamp: new Date().toISOString(),
+              stage,
+              blockSize,
+              batchItems: itemCount,
+              attempt: info.attempt + 1,
+              payloadBytes,
+              delayMs: requestPacer.getDelay()
+            };
+          },
+          onAttemptResult(event, result) {
+            if (!event) return;
+            event.ok = result.ok === true;
+            event.durationMs = Math.round(Number(result.durationMs) || 0);
+            if (!event.ok) {
+              metrics.requestErrors += 1;
+              event.code = result.code || "translation_failed";
+            }
+            performanceEvents.push(event);
+          }
+        };
+      }
+      const measured = async function requestMeasuredGoogleChunk(chunk) {
+        return requestRateLimitedChunk(
+          provider, chunk, language, signal,
+          (seconds) => {
+            requestPacer.setDelay(requestPacer.maximum);
+            reportProgress(seconds, true);
+          },
+          trackingOptions(core.utf8Length(chunk), 1)
+        );
+      };
+      measured.batch = async function requestMeasuredGoogleBatch(chunks) {
+        return requestRateLimitedChunks(
+          provider, chunks, language, signal,
+          (seconds) => {
+            requestPacer.setDelay(requestPacer.maximum);
+            reportProgress(seconds, true);
+          },
+          trackingOptions(
+            chunks.reduce((sum, chunk) => sum + core.utf8Length(chunk), 0), chunks.length
+          )
+        );
+      };
+      return measured;
+    }
+
+    function isStructuralGoogleBulkFailure(error) {
       return error && (error.code === "markup_format_invalid"
-        || error.code === "translation_quality_invalid");
+        || error.code === "google_context_format_invalid"
+        || error.code === "google_batch_format_invalid");
+    }
+
+    function isSystemicGoogleBulkFailure(error) {
+      return !!error && error.code !== "translation_quality_invalid"
+        && error.code !== "markup_format_invalid"
+        && error.code !== "google_context_format_invalid"
+        && error.code !== "google_batch_format_invalid";
     }
 
     async function finishAdaptiveGoogleBlock(entries, error) {
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      let terminalSystemicFailures = 0;
       const acceptedEntries = Array.isArray(error && error.acceptedEntries)
         ? error.acceptedEntries : [];
       const rejectedEntries = Array.isArray(error && error.rejectedEntries)
@@ -2334,49 +2730,76 @@
         complete(acceptedEntries, acceptedEntries.length);
         reportProgress(0, true);
       }
-      if (!rejectedEntries.length) return;
-      if (!isSplittableGoogleBulkFailure(error) || (entries.length === 1 && rejectedEntries.length === 1)) {
+      if (!rejectedEntries.length) return terminalSystemicFailures;
+      if (error && error.code === "translation_quality_invalid") {
+        console.warn(`Google Bulk is retrying ${rejectedEntries.length} quality-rejected strings once, individually`);
+        for (const entry of rejectedEntries) {
+          try {
+            await translateGoogleBulkBlock(
+              [entry], language, provider, signal, requestFor("quality-retry", 1),
+              { isolatedSegments: true, contextRepair: true }
+            );
+            complete([entry], 1);
+          } catch (retryError) {
+            if (retryError && retryError.name === "AbortError") throw retryError;
+            recordFailure(retryError, [entry]);
+            if (isSystemicGoogleBulkFailure(retryError)) terminalSystemicFailures += 1;
+            complete([entry], 0);
+          }
+          reportProgress(0, true);
+        }
+        await flushPerformanceEvents(false);
+        await flushFailureLogs(false);
+        return terminalSystemicFailures;
+      }
+      if (!isStructuralGoogleBulkFailure(error)
+        || (entries.length === 1 && rejectedEntries.length === 1)) {
         recordFailure(error, rejectedEntries);
         complete(rejectedEntries, 0);
         console.error(`Google Bulk error for ${rejectedEntries.length} strings (${language}):`, error);
         reportProgress(0, true);
-        return;
-      }
-      if (rejectedEntries.length < entries.length) {
-        console.warn(`Google Bulk is retrying only ${rejectedEntries.length} rejected strings from a ${entries.length}-string block`);
-        try {
-          await translateGoogleBulkBlock(rejectedEntries, language, provider, signal, requestPacedChunk);
-          complete(rejectedEntries, rejectedEntries.length);
-          reportProgress(0, true);
-        } catch (retryError) {
-          if (retryError && retryError.name === "AbortError") throw retryError;
-          await finishAdaptiveGoogleBlock(rejectedEntries, retryError);
-        }
-        return;
+        await flushFailureLogs(false);
+        return isSystemicGoogleBulkFailure(error) ? rejectedEntries.length : 0;
       }
       const middle = Math.ceil(rejectedEntries.length / 2);
       const parts = [rejectedEntries.slice(0, middle), rejectedEntries.slice(middle)];
-      console.warn(`Google Bulk is splitting a rejected ${rejectedEntries.length}-string block into smaller blocks`);
+      console.warn(`Google Bulk is splitting a structurally invalid ${rejectedEntries.length}-string block`);
       for (const part of parts) {
         try {
-          await translateGoogleBulkBlock(part, language, provider, signal, requestPacedChunk);
+          await translateGoogleBulkBlock(
+            part, language, provider, signal, requestFor("structural-split", part.length)
+          );
           complete(part, part.length);
           reportProgress(0, true);
         } catch (partError) {
           if (partError && partError.name === "AbortError") throw partError;
-          await finishAdaptiveGoogleBlock(part, partError);
+          terminalSystemicFailures += await finishAdaptiveGoogleBlock(part, partError);
         }
       }
+      await flushPerformanceEvents(false);
+      await flushFailureLogs(false);
+      return terminalSystemicFailures;
     }
 
     for (let index = 0; index < strings.length; index += 1) {
       if (signal.aborted) break;
       const entry = { source: strings[index], wordCount: wordCounts[index] };
       try {
-        const result = await translateText(entry.source, language, provider, signal, false, true);
+        const result = await translateText(entry.source, language, provider, signal, false, false);
         if (result.skipped) {
+          metrics.cacheMisses += 1;
           freshEntries.push(entry);
           continue;
+        }
+        metrics.cacheHits += 1;
+        appendTranslationLog(
+          entry.source, result.text, language, result.imported ? "Imported translation" : provider, true
+        );
+        if (!result.imported) {
+          cachedLogEntries.push({
+            provider, language, source: entry.source, translation: result.text, cached: true
+          });
+          await flushCachedLogs(false);
         }
       } catch (error) {
         if (error && error.name === "AbortError") break;
@@ -2386,6 +2809,7 @@
       complete([entry], 0);
       reportProgress(0, false);
     }
+    await flushCachedLogs(true);
 
     const pendingBlocks = buildGoogleBulkBlocks(freshEntries, providerConfig);
     const maximumAdaptiveBlockSize = Math.max(1, Number(providerConfig.bulkMaxItems) || 1);
@@ -2402,17 +2826,23 @@
         ? pendingBlock.slice(0, adaptiveBlockSize) : pendingBlock;
       if (pendingBlock.length > block.length) pendingBlocks.unshift(pendingBlock.slice(block.length));
       try {
-        await translateGoogleBulkBlock(block, language, provider, signal, requestPacedChunk);
+        await translateGoogleBulkBlock(
+          block, language, provider, signal, requestFor("initial", block.length)
+        );
         consecutiveFullBlockFailures = 0;
         consecutiveCleanBlocks += 1;
-        if (adaptiveBlockSize < maximumAdaptiveBlockSize && consecutiveCleanBlocks >= 4) {
+        if (consecutiveCleanBlocks >= 4) {
           const previousSize = adaptiveBlockSize;
           adaptiveBlockSize = Math.min(maximumAdaptiveBlockSize, adaptiveBlockSize + 2);
+          requestPacer.setDelay(requestPacer.getDelay() - 1000);
           consecutiveCleanBlocks = 0;
-          console.info(`Google Bulk increased clean block size from ${previousSize} to ${adaptiveBlockSize}`);
+          if (adaptiveBlockSize > previousSize) {
+            console.info(`Google Bulk increased clean block size from ${previousSize} to ${adaptiveBlockSize}`);
+          }
         }
         complete(block, block.length);
         reportProgress(0, true);
+        await flushPerformanceEvents(false);
       } catch (error) {
         if (error && error.name === "AbortError") break;
         consecutiveCleanBlocks = 0;
@@ -2423,15 +2853,35 @@
         }
         const translatedBeforeFallback = newlyTranslated;
         const failedBeforeFallback = failed;
-        await finishAdaptiveGoogleBlock(block, error);
+        const terminalSystemicFailures = await finishAdaptiveGoogleBlock(block, error);
         const fallbackTranslated = newlyTranslated - translatedBeforeFallback;
         const fallbackFailed = failed - failedBeforeFallback;
-        const blockFailedAfterFallback = fallbackTranslated === 0 && fallbackFailed >= block.length;
+        const blockFailedAfterFallback = fallbackTranslated === 0
+          && fallbackFailed >= block.length
+          && terminalSystemicFailures >= block.length;
+        if (blockFailedAfterFallback) {
+          requestPacer.setDelay(requestPacer.getDelay() + 1000);
+        }
         consecutiveFullBlockFailures = blockFailedAfterFallback
           ? consecutiveFullBlockFailures + 1 : 0;
         if (consecutiveFullBlockFailures >= consecutiveFailureLimit) {
+          performanceEvents.push({
+            type: "summary",
+            operation: "google-bulk",
+            timestamp: new Date().toISOString(),
+            outcome: "stopped",
+            requests: metrics.requests,
+            requestErrors: metrics.requestErrors,
+            cacheHits: metrics.cacheHits,
+            cacheMisses: metrics.cacheMisses,
+            translated: newlyTranslated,
+            failed,
+            durationMs: Date.now() - metrics.startedAt
+          });
+          await flushPerformanceEvents(true);
+          await flushFailureLogs(true);
           const stopError = new Error(
-            `Google Bulk stopped after ${consecutiveFailureLimit} consecutive blocks failed after fallback. `
+            `Google Bulk stopped after ${consecutiveFailureLimit} consecutive systemic block failures. `
             + "Completed translations were saved; run it again or choose another provider."
           );
           stopError.code = "google_bulk_block_failures";
@@ -2439,7 +2889,30 @@
         }
       }
     }
-    return { done, completedWords, totalWords, newlyTranslated, failed, failureReasons };
+    performanceEvents.push({
+      type: "summary",
+      operation: "google-bulk",
+      timestamp: new Date().toISOString(),
+      outcome: signal.aborted ? "cancelled" : failed ? "incomplete" : "complete",
+      requests: metrics.requests,
+      requestErrors: metrics.requestErrors,
+      cacheHits: metrics.cacheHits,
+      cacheMisses: metrics.cacheMisses,
+      translated: newlyTranslated,
+      failed,
+      durationMs: Date.now() - metrics.startedAt
+    });
+    await flushPerformanceEvents(true);
+    await flushFailureLogs(true);
+    const googleMetrics = {
+      requests: metrics.requests,
+      requestErrors: metrics.requestErrors,
+      cacheHits: metrics.cacheHits,
+      cacheMisses: metrics.cacheMisses,
+      averageAcceptedPerRequest: metrics.requests ? newlyTranslated / metrics.requests : 0,
+      durationMs: Date.now() - metrics.startedAt
+    };
+    return { done, completedWords, totalWords, newlyTranslated, failed, failureReasons, googleMetrics };
   }
 
   async function translateBulkLanguage(strings, language, provider, signal, onProgress) {
@@ -2511,6 +2984,7 @@
     if (bulkPreparing) return;
     bulkPreparing = true;
     let keepWorkspaceOpen = false;
+    let workspaceFinished = false;
     setBulkButtonWorking("Starting…");
     try {
       await new Promise((resolve) => {
@@ -2559,21 +3033,26 @@
           ));
         }
       );
-      const { done, newlyTranslated, failed, failureReasons } = result;
+      const { done, newlyTranslated, failed, failureReasons, googleMetrics } = result;
+      const googleDetail = googleMetrics
+        ? ` · Google: ${googleMetrics.requests} requests, ${googleMetrics.averageAcceptedPerRequest.toFixed(1)} accepted/request`
+        : "";
 
       if (abortController.signal.aborted) {
         keepWorkspaceOpen = true;
-        setStatus(`Bulk stopped at ${done}/${strings.length}: ${activeAbortReason || "unknown cancellation reason"}`);
+        setStatus(`Bulk stopped at ${done}/${strings.length}: ${activeAbortReason || "unknown cancellation reason"}${googleDetail}`);
       } else if (failed > 0) {
         keepWorkspaceOpen = true;
         const reasons = Array.from(failureReasons.entries())
           .map(([reason, count]) => `${reason} (${count})`)
           .join("; ");
-        setStatus(`Bulk incomplete: ${strings.length - failed}/${strings.length} saved · ${reasons}`);
+        setStatus(`Bulk incomplete: ${strings.length - failed}/${strings.length} saved · ${reasons}${googleDetail}`);
       }
       else {
         await preloadMemoryCache();
-        setStatus(`Bulk complete: ${strings.length} total, ${newlyTranslated} new`);
+        setStatus(`Bulk complete: ${strings.length} total, ${newlyTranslated} new${googleDetail}`);
+        keepWorkspaceOpen = true;
+        workspaceFinished = true;
       }
 
     } catch (error) {
@@ -2589,7 +3068,10 @@
       abortController = null;
       activeOperation = null;
       activeAbortReason = "";
-      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) setBulkUiStopped();
+      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) {
+        if (workspaceFinished) setBulkUiFinished();
+        else setBulkUiStopped();
+      }
       else setBulkUiBusy(false);
       setBulkButtonIdle();
       refreshCacheStats();
@@ -2608,6 +3090,7 @@
     if (bulkPreparing) return;
     bulkPreparing = true;
     let keepWorkspaceOpen = false;
+    let workspaceFinished = false;
     setTestPhraseButtonWorking("Starting…");
     try {
       await new Promise((resolve) => {
@@ -2619,12 +3102,13 @@
       const provider = settings.provider;
       const providerConfig = PROVIDERS[provider];
       if (!(await ensureTranslationProviderReady("bulk"))) return;
-      const targets = languagesForProvider(provider).filter(([code]) => providerConfig.supportsLanguage(code));
+      const targets = languagesForProvider(provider).filter(([code]) =>
+        !hasOfficialLocalization(code) && providerConfig.supportsLanguage(code));
       if (!targets.length) throw new Error("Selected service has no available target languages");
       if (!confirm(
         `Translate the current OMORI test phrase into ${targets.length} languages using ${providerConfig.label}? `
         + "Existing cached languages will be skipped."
-        + (provider === "google" ? " Google processes one language every second and may pause after a temporary block." : "")
+        + (provider === "google" ? " Google waits a random 1.2–1.8 seconds between languages and may pause after a temporary block." : "")
       )) {
         setStatus("Test phrase translation cancelled before start");
         return;
@@ -2647,6 +3131,12 @@
       let created = 0;
       let failed = 0;
       const failureReasons = new Map();
+      const requestPacer = provider === "google"
+        ? createRequestPacer(
+          TEST_PHRASE_GOOGLE_DELAY,
+          TEST_PHRASE_GOOGLE_DELAY,
+          TEST_PHRASE_GOOGLE_DELAY_JITTER
+        ) : null;
 
       async function worker() {
         while (!signal.aborted) {
@@ -2680,8 +3170,10 @@
                     setStatus(translationProgressText(
                       done * phraseWords, totalWords, etaTracker.current(), seconds, provider
                     ));
-                  }
-                )
+                  },
+                  { pacer: requestPacer }
+                ),
+                requestPacer ? 0 : undefined
               );
               const translated = String(protectedResult.text || "").trim();
               if (!translated || translated.toLowerCase().includes("undefined")) {
@@ -2691,10 +3183,7 @@
               created += 1;
               appendTranslationLog(LANGUAGE_TEST_PHRASE_SOURCE, translated, language, provider, false);
               await logTranslationToBridge(provider, language, LANGUAGE_TEST_PHRASE_SOURCE, translated, false);
-              const testDelay = provider === "google"
-                ? Math.max(TEST_PHRASE_GOOGLE_DELAY, providerConfig.delay)
-                : providerConfig.delay;
-              await sleep(testDelay, signal);
+              if (!requestPacer && providerConfig.delay) await sleep(providerConfig.delay, signal);
             }
           } catch (error) {
             if (error && error.name === "AbortError") return;
@@ -2713,7 +3202,7 @@
         }
       }
 
-      // Reliability matters more than speed here: 249 concurrent probe calls
+      // Reliability matters more than speed here: 30 concurrent probe calls
       // trigger public-service burst limits and turn transient 429s into noise.
       const concurrency = 1;
       await Promise.all(Array.from({ length: concurrency }, () => worker()));
@@ -2727,6 +3216,8 @@
       } else {
         await reloadSelectedLanguageCache(false);
         setStatus(`Test phrase ready in ${targets.length} languages · ${created} new · ${cached} cached`);
+        keepWorkspaceOpen = true;
+        workspaceFinished = true;
       }
     } catch (error) {
       keepWorkspaceOpen = panel.classList.contains("bulkBusy");
@@ -2739,7 +3230,10 @@
       abortController = null;
       activeOperation = null;
       activeAbortReason = "";
-      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) setBulkUiStopped();
+      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) {
+        if (workspaceFinished) setBulkUiFinished();
+        else setBulkUiStopped();
+      }
       else setBulkUiBusy(false);
       setTestPhraseButtonIdle();
       refreshCacheStats();
@@ -2784,6 +3278,7 @@
     updateProviderHint();
     updateModeButton();
     updateTranslationScopeControls();
+    updateOfficialLocalizationState(false);
     if (typeof adapter.onTranslationScopeChanged === "function") {
       try { adapter.onTranslationScopeChanged(settings.translationScope); } catch (_) {}
     }
@@ -2837,6 +3332,8 @@
   const updateStatusElement = shadow.querySelector(".updateStatus");
   const updateChangesElement = shadow.querySelector(".updateChanges");
   const languageSelect = shadow.querySelector(".language");
+  const languageControl = shadow.querySelector(".languageControl");
+  const officialLocalizationNotice = shadow.querySelector(".officialLocalizationNotice");
   const providerSelect = shadow.querySelector(".provider");
   const providerHint = shadow.querySelector(".providerHint");
   const geminiBox = shadow.querySelector(".geminiBox");
@@ -2850,6 +3347,7 @@
   const lmStudioRefreshButton = shadow.querySelector(".lmStudioRefresh");
   const openAICompatibleBox = shadow.querySelector(".openAICompatibleBox");
   const openAICompatibleStatusElement = shadow.querySelector(".openAICompatibleStatus");
+  const openAICompatibleUsageElement = shadow.querySelector(".openAICompatibleUsage");
   const openAICompatiblePresetSelect = shadow.querySelector(".openAICompatiblePreset");
   const openAICompatibleBaseURLInput = shadow.querySelector(".openAICompatibleBaseURL");
   const openAICompatibleModelInput = shadow.querySelector(".openAICompatibleModel");
@@ -2888,11 +3386,71 @@
   const packCancelButton = shadow.querySelector(".packCancel");
   const packConfirmButton = shadow.querySelector(".packConfirm");
   const bulkControlState = new Map();
+  const officialLocalizationControlState = new Map();
   let pendingPackInspection = null;
   let pendingPackDialogResolve = null;
   let translationLogScrollPaused = false;
   let translationLogPausedViewport = null;
   let bulkWorkspaceAwaitingDismissal = false;
+
+  function officialLocalizationMessage(language = settings.language) {
+    return `${GAME_SHORT_TITLE} already includes an official ${languageName(language)} localization. `
+      + "Select it in the game or Steam settings. Translator controls are disabled; choose another target language to continue.";
+  }
+
+  function enforceOfficialLocalizationLock() {
+    if (!panel.classList.contains("officialLocalization")) return;
+    for (const control of shadow.querySelectorAll("button, select, input")) {
+      if (control !== languageSelect) control.disabled = true;
+    }
+    languageSelect.disabled = false;
+  }
+
+  function updateOfficialLocalizationState(announce) {
+    const language = languageSelect.value || settings.language;
+    const official = hasOfficialLocalization(language);
+    const wasOfficial = panel.classList.contains("officialLocalization");
+    panel.classList.toggle("officialLocalization", official);
+    officialLocalizationNotice.hidden = !official;
+
+    if (official) {
+      const message = officialLocalizationMessage(language);
+      officialLocalizationNotice.textContent = message;
+      if (settings.collapsed) {
+        settings.collapsed = false;
+        saveSettings();
+        updateCollapsedState();
+      }
+      clearCompletedScreenTranslationQueue();
+      pendingAdapterTexts.clear();
+      pendingTranslationRoots.clear();
+      invalidateAppliedTranslations();
+      for (const control of shadow.querySelectorAll("button, select, input")) {
+        if (control === languageSelect || officialLocalizationControlState.has(control)) continue;
+        officialLocalizationControlState.set(control, control.disabled);
+      }
+      enforceOfficialLocalizationLock();
+      if (announce !== false || !wasOfficial) setStatus(message);
+      return true;
+    }
+
+    officialLocalizationNotice.textContent = "";
+    if (wasOfficial) {
+      for (const [control, disabled] of officialLocalizationControlState) control.disabled = disabled;
+      officialLocalizationControlState.clear();
+      refreshProviderControlsBusy();
+    }
+    return false;
+  }
+
+  for (const eventName of ["click", "input", "change"]) {
+    shadow.addEventListener(eventName, (event) => {
+      if (!panel.classList.contains("officialLocalization")
+        || (languageControl && languageControl.contains(event.target))) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  }
 
   function setBulkButtonWorking(label) {
     runtimeUI.setButtonState(bulkButton, { working: true, label, disabled: false });
@@ -3084,20 +3642,34 @@
       translationLogHoldButton.disabled = false;
       bulkCancelButton.textContent = INTERRUPT_TRANSLATION_LABEL;
       bulkCancelButton.style.background = cancelButton.style.background;
+      bulkCancelButton.classList.remove("finished");
       bulkCancelButton.classList.add("working");
       bulkCancelButton.disabled = false;
     } else {
       bulkCancelButton.textContent = INTERRUPT_TRANSLATION_LABEL;
       bulkCancelButton.style.removeProperty("background");
+      bulkCancelButton.classList.remove("finished");
       bulkCancelButton.classList.remove("working");
       bulkCancelButton.disabled = false;
     }
+    enforceOfficialLocalizationLock();
   }
 
   function setBulkUiStopped() {
     bulkWorkspaceAwaitingDismissal = true;
     bulkCancelButton.textContent = "Back to translator";
     bulkCancelButton.style.removeProperty("background");
+    bulkCancelButton.classList.remove("finished");
+    bulkCancelButton.classList.remove("working");
+    bulkCancelButton.disabled = false;
+    translationLogHoldButton.disabled = false;
+  }
+
+  function setBulkUiFinished() {
+    bulkWorkspaceAwaitingDismissal = true;
+    bulkCancelButton.textContent = "Finish";
+    bulkCancelButton.style.removeProperty("background");
+    bulkCancelButton.classList.add("finished");
     bulkCancelButton.classList.remove("working");
     bulkCancelButton.disabled = false;
     translationLogHoldButton.disabled = false;
@@ -3455,13 +4027,28 @@
       else if (languageChanged) abortActiveOperation("target language changed");
       else abortActiveOperation("translation service changed");
       invalidateAppliedTranslations();
-      reloadSelectedLanguageCache(true);
+      if (hasOfficialLocalization()) {
+        memoryCache.clear();
+        fuzzyMemoryCache.clear();
+        clearCompletedScreenTranslationQueue();
+        if (typeof adapter.onLanguageChanged === "function") {
+          adapter.onLanguageChanged(settings.language, settings.provider);
+        }
+      } else {
+        reloadSelectedLanguageCache(true);
+      }
     }
     saveSettings();
-    scheduleAutoTranslation(50);
+    if (!hasOfficialLocalization()) scheduleAutoTranslation(50);
   }
   function refreshProviderControlsBusy() {
     const busy = geminiBusy || lmStudioBusy || openAICompatibleBusy;
+    if (hasOfficialLocalization()) {
+      languageSelect.disabled = false;
+      providerSelect.disabled = true;
+      enforceOfficialLocalizationLock();
+      return;
+    }
     languageSelect.disabled = busy || !languageSelect.options.length;
     providerSelect.disabled = busy;
   }
@@ -3512,6 +4099,7 @@
       lmStudioModelSelect.disabled = true;
       lmStudioRefreshButton.disabled = true;
       lmStudioStatusElement.textContent = `The local translation helper is not running. Restart the game through ${PRODUCT_NAME}.`;
+      enforceOfficialLocalizationLock();
       return null;
     }
     setLMStudioBusy(true);
@@ -3591,6 +4179,7 @@
       openAICompatibleStatus = null;
       openAICompatibleModelsList.replaceChildren();
       openAICompatibleStatusElement.textContent = `The local translation helper is not running. Restart the game through ${PRODUCT_NAME}.`;
+      openAICompatibleUsageElement.textContent = "Exact usage unavailable without the local helper.";
       setOpenAICompatibleBusy(false);
       return null;
     }
@@ -3629,6 +4218,7 @@
       openAICompatibleStatus = null;
       openAICompatibleModelsList.replaceChildren();
       openAICompatibleStatusElement.textContent = error && error.message ? error.message : "Could not check the OpenAI-compatible provider";
+      openAICompatibleUsageElement.textContent = "Exact usage summary unavailable.";
       return null;
     } finally {
       setOpenAICompatibleBusy(false);
@@ -3647,6 +4237,7 @@
       geminiKeyInput.disabled = true;
       geminiSaveButton.disabled = true;
       geminiRemoveButton.hidden = true;
+      enforceOfficialLocalizationLock();
       return null;
     }
     try {
@@ -3666,6 +4257,8 @@
       geminiSaveButton.disabled = true;
       geminiRemoveButton.hidden = true;
       return null;
+    } finally {
+      enforceOfficialLocalizationLock();
     }
   }
   function updateProviderHint() {
@@ -3702,6 +4295,7 @@
   updateProviderHint();
   refreshCacheStats();
   refreshTranslationPackStatus();
+  updateOfficialLocalizationState(true);
   checkForUpdates();
 
   projectSiteLink.addEventListener("click", (event) => {
@@ -3773,7 +4367,9 @@
     persistControlSettings();
     refreshCacheStats();
     refreshTranslationPackStatus();
-    setStatus(`Language: ${selectedLanguageName()} (restart recommended)`);
+    if (!updateOfficialLocalizationState(true)) {
+      setStatus(`Language: ${selectedLanguageName()} (restart recommended)`);
+    }
   };
   languageSelect.addEventListener("change", onLanguageChange);
   resetButton.addEventListener("click", async () => {
@@ -4168,10 +4764,12 @@
     translateAdapterText,
     registerCompletedScreenText,
     isAutoScreenTranslationEnabled: () => !!(
-      settings.autoScreenTranslation && settings.translationScope === "screen" && settings.mode === "translated"
+      !hasOfficialLocalization() && settings.autoScreenTranslation
+      && settings.translationScope === "screen" && settings.mode === "translated"
     ),
     registerAdapterText: (text) => {
-      if (settings.mode === "translated" && settings.translationScope !== "screen" && hasSourceText(text)) {
+      if (!hasOfficialLocalization() && settings.mode === "translated"
+        && settings.translationScope !== "screen" && hasSourceText(text)) {
         if (!pendingAdapterTexts.has(text)) {
           pendingAdapterTexts.add(text);
           scheduleAutoTranslation(150);

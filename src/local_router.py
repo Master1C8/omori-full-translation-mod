@@ -55,6 +55,15 @@ class LocalPostRouter:
                 payload.get("cached") is True,
             )
             return {"ok": True, "appended": appended}
+        if path == "/v1/log/batch":
+            result = self.bridge.log_batch(payload.get("entries", []))
+            return {"ok": True, **result}
+        if path == "/v1/log/performance":
+            appended = self.bridge.log_performance(payload.get("events", []))
+            return {"ok": True, "appended": appended}
+        if path == "/v1/log/failures":
+            appended = self.bridge.log_failures(payload.get("entries", []))
+            return {"ok": True, "appended": appended}
 
         route = self.ROUTES.get(path)
         if route is None:

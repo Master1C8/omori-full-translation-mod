@@ -16,6 +16,7 @@ REQUIRED = {
     "shortTitle": str,
     "translatorName": str,
     "sourceLanguage": str,
+    "officialLocalizations": list,
     "supportedVersions": list,
     "launchStrategy": str,
     "debugTargetTitleContains": str,
@@ -56,6 +57,14 @@ def load_manifest(path: Path) -> dict:
         raise ValueError("id must use lowercase ASCII letters, digits, and hyphens")
     if value["sourceLanguage"] != "en":
         raise ValueError("sourceLanguage must be en in contract version 1")
+    official_localizations = value["officialLocalizations"]
+    if not official_localizations or not all(
+        isinstance(item, str) and re.fullmatch(r"[a-z]{2}(?:-[A-Z]{2})?", item)
+        for item in official_localizations
+    ) or len(set(official_localizations)) != len(official_localizations):
+        raise ValueError("officialLocalizations must contain unique language codes")
+    if value["sourceLanguage"] not in official_localizations:
+        raise ValueError("officialLocalizations must include sourceLanguage")
     if value["launchStrategy"] != "electron-cdp":
         raise ValueError("unsupported launchStrategy")
     if value["steamAppId"] <= 0:

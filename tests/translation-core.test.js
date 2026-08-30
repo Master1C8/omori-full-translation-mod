@@ -90,6 +90,21 @@ test("normalizes OMORI HTML and runtime line breaks to the same fuzzy source", (
   assert.equal(core.stripOmoriPrefixes("\\n<RED SMILE>"), "");
 });
 
+test("adapts only the runtime WordWrap prefix on a safe fuzzy cache hit", () => {
+  const runtimeSource = "<WordWrap>\\marHi, OMORI!\\!<br>Smile more.";
+  const cached = "\\marПривет, ОМОРИ!\\!<br>Улыбайся чаще.";
+  assert.equal(
+    core.adaptTranslationToSourceLayout(runtimeSource, cached),
+    "<WordWrap>\\marПривет, ОМОРИ!\\!<br>Улыбайся чаще."
+  );
+  assert.equal(
+    core.adaptTranslationToSourceLayout("\\marHi, OMORI!\\!", "<WordWrap>\\marПривет, ОМОРИ!\\!"),
+    "\\marПривет, ОМОРИ!\\!"
+  );
+  assert.equal(core.adaptTranslationToSourceLayout(runtimeSource, "\\aubПривет!\\!<br>Улыбайся."), null);
+  assert.equal(core.adaptTranslationToSourceLayout(runtimeSource, "\\marПривет!<br>Улыбайся."), null);
+});
+
 test("lexes OMORI controls and metadata without consuming dialogue text", () => {
   const source = '<WordWrap>\\marHi, OMORI!\\!<br>Use \\N[1] and \\n<RED SMILE>.\\aub [TRASH] VRCTXSEP1X';
   assert.deepEqual(core.protectedMarkupTokens(source), [
@@ -233,16 +248,25 @@ test("protects placeholders, currency, numbers, and punctuation beside flow cont
   const calls = [];
   const translations = new Map([
     ["Oh, whoa", "Ого"],
-    ["I found", "Я нашёл"],
+    ["! I found", "! Я нашёл"],
     ["The password is", "Пароль"]
   ]);
   const result = await core.translateProtectedText(source, async (text) => {
     calls.push(text);
     return translations.get(text) || text;
   });
-  assert.deepEqual(calls, ["Oh, whoa", "I found", "The password is"]);
+  assert.deepEqual(calls, ["Oh, whoa", "! I found", "The password is"]);
   assert.equal(result.text, "\\kelОго\\!! Я нашёл $\\v[604].00.\\!<br>Пароль ☐☐☐☐☐☐☐.");
   assert.equal(core.protectedMarkupLayoutMatches(source, result.text), true);
+
+  const numberedSource = "The STRANGE MAN gave you $50.00 for a \\c[4]FLOOR LAMP\\c[0].";
+  const numberedCalls = [];
+  const numbered = await core.translateProtectedText(numberedSource, async (text) => {
+    numberedCalls.push(text);
+    return text === "The Strange Man gave you" ? "Незнакомец дал вам" : "торшер";
+  });
+  assert.deepEqual(numberedCalls, ["The Strange Man gave you", "for a", "Floor Lamp"]);
+  assert.equal(numbered.text.includes("$50.00"), true);
 });
 
 test("rejects obvious truncation and runaway expansion before caching", async () => {
@@ -270,17 +294,92 @@ test("validates numbers and currency without fixing their word position", () => 
     core.translationQualityMatches("It costs $10.00.", "Это стоит 10 долларов."),
     false
   );
+  assert.equal(
+    core.translationQualityMatches("spend our lives 2geter", "провести жизнь вместе"),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches("spend our lives 2geter", "провести жизнь 2 года"),
+    false
+  );
+});
+
+test("normalizes OMORI leetspeak and keeps measurement literals out of Google", async () => {
+  const letter = '\\"dear sweatheart...\\! spend the rest of our lives 2geter.\\"';
+  const letterCalls = [];
+  const translatedLetter = await core.translateProtectedText(letter, async (text) => {
+    letterCalls.push(text);
+    if (text === "dear sweatheart...") return "дорогая возлюбленная...";
+    if (text === "spend the rest of our lives together.") return "провести остаток жизни вместе.";
+    return text;
+  }, { language: "ru" });
+  assert.deepEqual(letterCalls, ["dear sweatheart...", "spend the rest of our lives together."]);
+  assert.equal(translatedLetter.text, '\\"дорогая возлюбленная...\\! провести остаток жизни вместе.\\"');
+
+  const caffeine = "It contains...\\! 150mg of caffeine per can!";
+  const caffeineCalls = [];
+  const translatedCaffeine = await core.translateProtectedText(caffeine, async (text) => {
+    caffeineCalls.push(text);
+    return text === "It contains..." ? "Он содержит..." : "кофеина в банке!";
+  }, { language: "ru" });
+  assert.deepEqual(caffeineCalls, ["It contains...", "of caffeine per can!"]);
+  assert.equal(translatedCaffeine.text, "Он содержит...\\! 150mg кофеина в банке!");
+  assert.equal(core.protectedMarkupLayoutMatches(caffeine, translatedCaffeine.text), true);
+});
+
+test("keeps RPG Maker save filenames literal without false English carryover", async () => {
+  const source = "Default configuration has been restored. Do you want to recover global.rpgsave?";
+  const candidate = "Конфигурация по умолчанию восстановлена. Вы хотите восстановить global.rpgsave?";
+  const calls = [];
+  const result = await core.translateProtectedText(source, async (text) => {
+    calls.push(text);
+    return "Конфигурация по умолчанию восстановлена. Вы хотите восстановить";
+  }, { language: "ru" });
+
+  assert.deepEqual(calls, ["Default configuration has been restored. Do you want to recover"]);
+  assert.equal(result.text, candidate);
+  assert.equal(core.translationQualityMatches(source, candidate, "ru"), true);
+  assert.equal(core.tokenizeProtectedMarkup(source).some((part) =>
+    part.type === "token" && part.value === "global.rpgsave"
+  ), true);
 });
 
 test("rejects substantial untranslated English carryover for Cyrillic targets", () => {
   assert.equal(
-    core.translationQualityMatches("Delicious COOKIES!", "Вкусный ФАЙЛЫ COOKIE!", "ru"),
+    core.translationQualityMatches(
+      "Delicious \\c[3]COOKIES\\c[0]!", "Вкусный \\c[3]ФАЙЛЫ COOKIE\\c[0]!", "ru"
+    ),
     false
   );
   assert.equal(
     core.translationQualityMatches("A plant nursery full of VEGGIE KIDS!", "Питомник, полный Veggie Kids!", "ru"),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "A plant nursery full of very young kids!", "Питомник, полный very young kids!", "ru"
+    ),
     false
   );
+  assert.equal(
+    core.translationQualityMatches(
+      "SPACE BOYFRIEND will recover soon.", "Space Boyfriend скоро поправится.", "ru"
+    ),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "An uncomfortably-realistic SWEETHEART doll.", "Нереально реалистичная кукла Sweetheart.", "ru"
+    ),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "A story about “Sweet Time.”", "История о «Sweet Time».", "ru"
+    ),
+    true
+  );
+  assert.equal(core.translationQualityMatches("Shift key-", "Клавиша Shift-", "ru"), true);
   assert.equal(core.translationQualityMatches("Chock-full of DVDs.", "Полно DVD.", "ru"), true);
   assert.equal(core.translationQualityMatches("Sweetheart doll.", "Muñeca Sweetheart.", "es"), true);
 });
@@ -325,12 +424,12 @@ test("keeps contextual separators local while translating every part", async () 
 
 test("lets Bulk validate contextual parts individually without starting a hidden fallback", async () => {
   const sources = [
-    "OMORI walks through the beautiful garden together with all his friends.",
-    "OMORI quietly waits beside the old house until everyone comes home."
+    "Basil walks through the beautiful garden together with all his friends.",
+    "Basil quietly waits beside the old house until everyone comes home."
   ];
   const translations = [
-    "OMORI гуляет по прекрасному саду вместе со всеми своими друзьями.",
-    "OMORI тихо ждёт возле старого дома, пока все не вернутся."
+    "Basil гуляет по прекрасному саду вместе со всеми своими друзьями.",
+    "Basil тихо ждёт возле старого дома, пока все не вернутся."
   ];
   const source = core.buildContextSource(sources);
   const translated = core.buildContextSource(translations);
@@ -387,6 +486,64 @@ test("builds and parses Google requests", () => {
   assert.equal(new URL(core.buildGoogleUrl("Bonjour", "de", "fr")).searchParams.get("sl"), "fr");
   assert.equal(core.parseGoogleResponse([[['Привет ', 'Hello '], ['мир', 'world']]]), "Привет мир");
   assert.throws(() => core.parseGoogleResponse({ nope: true }));
+  const batchURL = new URL(core.buildGoogleBatchUrl(["Hello", "Goodbye"], "ru"));
+  assert.equal(batchURL.pathname, "/translate_a/t");
+  assert.deepEqual(batchURL.searchParams.getAll("q"), ["Hello", "Goodbye"]);
+  assert.deepEqual(core.parseGoogleBatchResponse(["Привет", "До свидания"], 2), [
+    "Привет", "До свидания"
+  ]);
+  assert.deepEqual(core.parseGoogleBatchResponse(["", "Яблочный сок"], 2), ["", "Яблочный сок"]);
+  assert.throws(() => core.parseGoogleBatchResponse(["Привет"], 2));
+});
+
+test("uses one protocol batch for isolated protected-text segments", async () => {
+  const source = "\\n<HERO>Hello there.\\! Goodbye now!";
+  let plainCalls = 0;
+  const batches = [];
+  const result = await core.translateProtectedText(source, async () => {
+    plainCalls += 1;
+    return "unexpected";
+  }, {
+    language: "ru",
+    contextual: false,
+    translateBatch: async (texts) => {
+      batches.push(texts);
+      return ["Привет.", "До свидания!"];
+    }
+  });
+  assert.equal(plainCalls, 0);
+  assert.deepEqual(batches, [["Hello there.", "Goodbye now!"]]);
+  assert.equal(result.text, "\\n<HERO>Привет.\\! До свидания!");
+
+  const punctuation = await core.translateProtectedText(
+    "Look!\\!<br>What do we do? I know.", async () => "unexpected", {
+      language: "ru", contextual: false,
+      translateBatch: async () => ["Смотри!", "Что же нам делать? Я знаю."]
+    }
+  );
+  assert.equal(punctuation.text, "Смотри!\\!<br>Что же нам делать? Я знаю.");
+
+  const emptyArticle = await core.translateProtectedText(
+    "\\aubThe \\c[4]B.E.D.\\c[0] has potential.", async () => "unexpected", {
+      language: "ru", contextual: false,
+      translateBatch: async () => ["", "Кровать", "имеет потенциал."]
+    }
+  );
+  assert.equal(emptyArticle.text, "\\aub\\c[4]КРОВАТЬ\\c[0] имеет потенциал.");
+
+  const repairCalls = [];
+  const repaired = await core.translateProtectedText(
+    "Delicious \\c[3]COOKIES\\c[0]!", async (text) => {
+      repairCalls.push(text);
+      return "Вкусно / Печенье";
+    }, {
+      language: "ru", contextual: false, contextRepair: true,
+      translateBatch: async () => ["Вкусный", "Файлы cookie"]
+    }
+  );
+  assert.deepEqual(repairCalls, ["Delicious / Cookies"]);
+  assert.equal(repaired.text, "Вкусно \\c[3]ПЕЧЕНЬЕ\\c[0]!");
+  assert.equal(repaired.repaired, true);
 });
 
 test("persists bounded rate-limit backoff state across restarts", () => {
