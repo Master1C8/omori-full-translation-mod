@@ -269,6 +269,39 @@ Yin_Blackjack:
         self.assertNotIn("???", values)
         self.assertNotIn("New Game", values)
 
+    def test_hero_records_link_dialogue_to_source_markers_faces_and_narrator_fallback(self):
+        hero_yaml = r'''message_1:
+  faceset: MainCharacters_DreamWorld
+  faceindex: 2
+  text: \aubHello there!
+message_2:
+  faceset: MainCharacters_DreamWorld
+  faceindex: 2
+  text: Still me.
+message_3:
+  faceset: MainCharacters_DreamWorld
+  faceindex: 2
+  text: \aubOne more line.
+message_4:
+  text: The room is completely silent.
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dialogue.HERO"
+            path.write_bytes(b"encrypted")
+            profile_payload = json.loads(Path(local_service.__file__).with_name(
+                local_service.LOCALIZATION_PROFILE_FILE
+            ).read_text(encoding="utf-8"))
+            profile = local_service._validated_localization_profile(profile_payload, "ru")
+            with mock.patch.object(local_service, "decrypt_omori_data", return_value=hero_yaml.encode()):
+                records = local_service.extract_records_from_hero(path, profile)
+            local_service.apply_message_speaker_context(records)
+
+        self.assertEqual([record["speaker"]["id"] for record in records], [
+            "aubrey", "aubrey", "aubrey", "narrator",
+        ])
+        self.assertEqual(records[1]["speaker"]["evidence"], "face")
+        self.assertEqual(records[3]["speaker"]["evidence"], "fallback")
+
     def test_bulk_extraction_uses_selected_game_and_reports_asset_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -279,21 +312,26 @@ Yin_Blackjack:
             asset = language_dir / "dialogue.HERO"
             asset.write_bytes(b"encrypted")
             bridge = local_service.LocalServiceBridge(root / "data", game_path=executable)
-            extractor = mock.Mock(return_value=["Hello", "123"])
-            with mock.patch.object(local_service, "extract_strings_from_hero", extractor):
+            extractor = mock.Mock(return_value=[{
+                "source": "Hello", "kind": "dialogue", "asset": "dialogue.HERO",
+                "messageId": "message_1", "speaker": {
+                    "id": "hero", "sourceName": "HERO", "evidence": "source-code",
+                },
+            }])
+            with mock.patch.object(local_service, "extract_records_from_hero", extractor):
                 result = bridge.get_game_strings("omori")
             self.assertEqual(result["strings"], ["Hello"])
             self.assertEqual(result["assetFiles"], 1)
             self.assertEqual(result["failedFiles"], 0)
             self.assertEqual(result["assetCache"], "rebuilt")
-            with mock.patch.object(local_service, "extract_strings_from_hero", side_effect=AssertionError("cache miss")):
+            with mock.patch.object(local_service, "extract_records_from_hero", side_effect=AssertionError("cache miss")):
                 cached = bridge.get_game_strings("omori")
             self.assertEqual(cached["strings"], ["Hello"])
             self.assertEqual(cached["assetCache"], "hit")
             self.assertEqual(extractor.call_count, 1)
 
             asset.write_bytes(b"changed encrypted asset")
-            with mock.patch.object(local_service, "extract_strings_from_hero", side_effect=ValueError("bad")):
+            with mock.patch.object(local_service, "extract_records_from_hero", side_effect=ValueError("bad")):
                 with self.assertRaises(local_service.BridgeError) as caught:
                     bridge.get_game_strings("omori")
             self.assertEqual(caught.exception.code, "game_asset_decode_failed")
@@ -307,10 +345,22 @@ Yin_Blackjack:
             language_dir.mkdir(parents=True)
             (language_dir / "dialogue.HERO").write_bytes(b"encrypted")
             bridge = local_service.LocalServiceBridge(root / "data", game_path=executable)
-            with mock.patch.object(local_service, "extract_strings_from_hero", return_value=["First"]):
+            first = [{
+                "source": "First", "kind": "narration", "asset": "dialogue.HERO",
+                "messageId": "message_1", "speaker": {
+                    "id": "narrator", "sourceName": "NARRATOR", "evidence": "fallback",
+                },
+            }]
+            with mock.patch.object(local_service, "extract_records_from_hero", return_value=first):
                 bridge.get_game_strings("omori")
             bridge.asset_index_path.write_text("{broken", encoding="utf-8")
-            with mock.patch.object(local_service, "extract_strings_from_hero", return_value=["Recovered"]) as extractor:
+            recovered = [{
+                "source": "Recovered", "kind": "narration", "asset": "dialogue.HERO",
+                "messageId": "message_2", "speaker": {
+                    "id": "narrator", "sourceName": "NARRATOR", "evidence": "fallback",
+                },
+            }]
+            with mock.patch.object(local_service, "extract_records_from_hero", return_value=recovered) as extractor:
                 result = bridge.get_game_strings("omori")
             self.assertEqual(result["strings"], ["Recovered"])
             self.assertEqual(result["assetCache"], "rebuilt")
@@ -433,12 +483,19 @@ Yin_Blackjack:
                 })
 
             with mock.patch.object(local_service.urllib.request, "urlopen", side_effect=fake_open):
-                result = bridge.gemini_translate("ru", "Russian", "Hello")
+                result = bridge.gemini_translate("ru", "Russian", "Hello", {
+                    "kind": "dialogue", "sourceText": r"\aubHello", "evidence": "fallback",
+                })
             self.assertEqual(result["translatedText"], "Привет")
             self.assertEqual(result["model"], local_service.GEMINI_MODEL)
             request_body = json.loads(captured["request"].data.decode("utf-8"))
             self.assertEqual(request_body["generationConfig"]["responseMimeType"], "application/json")
             instruction = request_body["systemInstruction"]["parts"][0]["text"]
+            user_content = json.loads(request_body["contents"][0]["parts"][0]["text"])
+            self.assertEqual(user_content["source"], "Hello")
+            self.assertEqual(user_content["context"]["speakerId"], "aubrey")
+            self.assertEqual(user_content["context"]["speakerName"], "AUBREY")
+            self.assertIn("MR. PLANTEGG", instruction)
             self.assertNotIn("RPG Maker", instruction)
             self.assertNotIn("VRCTXSEP", instruction)
             self.assertTrue(all(setting["threshold"] == "OFF" for setting in request_body["safetySettings"]))
@@ -524,7 +581,10 @@ Yin_Blackjack:
             self.assertEqual(request_body["temperature"], 0)
             self.assertFalse(request_body["stream"])
             self.assertEqual(request_body["response_format"]["type"], "json_schema")
-            self.assertEqual(request_body["messages"][1]["content"], source)
+            user_content = json.loads(request_body["messages"][1]["content"])
+            self.assertEqual(user_content["source"], source)
+            self.assertEqual(user_content["context"]["speakerId"], "narrator")
+            self.assertIn("MR. PLANTEGG", request_body["messages"][0]["content"])
             self.assertNotIn("RPG Maker", request_body["messages"][0]["content"])
             self.assertNotIn("VRCTXSEP", request_body["messages"][0]["content"])
             self.assertEqual(captured["timeout"], 300)

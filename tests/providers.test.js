@@ -80,8 +80,10 @@ test("online providers own URL construction and response parsing", async () => {
 
 test("Gemini delegates contextual translation without exposing its API key", async () => {
   let request = null;
+  const translationContext = { kind: "dialogue", speakerId: "hero", speakerName: "HERO" };
   const translated = await registry.byId.gemini.translateChunk({
     text: "Hello, adventurer.", language: "ru", languageName: "Russian", signal: undefined,
+    translationContext,
     localRequest: async (path, options) => {
       request = { path, options };
       return { translatedText: "Привет, искатель приключений." };
@@ -90,7 +92,7 @@ test("Gemini delegates contextual translation without exposing its API key", asy
   assert.equal(translated, "Привет, искатель приключений.");
   assert.equal(request.path, "/v1/gemini/translate");
   assert.deepEqual(request.options.body, {
-    text: "Hello, adventurer.", target: "ru", targetName: "Russian"
+    text: "Hello, adventurer.", target: "ru", targetName: "Russian", context: translationContext
   });
   assert.equal(registry.byId.gemini.credentialManager, "gemini");
   assert.equal(registry.byId.gemini.concurrency, 1);
@@ -98,8 +100,10 @@ test("Gemini delegates contextual translation without exposing its API key", asy
 
 test("LM Studio delegates translation and selected model to the local helper", async () => {
   let request = null;
+  const translationContext = { kind: "narration", speakerId: "narrator", speakerName: "NARRATOR" };
   const translated = await registry.byId.lmstudio.translateChunk({
     text: "Hello", language: "ru", languageName: "Russian", model: "local/qwen",
+    translationContext,
     signal: undefined,
     localRequest: async (path, options) => {
       request = { path, options };
@@ -109,7 +113,8 @@ test("LM Studio delegates translation and selected model to the local helper", a
   assert.equal(translated, "Привет");
   assert.equal(request.path, "/v1/lmstudio/translate");
   assert.deepEqual(request.options.body, {
-    text: "Hello", target: "ru", targetName: "Russian", model: "local/qwen"
+    text: "Hello", target: "ru", targetName: "Russian", model: "local/qwen",
+    context: translationContext
   });
   assert.equal(registry.byId.lmstudio.modelManager, "lmstudio");
   assert.equal(registry.byId.lmstudio.concurrency, 1);
@@ -117,8 +122,10 @@ test("LM Studio delegates translation and selected model to the local helper", a
 
 test("OpenAI-compatible delegates endpoint profile and model without exposing its API key", async () => {
   let request = null;
+  const translationContext = { kind: "dialogue", speakerId: "aubrey", speakerName: "AUBREY" };
   const translated = await registry.byId["openai-compatible"].translateChunk({
     text: "Hello", language: "ru", languageName: "Russian", signal: undefined,
+    translationContext,
     openAICompatible: {
       preset: "opencode-go", baseURL: "https://opencode.ai/zen/go/v1", model: "kimi-k3"
     },
@@ -131,7 +138,7 @@ test("OpenAI-compatible delegates endpoint profile and model without exposing it
   assert.equal(request.path, "/v1/openai-compatible/translate");
   assert.deepEqual(request.options.body, {
     text: "Hello", target: "ru", targetName: "Russian", model: "kimi-k3",
-    preset: "opencode-go", baseURL: "https://opencode.ai/zen/go/v1"
+    preset: "opencode-go", baseURL: "https://opencode.ai/zen/go/v1", context: translationContext
   });
   assert.equal(registry.byId["openai-compatible"].credentialManager, "openai-compatible");
   assert.equal(registry.byId["openai-compatible"].modelManager, "openai-compatible");

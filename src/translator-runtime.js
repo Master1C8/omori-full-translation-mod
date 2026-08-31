@@ -38,8 +38,10 @@
   const SITE_NAME = "VN Revival";
   const SITE_URL = "https://vnrevival.fun/";
   const OPENCODE_GO_REFERRAL_URL = "https://opencode.ai/go?ref=SS6M8DKPP0";
-  const LM_STUDIO_PROMPT_VERSION = "omori-translation-v1";
-  const OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v1";
+  const GEMINI_PROMPT_VERSION = "omori-contextual-translation-v2";
+  const LM_STUDIO_PROMPT_VERSION = "omori-contextual-translation-v2";
+  const OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v2";
+  const SPEAKER_CONTEXT_VERSION = "omori-speaker-context-v1";
   const GOOGLE_CONTEXT_VERSION = "google-context-v1";
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
     "opencode-go": Object.freeze({ name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresKey: true }),
@@ -153,6 +155,9 @@
   let lmStudioBusy = false;
   let openAICompatibleStatus = null;
   let openAICompatibleBusy = false;
+  let localizationProfileSummary = Object.freeze({
+    version: "empty-1", fingerprint: "unavailable", glossaryEntries: 0, speakers: 0
+  });
   const applied = new WeakMap();
   const appliedNodes = new Set();
   const originalPresentation = new WeakMap();
@@ -365,13 +370,17 @@
   function providerCacheVariant(provider) {
     let providerVariant = "";
     if (provider === "google") providerVariant = GOOGLE_CONTEXT_VERSION;
+    const profileVariant = `${localizationProfileSummary.fingerprint}\n${SPEAKER_CONTEXT_VERSION}`;
+    if (provider === "gemini") {
+      providerVariant = `${GEMINI_PROMPT_VERSION}\n${profileVariant}`;
+    }
     if (providerUsesLMStudio(provider) && settings.lmStudioModel) {
-      providerVariant = `${settings.lmStudioModel}\n${LM_STUDIO_PROMPT_VERSION}`;
+      providerVariant = `${settings.lmStudioModel}\n${LM_STUDIO_PROMPT_VERSION}\n${profileVariant}`;
     }
     if (providerUsesOpenAICompatible(provider)) {
       const connection = openAICompatibleConnection();
       providerVariant = connection.model
-        ? `${connection.preset}\n${connection.baseURL}\n${connection.model}\n${OPENAI_COMPATIBLE_PROMPT_VERSION}` : "";
+        ? `${connection.preset}\n${connection.baseURL}\n${connection.model}\n${OPENAI_COMPATIBLE_PROMPT_VERSION}\n${profileVariant}` : "";
     }
     return providerVariant
       ? `${providerVariant}\n${core.PROTECTED_MARKUP_VERSION}`
@@ -984,6 +993,57 @@
     return payload;
   }
 
+  function acceptLocalizationProfileSummary(payload) {
+    if (!payload || typeof payload.fingerprint !== "string"
+      || !/^[a-f0-9]{64}$/.test(payload.fingerprint)) return false;
+    const next = Object.freeze({
+      version: typeof payload.version === "string" ? payload.version.slice(0, 120) : "unknown",
+      fingerprint: payload.fingerprint,
+      glossaryEntries: Math.max(0, Number(payload.glossaryEntries || payload.entries) || 0),
+      speakers: Math.max(0, Number(payload.speakers) || 0)
+    });
+    const changed = next.fingerprint !== localizationProfileSummary.fingerprint;
+    localizationProfileSummary = next;
+    return changed;
+  }
+
+  async function refreshLocalizationProfile(language, signal) {
+    if (!LOCAL_BRIDGE) return false;
+    try {
+      const payload = await requestLocalHelper(
+        `/v1/localization/profile?gameId=${encodeURIComponent(game.id)}&language=${encodeURIComponent(language)}`,
+        { signal }
+      );
+      return acceptLocalizationProfileSummary(payload);
+    } catch (error) {
+      console.warn("Could not load the localization profile summary:", error);
+      return false;
+    }
+  }
+
+  function translationContextFor(source, hint) {
+    const supplied = hint && typeof hint === "object" ? hint : {};
+    const value = String(source || "");
+    const explicitName = value.match(/\\n<([^>\r\n]{1,120})>/i);
+    const sourceCode = value.match(/(?:^|[\s>])\\([A-Za-z][A-Za-z0-9_-]{0,39})(?=$|[\s\\<])/);
+    const knownSpeaker = typeof supplied.speakerName === "string" && supplied.speakerName.trim();
+    const isDialogue = supplied.kind === "dialogue" || knownSpeaker || explicitName || sourceCode;
+    return {
+      kind: typeof supplied.kind === "string" ? supplied.kind : (isDialogue ? "dialogue" : "narration"),
+      speakerId: typeof supplied.speakerId === "string" && supplied.speakerId
+        ? supplied.speakerId : (explicitName ? explicitName[1].toLowerCase().replace(/[^a-z0-9]+/g, "-") : "narrator"),
+      speakerName: knownSpeaker || (explicitName ? explicitName[1] : "NARRATOR"),
+      speakerCode: typeof supplied.speakerCode === "string" && supplied.speakerCode
+        ? supplied.speakerCode : (sourceCode ? sourceCode[1] : ""),
+      evidence: typeof supplied.speakerEvidence === "string" ? supplied.speakerEvidence
+        : (typeof supplied.evidence === "string" ? supplied.evidence
+          : (explicitName ? "source-name" : (sourceCode ? "source-code" : "fallback"))),
+      asset: typeof supplied.asset === "string" ? supplied.asset : "",
+      messageId: typeof supplied.messageId === "string" ? supplied.messageId : "",
+      sourceText: value
+    };
+  }
+
   async function logActivityToBridge(provider, source, translation, cached) {
     if (!LOCAL_BRIDGE) return;
     try {
@@ -1062,6 +1122,7 @@
       try {
         const result = await selectedProvider.translateChunk({
           text, language, sourceLanguage: SOURCE_LANGUAGE, signal,
+          translationContext: requestOptions.translationContext,
           model: providerUsesLMStudio(provider) ? settings.lmStudioModel : "",
           openAICompatible: providerUsesOpenAICompatible(provider) ? openAICompatibleConnection() : null,
           languageName: (LANGUAGES.find(([code]) => code === language) || [null, language])[1],
@@ -1266,6 +1327,7 @@
       try {
         const translated = await requestChunk(provider, text, language, signal, {
           deferRateLimits: true,
+          translationContext: options.translationContext,
           beforeAttempt: options.pacer ? () => options.pacer.wait(signal) : null,
           onAttempt: options.onAttempt,
           onAttemptResult: options.onAttemptResult
@@ -1349,7 +1411,8 @@
   }
 
   async function translateText(
-    source, language, provider, signal, allowNetwork, logCachedResult, onRateLimitWait, requestPacer
+    source, language, provider, signal, allowNetwork, logCachedResult, onRateLimitWait, requestPacer,
+    translationContext
   ) {
     if (!source || typeof source !== "string" || source.length < 2) return { text: source, cached: true };
     if (hasOfficialLocalization(language)) {
@@ -1418,8 +1481,12 @@
     const protectedResult = await translateWithProtectedMarkup(
       source, language, provider, signal,
       (chunk) => onRateLimitWait || requestPacer
-        ? requestRateLimitedChunk(provider, chunk, language, signal, onRateLimitWait, { pacer: requestPacer })
-        : requestChunk(provider, chunk, language, signal),
+        ? requestRateLimitedChunk(provider, chunk, language, signal, onRateLimitWait, {
+          pacer: requestPacer, translationContext: translationContextFor(source, translationContext)
+        })
+        : requestChunk(provider, chunk, language, signal, {
+          translationContext: translationContextFor(source, translationContext)
+        }),
       requestPacer ? 0 : undefined
     );
     const translated = protectedResult.text;
@@ -1859,7 +1926,8 @@
     job, language, provider, signal, generation, allowNetwork, onRateLimitWait, requestPacer
   ) {
     const result = await translateText(
-      job.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer
+      job.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer,
+      translationContextFor(job.source, { kind: job.kind })
     );
     if (generation !== settingsGeneration) throw new DOMException("Settings changed", "AbortError");
     if (result.skipped) {
@@ -1897,7 +1965,8 @@
     let allCached = true;
     for (const part of job.parts) {
       const fallback = await translateText(
-        part.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer
+        part.source, language, provider, signal, allowNetwork === true, false, onRateLimitWait, requestPacer,
+        translationContextFor(part.source, { kind: part.kind || job.kind })
       );
       allCached = allCached && fallback.cached;
       if (part.node && part.node.isConnected && sourceForNode(part.node) === part.source) {
@@ -3014,12 +3083,12 @@
     return { done, completedWords, totalWords, newlyTranslated, failed, failureReasons, googleMetrics };
   }
 
-  async function translateBulkLanguage(strings, language, provider, signal, onProgress) {
+  async function translateBulkLanguage(entries, language, provider, signal, onProgress) {
     if (provider === "google") {
-      return translateGoogleBulkLanguage(strings, language, provider, signal, onProgress);
+      return translateGoogleBulkLanguage(entries.map((entry) => entry.source), language, provider, signal, onProgress);
     }
     const providerConfig = PROVIDERS[provider];
-    const wordCounts = strings.map(countTranslationWords);
+    const wordCounts = entries.map((entry) => countTranslationWords(entry.source));
     const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
     let nextIndex = 0;
     let done = 0;
@@ -3032,8 +3101,9 @@
       while (true) {
         const index = nextIndex;
         nextIndex += 1;
-        if (index >= strings.length || signal.aborted) return;
-        const source = strings[index];
+        if (index >= entries.length || signal.aborted) return;
+        const entry = entries[index];
+        const source = entry.source;
         let waitReported = false;
         try {
           const result = await translateText(
@@ -3043,7 +3113,7 @@
               if (onProgress) onProgress({
                 done, completedWords, totalWords, newlyTranslated, failed, rateLimitSeconds: seconds
               });
-            }
+            }, undefined, entry
           );
           if (!result.cached) newlyTranslated += 1;
         } catch (error) {
@@ -3058,7 +3128,7 @@
         }
         done += 1;
         completedWords += wordCounts[index];
-        if (onProgress && (waitReported || done % 5 === 0 || done === strings.length)) {
+        if (onProgress && (waitReported || done % 5 === 0 || done === entries.length)) {
           onProgress({ done, completedWords, totalWords, newlyTranslated, failed, rateLimitSeconds: 0 });
         }
       }
@@ -3105,11 +3175,24 @@
       clearTranslationLog();
       setBulkButtonWorking(INTERRUPT_TRANSLATION_LABEL);
       setStatus("Words: 0/0 · Time left: calculating…");
-      const payload = await requestLocalHelper(`/v1/game/strings?gameId=${game.id}`, { signal: abortController.signal });
+      const profileChanged = await refreshLocalizationProfile(settings.language, abortController.signal);
+      if (profileChanged) {
+        memoryCache.clear();
+        fuzzyMemoryCache.clear();
+        await preloadMemoryCache();
+      }
+      const payload = await requestLocalHelper(
+        `/v1/game/strings?gameId=${encodeURIComponent(game.id)}&language=${encodeURIComponent(settings.language)}`,
+        { signal: abortController.signal }
+      );
       if (!payload || !Array.isArray(payload.strings)) throw new Error("Could not extract strings");
+      if (payload.localizationProfile) acceptLocalizationProfileSummary(payload.localizationProfile);
 
-      const strings = payload.strings.filter((source) => core.hasTranslatableText(source));
-      if (!strings.length) {
+      const rawEntries = Array.isArray(payload.entries) && payload.entries.length === payload.strings.length
+        ? payload.entries : payload.strings.map((source) => ({ source }));
+      const entries = rawEntries.filter((entry) => entry && typeof entry.source === "string"
+        && core.hasTranslatableText(entry.source));
+      if (!entries.length) {
         setStatus("No strings found in game assets");
         return;
       }
@@ -3118,7 +3201,7 @@
       const provider = settings.provider;
       let etaTracker = null;
       const result = await translateBulkLanguage(
-        strings, language, provider, abortController.signal,
+        entries, language, provider, abortController.signal,
         ({ done, completedWords, totalWords, newlyTranslated, rateLimitSeconds }) => {
           if (!etaTracker) etaTracker = createTranslationEtaTracker();
           if (rateLimitSeconds > 0) {
@@ -3128,7 +3211,7 @@
             ));
             return;
           }
-          const remainingJobs = Math.max(0, strings.length - done);
+          const remainingJobs = Math.max(0, entries.length - done);
           setStatus(translationProgressText(
             completedWords, totalWords,
             etaTracker.update(newlyTranslated, newlyTranslated + remainingJobs), 0, provider
@@ -3142,17 +3225,17 @@
 
       if (abortController.signal.aborted) {
         keepWorkspaceOpen = true;
-        setStatus(`Bulk stopped at ${done}/${strings.length}: ${activeAbortReason || "unknown cancellation reason"}${googleDetail}`);
+        setStatus(`Bulk stopped at ${done}/${entries.length}: ${activeAbortReason || "unknown cancellation reason"}${googleDetail}`);
       } else if (failed > 0) {
         keepWorkspaceOpen = true;
         const reasons = Array.from(failureReasons.entries())
           .map(([reason, count]) => `${reason} (${count})`)
           .join("; ");
-        setStatus(`Bulk incomplete: ${strings.length - failed}/${strings.length} saved · ${reasons}${googleDetail}`);
+        setStatus(`Bulk incomplete: ${entries.length - failed}/${entries.length} saved · ${reasons}${googleDetail}`);
       }
       else {
         await preloadMemoryCache();
-        setStatus(`Bulk complete: ${strings.length} total, ${newlyTranslated} new${googleDetail}`);
+        setStatus(`Bulk complete: ${entries.length} total, ${newlyTranslated} new${googleDetail}`);
         keepWorkspaceOpen = true;
         workspaceFinished = true;
       }
@@ -4107,6 +4190,10 @@
     memoryCache.clear();
     fuzzyMemoryCache.clear();
     if (announce) setStatus(`Loading ${languageName} cache…`);
+    await refreshLocalizationProfile(language);
+    if (generation !== settingsGeneration || language !== settings.language || provider !== settings.provider) {
+      return false;
+    }
     const [loaded] = await Promise.all([preloadMemoryCache(), preloadImportedPackCache(language)]);
     if (generation !== settingsGeneration || language !== settings.language || provider !== settings.provider) {
       return false;
@@ -4116,7 +4203,10 @@
     }
     refreshTranslationPackStatus();
     scheduleAutoTranslation(50);
-    if (announce) setStatus(`Ready: ${languageName} cache loaded (${loaded.toLocaleString()})`);
+    if (announce) {
+      setStatus(`Ready: ${languageName} cache loaded (${loaded.toLocaleString()})`
+        + ` · profile ${localizationProfileSummary.version} (${localizationProfileSummary.glossaryEntries} terms)`);
+    }
     return true;
   }
   function persistControlSettings() {

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "gameId": "omori",
+  "language": "ru",
+  "version": "omori-ru-draft-1",
+  "style": [
+    "Create a literary Russian localization rather than a literal machine translation.",
+    "Preserve each speaker's personality, emotional intensity, jokes, wordplay, and explicit adult meaning.",
+    "Keep short interface labels compact enough for the original OMORI windows."
+  ],
+  "speakers": [
+    { "id": "omori", "sourceName": "OMORI", "codes": ["omori"] },
+    { "id": "aubrey", "sourceName": "AUBREY", "codes": ["aub"] },
+    { "id": "basil", "sourceName": "BASIL", "codes": ["bas"] },
+    { "id": "hero", "sourceName": "HERO", "codes": ["her"] },
+    { "id": "kel", "sourceName": "KEL", "codes": ["kel"] },
+    { "id": "mari", "sourceName": "MARI", "codes": ["mar"] },
+    { "id": "polly", "sourceName": "POLLY", "codes": ["po"] },
+    { "id": "berly", "sourceName": "BERLY", "codes": ["ber"] },
+    { "id": "kim", "sourceName": "KIM", "codes": ["kim"] },
+    { "id": "pluto", "sourceName": "PLUTO", "codes": ["plu"] },
+    { "id": "rosa", "sourceName": "ROSA", "codes": ["ros"] },
+    { "id": "sweetheart", "sourceName": "SWEETHEART", "codes": ["swh"] },
+    { "id": "space-boyfriend", "sourceName": "SPACE BOYFRIEND", "codes": ["sbf"] },
+    { "id": "space-ex-boyfriend", "sourceName": "SPACE EX-BOYFRIEND", "codes": ["sxbf"] },
+    { "id": "mr-jawsum", "sourceName": "MR. JAWSUM", "codes": ["jaw"] },
+    { "id": "the-maverick", "sourceName": "THE MAVERICK", "codes": ["mav"] },
+    { "id": "artist", "sourceName": "ARTIST", "codes": ["art"] },
+    { "id": "vance", "sourceName": "VANCE", "codes": ["van"] }
+  ],
+  "glossary": [
+    {
+      "source": "MR. PLANTEGG",
+      "target": "МИСТЕР БАКЛАЖАНЧИК",
+      "type": "character",
+      "notes": "Approved OMORI terminology. Apply the same form inside longer lines."
+    }
+  ]
+}

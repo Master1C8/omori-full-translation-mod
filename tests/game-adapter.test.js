@@ -617,8 +617,8 @@ test("bulk translation continues while the game window is hidden", () => {
 });
 
 test("incomplete bulk translation reports its cancellation or provider failure", () => {
-  assert.match(runtimeSource, /Bulk stopped at \$\{done\}\/\$\{strings\.length\}: \$\{activeAbortReason/);
-  assert.match(runtimeSource, /Bulk incomplete: \$\{strings\.length - failed\}\/\$\{strings\.length\} saved/);
+  assert.match(runtimeSource, /Bulk stopped at \$\{done\}\/\$\{entries\.length\}: \$\{activeAbortReason/);
+  assert.match(runtimeSource, /Bulk incomplete: \$\{entries\.length - failed\}\/\$\{entries\.length\} saved/);
   assert.match(runtimeSource, /describeTranslationFailure\(error, provider\)/);
   assert.match(runtimeSource, /abortActiveOperation\("target language changed"\)/);
 });

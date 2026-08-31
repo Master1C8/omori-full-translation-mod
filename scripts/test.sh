@@ -63,10 +63,18 @@ if grep -RInE "381780|BepInEx|StorySentenceElement|EightyDaysRussianTranslator" 
   exit 1
 fi
 
-if grep -RIniE "glossary|словар" src launcher/macos launcher/windows; then
-  echo "Removed dictionary functionality is still present" >&2
+# Character voice metadata may live only in the transparent localization
+# profile. Keep the removed source->translation name shortcuts out of gameplay.
+if rg -n -i 'character(Name)?(Dictionary|Translations)|nameTranslations|hiddenCharacter' \
+  src/translation-core.js src/providers.js src/runtime-panel.js src/translator-runtime.js \
+  src/games/omori/adapter.js launcher/macos launcher/windows; then
+  echo "Hidden character-name dictionary functionality is still present" >&2
   exit 1
 fi
+[[ -s src/omori-localization-profile.json ]] || {
+  echo "Missing transparent OMORI localization profile" >&2
+  exit 1
+}
 
 if grep -RIniE "coc2|corruption of champions" \
   src/translation-core.js src/languages.js src/providers.js src/runtime-ui.js src/runtime-progress.js src/runtime-panel.js src/translator-runtime.js \
@@ -123,7 +131,7 @@ for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXEC
   }
 done
 
-for REQUIRED in 'ASSET_INDEX_SCHEMA' 'assetCache' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'LocalPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings'; do
+for REQUIRED in 'ASSET_INDEX_SCHEMA' 'assetCache' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'LocalPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings' '/v1/localization/profile'; do
   grep -Eq "$REQUIRED" src/local_service.py || {
     echo "Missing local service feature: $REQUIRED" >&2
     exit 1

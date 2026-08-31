@@ -16,13 +16,14 @@ class LocalPostRouter:
     ROUTES = {
         "/v1/gemini/key": ("set_gemini_key", ("apiKey",)),
         "/v1/gemini/key/remove": ("remove_gemini_key", ()),
-        "/v1/gemini/translate": ("gemini_translate", ("target", "targetName", "text")),
-        "/v1/lmstudio/translate": ("lmstudio_translate", ("target", "targetName", "text", "model")),
+        "/v1/gemini/translate": ("gemini_translate", ("target", "targetName", "text", "context")),
+        "/v1/lmstudio/translate": ("lmstudio_translate", ("target", "targetName", "text", "model", "context")),
         "/v1/openai-compatible/status": ("openai_compatible_status", ("preset", "baseURL")),
         "/v1/openai-compatible/key": ("set_openai_compatible_key", ("preset", "baseURL", "apiKey")),
         "/v1/openai-compatible/key/remove": ("remove_openai_compatible_key", ("preset", "baseURL")),
         "/v1/openai-compatible/translate": (
-            "openai_compatible_translate", ("target", "targetName", "text", "model", "preset", "baseURL")
+            "openai_compatible_translate",
+            ("target", "targetName", "text", "model", "preset", "baseURL", "context")
         ),
         "/v1/reset": ("reset_all_data", ("openAIBaseURLs",)),
         "/v1/launcher/reselect-executable": ("request_game_executable_change", ()),

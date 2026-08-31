@@ -71,7 +71,8 @@
           body: {
             text: context.text,
             target: context.language,
-            targetName: context.languageName || context.language
+            targetName: context.languageName || context.language,
+            context: context.translationContext
           },
           signal: context.signal
         });
@@ -104,7 +105,8 @@
             text: context.text,
             target: context.language,
             targetName: context.languageName || context.language,
-            model: context.model
+            model: context.model,
+            context: context.translationContext
           },
           signal: context.signal
         });
@@ -141,7 +143,8 @@
             targetName: context.languageName || context.language,
             model: connection.model,
             preset: connection.preset,
-            baseURL: connection.baseURL
+            baseURL: connection.baseURL,
+            context: context.translationContext
           },
           signal: context.signal
         });

@@ -21,6 +21,7 @@ WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
 [[ -x "$APP/Contents/Resources/VNRevivalTranslatorController" ]]
 [[ -x "$APP/Contents/Resources/local_service.py" ]]
 [[ -s "$APP/Contents/Resources/local_router.py" ]]
+[[ -s "$APP/Contents/Resources/omori-localization-profile.json" ]]
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
 [[ -s "$APP/Contents/Resources/steam-compat.js" ]]
@@ -60,6 +61,7 @@ grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/local_service.py" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/local_router.py" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/omori-localization-profile.json" <<< "$WINDOWS_CONTENTS"
 grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
 WINDOWS_NOTICES=$(unzip -p "$WINDOWS_ZIP" "$DIST_NAME/THIRD_PARTY_NOTICES.txt")
 grep -Fq "$PRODUCT_NAME bundles the Python embeddable runtime" <<< "$WINDOWS_NOTICES"

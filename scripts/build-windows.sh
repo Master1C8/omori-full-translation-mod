@@ -76,6 +76,7 @@ unzip -q "$PYTHON_ZIP" -d "$PYTHON_DIR"
 cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
 cp "$ROOT/src/local_service.py" "$RESOURCE_DIR/local_service.py"
 cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"
+cp "$ROOT/src/omori-localization-profile.json" "$RESOURCE_DIR/omori-localization-profile.json"
 cp "$GAME_MANIFEST" "$RESOURCE_DIR/game.json"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" \
   PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS"
