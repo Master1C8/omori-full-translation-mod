@@ -20,6 +20,8 @@ test("runtime panel renders product-owned labels and links", () => {
   assert.match(html, /OMORI Translator 0\.9\.44/);
   assert.match(html, /Interrupt translation \(progress will be saved\)/);
   assert.match(html, /href="https:\/\/example\.test\/referral"/);
+  assert.match(html, /<option value="opencode-zen">OpenCode Zen<\/option>/);
+  assert.match(html, /\$5 in Zen credits\. OpenCode Go requires a separate \$10\/month subscription/);
   assert.match(html, /href="https:\/\/example\.test\/"/);
   assert.match(html, />VN Revival<\/a>/);
   assert.match(html, /class="panel"/);

@@ -214,6 +214,61 @@ InputNames:
             "HEART:", "JUICE:", "ATTACK:", "DEFENSE:", "HIT:", "CLAMS", "OMORI",
         }.issubset(system_values))
 
+    def test_hero_extraction_decodes_visible_block_text_and_constructed_option_labels(self):
+        hero_yaml = r'''message_0:
+  text: >
+    MARI's picnic basket. \!Would you like to SAVE?
+message_empty:
+  text: >
+plugins:
+  optionsMenu:
+    general:
+      fullscreen:
+        text: FULLSCREEN
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "System.HERO"
+            path.write_bytes(b"encrypted")
+            with mock.patch.object(local_service, "decrypt_omori_data", return_value=hero_yaml.encode()):
+                values = local_service.extract_strings_from_hero(path)
+
+        self.assertIn("MARI's picnic basket. \\!Would you like to SAVE?\n", values)
+        self.assertNotIn("\n", values)
+        self.assertIn("FULLSCREEN", values)
+        self.assertIn("FULLSCREEN:", values)
+
+    def test_xx_blue_extraction_includes_visible_options_save_and_chapter_fields(self):
+        hero_yaml = '''Chapter_Names:
+  unknown: "???"
+  prologue: PROLOGUE
+Omori_Mainmenu_Sceneoptions:
+  commands: ["GENERAL", "AUDIO", "CONTROLS", "SYSTEM"]
+Omori_Save_Load:
+  file: "FILE %1:"
+  level: "LEVEL:"
+  playtime: "TOTAL PLAYTIME:"
+  location: "LOCATION:"
+  overwrite_file: Overwrite this file?
+  load_file: Load this file?
+  save_command: SAVE
+  load_command: LOAD
+Yin_Blackjack:
+  maincommands: [New Game, Continue, Quit]
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "XX_BLUE.HERO"
+            path.write_bytes(b"encrypted")
+            with mock.patch.object(local_service, "decrypt_omori_data", return_value=hero_yaml.encode()):
+                values = local_service.extract_strings_from_hero(path)
+
+        self.assertTrue({
+            "PROLOGUE", "GENERAL", "AUDIO", "CONTROLS", "SYSTEM", "FILE %1:",
+            "LEVEL:", "TOTAL PLAYTIME:", "LOCATION:", "Overwrite this file?",
+            "Load this file?", "SAVE", "LOAD",
+        }.issubset(values))
+        self.assertNotIn("???", values)
+        self.assertNotIn("New Game", values)
+
     def test_bulk_extraction_uses_selected_game_and_reports_asset_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -349,7 +404,7 @@ InputNames:
             self.assertEqual(caught.exception.code, "invalid_api_key")
             self.assertIsNone(store.value)
 
-    def test_macos_keychain_receives_secret_over_stdin_not_process_arguments(self):
+    def test_macos_keychain_receives_secret_twice_over_stdin_not_process_arguments(self):
         store = local_service.GeminiCredentialStore("omori")
         api_key = "secret-key-that-is-long-enough"
         completed = mock.Mock(returncode=0, stderr="")
@@ -359,7 +414,7 @@ InputNames:
         command = run.call_args.args[0]
         self.assertNotIn(api_key, command)
         self.assertEqual(command[-1], "-w")
-        self.assertEqual(run.call_args.kwargs["input"], api_key + "\n")
+        self.assertEqual(run.call_args.kwargs["input"], f"{api_key}\n{api_key}\n")
 
     def test_gemini_translation_uses_structured_output_and_relaxed_adjustable_filters(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -498,6 +553,9 @@ InputNames:
             connection = bridge._openai_connection("opencode-go", "https://ignored.example/v1")
             self.assertEqual(connection["baseURL"], "https://opencode.ai/zen/go/v1")
             self.assertTrue(connection["requiresKey"])
+            zen = bridge._openai_connection("opencode-zen", "https://ignored.example/v1")
+            self.assertEqual(zen["baseURL"], "https://opencode.ai/zen/v1")
+            self.assertTrue(zen["requiresKey"])
             local = bridge._openai_connection("custom", "http://127.0.0.1:8000/v1/")
             self.assertEqual(local["baseURL"], "http://127.0.0.1:8000/v1")
             self.assertTrue(local["offline"])
@@ -561,6 +619,10 @@ InputNames:
             )
             request_body = json.loads(captured["request"].data.decode("utf-8"))
             self.assertEqual(request_body["model"], "kimi-k3")
+            self.assertEqual(
+                request_body["max_tokens"],
+                local_service.OPENAI_COMPATIBLE_MIN_COMPLETION_TOKENS,
+            )
             self.assertEqual(request_body["response_format"]["type"], "json_schema")
             self.assertNotIn("RPG Maker", request_body["messages"][0]["content"])
             self.assertNotIn("VRCTXSEP", request_body["messages"][0]["content"])
@@ -628,6 +690,49 @@ InputNames:
                 result["usageSummary"],
             )
 
+    def test_openai_compatible_accepts_plain_text_when_schema_is_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            response = {
+                "choices": [{"message": {"content": "Привет"}}],
+                "usage": {
+                    "prompt_tokens": 90,
+                    "completion_tokens": 414,
+                    "total_tokens": 504,
+                    "completion_tokens_details": {"reasoning_tokens": 388},
+                },
+            }
+            with mock.patch.object(
+                local_service.urllib.request, "urlopen", return_value=FakeHTTPResponse(response)
+            ):
+                result = bridge.openai_compatible_translate(
+                    "ru", "Russian", "Hello", "glm-5.3-flash", "opencode-go", ""
+                )
+
+            self.assertEqual(result["translatedText"], "Привет")
+            self.assertEqual(result["usage"]["reasoningTokens"], 388)
+
+    def test_openai_compatible_accepts_fenced_schema_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            response = {
+                "choices": [{"message": {
+                    "content": '```json\n{"translation": "Привет"}\n```'
+                }}],
+            }
+            with mock.patch.object(
+                local_service.urllib.request, "urlopen", return_value=FakeHTTPResponse(response)
+            ):
+                result = bridge.openai_compatible_translate(
+                    "ru", "Russian", "Hello", "glm-5.3-flash", "opencode-go", ""
+                )
+
+            self.assertEqual(result["translatedText"], "Привет")
+
     def test_openai_compatible_records_usage_before_rejecting_invalid_translation(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = local_service.LocalServiceBridge(
@@ -650,6 +755,32 @@ InputNames:
             self.assertEqual(caught.exception.details["usageSummary"]["requests"], 1)
             record = json.loads(bridge.openai_usage_log.read_text(encoding="utf-8").strip())
             self.assertEqual(record["usage"]["totalTokens"], 10)
+
+    def test_openai_compatible_stops_when_reasoning_consumes_the_completion_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(
+                Path(directory), openai_credential_store=FakeCredentialStore("secret-key-123456")
+            )
+            response = {
+                "choices": [{"finish_reason": "length", "message": {"content": ""}}],
+                "usage": {
+                    "prompt_tokens": 70,
+                    "completion_tokens": 2048,
+                    "total_tokens": 2118,
+                    "completion_tokens_details": {"reasoning_tokens": 2048},
+                },
+            }
+            with mock.patch.object(
+                local_service.urllib.request, "urlopen", return_value=FakeHTTPResponse(response)
+            ):
+                with self.assertRaises(local_service.BridgeError) as caught:
+                    bridge.openai_compatible_translate(
+                        "ru", "Russian", "Hello", "glm-5.3-flash", "opencode-go", ""
+                    )
+
+            self.assertEqual(caught.exception.code, "openai_reasoning_budget_exhausted")
+            self.assertEqual(caught.exception.details["usage"]["reasoningTokens"], 2048)
+            self.assertEqual(caught.exception.details["usageSummary"]["requests"], 1)
 
     def test_openai_compatible_remote_provider_requires_saved_key(self):
         with tempfile.TemporaryDirectory() as directory:

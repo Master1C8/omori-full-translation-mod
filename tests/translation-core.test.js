@@ -76,6 +76,9 @@ test("filters markup-only, font coverage, and encoded ROBOHEART assets before pr
   assert.equal(core.hasTranslatableText("\\bas...\\| ..."), false);
   assert.equal(core.hasTranslatableText("\\\\fs[30]ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789\\n"), false);
   assert.equal(core.hasTranslatableText("V2lsbCB5b3UgbG92ZSBtZT8=\\n<ROBOHEART>"), false);
+  assert.equal(core.hasTranslatableText("\\>ROBOHEART: \\<SGVscC4uLiBtZS4uLgo=\n"), false);
+  assert.equal(core.hasTranslatableText("\\>ROBOHEART: \\<TXkgbGlmZSBpcyBzdWZmZXJpbmch\n"), false);
+  assert.equal(core.hasTranslatableText("\\>SNOW ANGEL: \\<\\quake[1]Acta deos numquam mortalia fallunt...\n"), false);
   assert.equal(core.hasTranslatableText("1F"), false);
   assert.equal(core.hasTranslatableText("DW itemBuyingPromptMessage"), false);
   assert.equal(core.hasTranslatableText("DW onItemListSellOkMessage"), false);
@@ -304,6 +307,46 @@ test("validates numbers and currency without fixing their word position", () => 
   );
 });
 
+test("does not split ordinary multi-digit values or ordinal fractions into protected suffix digits", () => {
+  const source = "1 guest, 20 CLAMS, 8/8ths, 150mg, 1,500 CLAMS, 10000 CLAMS, 5TH";
+  const tokens = core.tokenizeProtectedMarkup(source)
+    .filter((part) => part.type === "token")
+    .map((part) => part.value);
+  assert.deepEqual(tokens, ["1", "150mg", "1,500", "10000", "5TH"]);
+  assert.equal(
+    core.protectedMarkupLayoutMatches("8/8ths of a WHOLE PIZZA.<br>", "8/8 целой пиццы.<br>"),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches("8/8ths of a WHOLE PIZZA.<br>", "8/8 целой пиццы.<br>", "ru"),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "8/8ths of a WHOLE PIZZA.<br>\nHeals 250 HEART to all friends.",
+      "8/8 целой пиццы.<br>\nИсцеляет 250 Сердечко всем друзьям.",
+      "ru"
+    ),
+    true
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "Recyclable material.<br>\nGive to RECYCLE MACHINE for 20 CLAMS.",
+      "Перерабатываемый материал.<br>\nОтдать в переработку на двоих0 МОЛЛЮСКИ.",
+      "ru"
+    ),
+    false
+  );
+  assert.equal(
+    core.translationQualityMatches(
+      "Recyclable material.<br>\nGive to RECYCLE MACHINE for 25 CLAMS.",
+      "Перерабатываемый материал.<br>\nОтдать в переработку на двоих5 МОЛЛЮСКИ.",
+      "ru"
+    ),
+    false
+  );
+});
+
 test("normalizes OMORI leetspeak and keeps measurement literals out of Google", async () => {
   const letter = '\\"dear sweatheart...\\! spend the rest of our lives 2geter.\\"';
   const letterCalls = [];
@@ -345,6 +388,10 @@ test("keeps RPG Maker save filenames literal without false English carryover", a
 });
 
 test("rejects substantial untranslated English carryover for Cyrillic targets", () => {
+  assert.equal(core.translationQualityMatches("ANNOY", "ANNOY", "ru"), false);
+  assert.equal(core.translationQualityFailureReason("ANNOY", "ANNOY", "ru"), "english_carryover");
+  assert.equal(core.translationQualityMatches("OMORI", "OMORI", "ru"), false);
+  assert.equal(core.translationQualityMatches("DVD", "DVD", "ru"), true);
   assert.equal(
     core.translationQualityMatches(
       "Delicious \\c[3]COOKIES\\c[0]!", "Вкусный \\c[3]ФАЙЛЫ COOKIE\\c[0]!", "ru"
@@ -382,6 +429,55 @@ test("rejects substantial untranslated English carryover for Cyrillic targets", 
   assert.equal(core.translationQualityMatches("Shift key-", "Клавиша Shift-", "ru"), true);
   assert.equal(core.translationQualityMatches("Chock-full of DVDs.", "Полно DVD.", "ru"), true);
   assert.equal(core.translationQualityMatches("Sweetheart doll.", "Muñeca Sweetheart.", "es"), true);
+});
+
+test("rejects an echoed ALL CAPS provider result before caching", async () => {
+  await assert.rejects(
+    core.translateProtectedText("ANNOY", async (text) => {
+      assert.equal(text, "Annoy");
+      return "Annoy";
+    }, { language: "ru" }),
+    (error) => error && error.code === "translation_quality_invalid"
+      && error.qualityReason === "english_carryover"
+  );
+});
+
+test("keeps exact intentionally foreign OMORI lines out of Bulk", () => {
+  assert.equal(
+    core.hasTranslatableText("\\n<BUTLER MOLE>Sors de ma chambre ou j'appellerai les flics!"),
+    false
+  );
+  assert.equal(core.hasTranslatableText("\\n<VEGGIE KID>Yahoo!"), false);
+  assert.equal(core.hasTranslatableText("\\n<VEGGIE KID>ANNOY!"), true);
+});
+
+test("preserves generic CamelCase and multi-word title names in Cyrillic translations", () => {
+  const accepted = [
+    ["(Status) Seal Ultimate", "(Статус) Печать Ultimate"],
+    ["BlackSpace Album (Hidden)", "Альбом BlackSpace (скрытый)"],
+    ["Dreamworld Album (Hidden)", "Альбом Dreamworld (скрытый)"],
+    [
+      "Perfect Hearts angelic voice blows all who hears it \naway.",
+      "Ангельский голос Perfect Hearts поражает всех, кто его слышит\nпрочь."
+    ],
+    [
+      "Perfect Hearts beauty steals a targets breath away.\nRemove all Juice",
+      "Красота Perfect Hearts захватывает дух.\nУдалить весь сок"
+    ],
+    [
+      "Perfect Hearts beauty steals a targets heart.\nRestore a bit of Perfect Hearts Heart",
+      "Красавица Perfect Hearts крадет сердце цели.\nВосстановите немного Perfect Hearts Heart"
+    ]
+  ];
+  for (const [source, translation] of accepted) {
+    assert.equal(core.translationQualityMatches(source, translation, "ru"), true, source);
+  }
+  assert.equal(
+    core.translationQualityMatches(
+      "A plant nursery full of very young kids!", "Питомник, полный very young kids!", "ru"
+    ),
+    false
+  );
 });
 
 test("keeps stylized repeated product names and elongated vocalizations", () => {

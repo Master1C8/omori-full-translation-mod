@@ -93,6 +93,11 @@ test("full-translation mode keeps gameplay cache-only and starts explicit transl
   assert.doesNotMatch(runtimeSource, /privacyAccepted|providerRequiresPrivacy|allowBulk|cancelBulk/);
   assert.doesNotMatch(runtimeSource, /isBulkMode/);
   assert.doesNotMatch(runtimeSource, /allowAuto/);
+  assert.match(runtimeSource, /adapted && core\.translationQualityMatches\(source, adapted, language\) \? adapted : null/);
+  assert.match(runtimeSource, /if \(cached && !core\.translationQualityMatches\(source, cached, language\)\) cached = null/);
+  assert.match(runtimeSource, /providerAliasMemoryCache\.get\(core\.normalizeText\(source\)\)/);
+  assert.match(runtimeSource, /ranked\[0\]\[1\] >= 2/);
+  assert.match(runtimeSource, /return \{ text: derivedAlias, cached: true, derivedAlias: true \}/);
 });
 
 test("official game localizations disable translator activity except language selection", () => {
@@ -616,4 +621,24 @@ test("incomplete bulk translation reports its cancellation or provider failure",
   assert.match(runtimeSource, /Bulk incomplete: \$\{strings\.length - failed\}\/\$\{strings\.length\} saved/);
   assert.match(runtimeSource, /describeTranslationFailure\(error, provider\)/);
   assert.match(runtimeSource, /abortActiveOperation\("target language changed"\)/);
+});
+
+test("AI bulk and test phrase stop immediately on invalid credentials or model configuration", () => {
+  assert.match(runtimeSource, /function isTranslationOperationFatal\(error\)/);
+  assert.match(runtimeSource, /"openai_key_missing", "openai_key_invalid", "openai_model_missing"/);
+  assert.match(runtimeSource, /"openai_reasoning_budget_exhausted", "openai_empty_translation", "openai_invalid_response"/);
+  assert.match(runtimeSource, /if \(isTranslationOperationFatal\(error\)\) break/);
+  assert.match(runtimeSource, /fatalTranslationOperationError\(error, provider, "Bulk"\)/);
+  assert.match(runtimeSource, /fatalTranslationOperationError\(error, provider, "Test phrase"\)/);
+});
+
+test("OpenCode model ids are normalized without changing custom provider ids", () => {
+  assert.match(runtimeSource, /const enteredModel = String\(next\.model \|\| ""\)\.trim\(\)\.slice\(0, 512\)/);
+  assert.match(runtimeSource, /preset === "opencode-go" \|\| preset === "opencode-zen"/);
+  assert.match(runtimeSource, /enteredModel\.toLowerCase\(\) : enteredModel/);
+});
+
+test("OpenAI-compatible readiness rejects unauthorized saved credentials before translation", () => {
+  assert.match(runtimeSource, /status\.httpStatus === 401 \|\| status\.httpStatus === 403/);
+  assert.match(runtimeSource, /Provider.*rejected the saved API key/);
 });

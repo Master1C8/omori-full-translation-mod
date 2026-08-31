@@ -43,6 +43,7 @@
   const GOOGLE_CONTEXT_VERSION = "google-context-v1";
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
     "opencode-go": Object.freeze({ name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresKey: true }),
+    "opencode-zen": Object.freeze({ name: "OpenCode Zen", baseURL: "https://opencode.ai/zen/v1", requiresKey: true }),
     openrouter: Object.freeze({ name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", requiresKey: true }),
     deepseek: Object.freeze({ name: "DeepSeek", baseURL: "https://api.deepseek.com", requiresKey: true }),
     lmstudio: Object.freeze({ name: "LM Studio", baseURL: "http://127.0.0.1:1234/v1", requiresKey: false }),
@@ -164,6 +165,8 @@
   }
   const memoryCache = new Map();
   const fuzzyMemoryCache = new Map();
+  const providerAliasRecords = new Map();
+  const providerAliasMemoryCache = new Map();
   const knownCacheKeys = new Set();
   let knownCacheScope = "";
   let knownCacheKeysComplete = false;
@@ -582,10 +585,12 @@
     for (const entry of normalized) {
       memoryCacheSet(entry.key, entry.value);
       knownCacheKeys.add(entry.key);
+      updateProviderAliasRecord(entry.key, entry.value, settings.language, settings.provider);
       const oldValue = previous.get(entry.key);
       if (oldValue !== null && oldValue !== undefined) adjustCacheMetadata(metadata, entry.key, oldValue, -1);
       adjustCacheMetadata(metadata, entry.key, entry.value, 1);
     }
+    rebuildProviderAliasMemoryCache();
     scheduleCacheMetadataSave();
     return normalized.length;
   }
@@ -594,10 +599,52 @@
     return (await cachePutBatch([{ key, value }])) === 1;
   }
 
+  function updateProviderAliasRecord(key, value, language, provider) {
+    providerAliasRecords.delete(key);
+    if (typeof adapter.deriveCacheAliases !== "function"
+      || core.cacheKeyLanguage(key) !== language
+      || core.cacheKeyProvider(key) !== provider
+      || (core.cacheKeyGame(key) && core.cacheKeyGame(key) !== game.id)) return;
+    let aliases = [];
+    try {
+      aliases = adapter.deriveCacheAliases(core.cacheKeySource(key), value, core) || [];
+    } catch (_) {}
+    aliases = aliases.filter((alias) => {
+      if (!alias || typeof alias.source !== "string" || typeof alias.translation !== "string") return false;
+      const source = core.normalizeText(alias.source);
+      const translation = core.normalizeText(alias.translation);
+      return source && translation && core.translationQualityMatches(source, translation, language);
+    }).map((alias) => ({
+      source: core.normalizeText(alias.source),
+      translation: core.normalizeText(alias.translation)
+    }));
+    if (aliases.length) providerAliasRecords.set(key, aliases);
+  }
+
+  function rebuildProviderAliasMemoryCache() {
+    providerAliasMemoryCache.clear();
+    const candidates = new Map();
+    for (const aliases of providerAliasRecords.values()) {
+      for (const alias of aliases) {
+        if (!candidates.has(alias.source)) candidates.set(alias.source, new Map());
+        const translations = candidates.get(alias.source);
+        translations.set(alias.translation, (translations.get(alias.translation) || 0) + 1);
+      }
+    }
+    for (const [source, translations] of candidates) {
+      const ranked = Array.from(translations).sort((left, right) => right[1] - left[1]);
+      if (ranked[0] && ranked[0][1] >= 2 && (!ranked[1] || ranked[0][1] > ranked[1][1])) {
+        providerAliasMemoryCache.set(source, ranked[0][0]);
+      }
+    }
+  }
+
   async function preloadMemoryCache() {
     let loaded = 0;
     knownCacheKeys.clear();
     knownCacheKeysComplete = false;
+    providerAliasRecords.clear();
+    providerAliasMemoryCache.clear();
     try {
       const language = settings.language;
       const provider = settings.provider;
@@ -620,6 +667,7 @@
               if (core.cacheKeyGame(key) === game.id || !core.cacheKeyGame(key)) {
                 knownCacheKeys.add(key);
                 memoryCacheSet(key, cursor.value);
+                updateProviderAliasRecord(key, cursor.value, language, provider);
                 loaded += 1;
               }
             }
@@ -627,6 +675,7 @@
           cursor.continue();
         };
       });
+      rebuildProviderAliasMemoryCache();
       knownCacheKeysComplete = true;
     } catch (_) {}
     return loaded;
@@ -653,6 +702,7 @@
         };
       });
       if (previous !== null) adjustCacheMetadata(metadata, key, previous, -1);
+      if (providerAliasRecords.delete(key)) rebuildProviderAliasMemoryCache();
       scheduleCacheMetadataSave();
     } catch (_) {}
   }
@@ -781,6 +831,8 @@
       transaction.onerror = () => reject(transaction.error);
     });
     memoryCache.clear();
+    providerAliasRecords.clear();
+    providerAliasMemoryCache.clear();
     knownCacheKeys.clear();
     knownCacheKeysComplete = false;
     const removed = metadata.languages[language];
@@ -819,6 +871,8 @@
     });
     memoryCache.clear();
     fuzzyMemoryCache.clear();
+    providerAliasRecords.clear();
+    providerAliasMemoryCache.clear();
     knownCacheKeys.clear();
     knownCacheKeysComplete = false;
     await rebuildCacheMetadata();
@@ -846,6 +900,8 @@
     });
     memoryCache.clear();
     fuzzyMemoryCache.clear();
+    providerAliasRecords.clear();
+    providerAliasMemoryCache.clear();
     knownCacheKeys.clear();
     knownCacheKeysComplete = true;
     knownCacheScope = translationCacheScope(settings.language, settings.provider);
@@ -973,6 +1029,23 @@
     return code === "openai_rate_limited" || /HTTP 429|rate.?limit|too many requests/i.test(message);
   }
 
+  function isTranslationOperationFatal(error) {
+    const code = String(error && error.code || "");
+    return new Set([
+      "gemini_key_missing", "gemini_key_invalid", "gemini_quota_exceeded",
+      "lmstudio_unavailable", "lmstudio_model_missing", "lmstudio_model_unavailable",
+      "openai_key_missing", "openai_key_invalid", "openai_model_missing",
+      "openai_model_unavailable", "openai_unavailable", "openai_usage_tracking_failed",
+      "openai_reasoning_budget_exhausted", "openai_empty_translation", "openai_invalid_response"
+    ]).has(code);
+  }
+
+  function fatalTranslationOperationError(error, provider, operation) {
+    const wrapped = new Error(`${operation} stopped: ${describeTranslationFailure(error, provider)}`);
+    wrapped.code = String(error && error.code || "translation_operation_fatal");
+    return wrapped;
+  }
+
   async function requestChunk(provider, text, language, signal, options) {
     const selectedProvider = PROVIDERS[provider];
     if (!selectedProvider) throw new Error("Unknown translation service");
@@ -1013,6 +1086,7 @@
         if (error && error.name === "AbortError") throw error;
         lastError = error;
         if (error && error.code === "openai_usage_tracking_failed") break;
+        if (isTranslationOperationFatal(error)) break;
         if (requestOptions.deferRateLimits && isTranslationRateLimited(error)) break;
         if (attempt + 1 < retries) await sleep(350 * Math.pow(2, attempt), signal);
       }
@@ -1079,6 +1153,9 @@
     if (code === "openai_key_invalid") return "The OpenAI-compatible API key was rejected";
     if (code === "openai_model_missing" || code === "openai_model_unavailable") return "Select an available OpenAI-compatible model";
     if (code === "openai_usage_tracking_failed") return "Exact OpenAI-compatible usage could not be recorded";
+    if (code === "openai_reasoning_budget_exhausted") return "The model spent its output budget on reasoning and returned no translation";
+    if (code === "openai_empty_translation") return "The model returned no translation";
+    if (code === "openai_invalid_response") return "The model returned an unsupported response format";
     if (code === "openai_format_invalid") return "The provider changed a protected game control code";
     if (code === "markup_format_invalid") return "Protected OMORI markup could not be reconstructed safely";
     if (code === "translation_quality_invalid") return "The provider lost or duplicated visible source text";
@@ -1291,6 +1368,14 @@
       return { text: importedTranslation, cached: true, imported: true };
     }
 
+    const derivedAlias = core.adaptTranslationToSourceLayout(
+      source, providerAliasMemoryCache.get(core.normalizeText(source))
+    );
+    if (derivedAlias && core.translationQualityMatches(source, derivedAlias, language)) {
+      if (logCachedResult) appendTranslationLog(source, derivedAlias, language, provider, true);
+      return { text: derivedAlias, cached: true, derivedAlias: true };
+    }
+
     const key = makeTranslationCacheKey(source, language, provider);
     const fuzzyKey = `${game.id}\n${providerCacheScope(provider)}\n${language}\n${core.stripOmoriPrefixes(source)}`;
 
@@ -1313,6 +1398,11 @@
       await cacheDelete(key);
       cached = null;
     }
+
+    // Do not delete a user's existing entry here. Treat an old quality-invalid
+    // provider result as a cache miss so cache-only gameplay stays original and
+    // the next explicit Screen/Bulk operation may overwrite it safely.
+    if (cached && !core.translationQualityMatches(source, cached, language)) cached = null;
 
     if (cached) {
       if (logCachedResult) {
@@ -1710,6 +1800,10 @@
     if (hasOfficialLocalization(language) || !core.normalizeText(source)) return null;
     const imported = importedPackMemoryGet(source, language);
     if (imported) return imported;
+    const alias = core.adaptTranslationToSourceLayout(
+      source, providerAliasMemoryCache.get(core.normalizeText(source))
+    );
+    if (alias && core.translationQualityMatches(source, alias, language)) return alias;
     const key = makeTranslationCacheKey(source, language, provider);
     let hit = memoryCache.get(key);
     if (!hit) {
@@ -1719,7 +1813,8 @@
         hit = fuzzyMemoryCache.get(fuzzyKey);
       }
     }
-    return core.adaptTranslationToSourceLayout(source, hit);
+    const adapted = core.adaptTranslationToSourceLayout(source, hit);
+    return adapted && core.translationQualityMatches(source, adapted, language) ? adapted : null;
   }
 
   function buildScreenAdapterJobs(sources) {
@@ -1944,6 +2039,10 @@
       }
       if (status.requiresKey && !status.configured) {
         setStatus(`Add the ${status.name || "provider"} API key first`);
+        return false;
+      }
+      if (status.httpStatus === 401 || status.httpStatus === 403) {
+        setStatus(status.message || `${status.name || "Provider"} rejected the saved API key`);
         return false;
       }
       if (!openAICompatibleConnection().model) {
@@ -2949,6 +3048,9 @@
           if (!result.cached) newlyTranslated += 1;
         } catch (error) {
           if (error && error.name === "AbortError") return;
+          if (isTranslationOperationFatal(error)) {
+            throw fatalTranslationOperationError(error, provider, "Bulk");
+          }
           failed += 1;
           const reason = describeTranslationFailure(error, provider);
           failureReasons.set(reason, (failureReasons.get(reason) || 0) + 1);
@@ -3187,6 +3289,9 @@
             }
           } catch (error) {
             if (error && error.name === "AbortError") return;
+            if (isTranslationOperationFatal(error)) {
+              throw fatalTranslationOperationError(error, provider, "Test phrase");
+            }
             failed += 1;
             const reason = describeTranslationFailure(error, provider);
             failureReasons.set(reason, (failureReasons.get(reason) || 0) + 1);
@@ -4142,14 +4247,16 @@
     openAICompatibleBaseURLInput.value = connection.baseURL;
     openAICompatibleBaseURLInput.disabled = openAICompatibleBusy || !LOCAL_BRIDGE || connection.preset !== "custom";
     openAICompatibleModelInput.value = connection.model;
-    openCodeGoReferralLink.hidden = connection.preset !== "opencode-go";
+    openCodeGoReferralLink.hidden = connection.preset !== "opencode-go" && connection.preset !== "opencode-zen";
   }
   function applyOpenAICompatibleSettings(next, announce) {
     const preset = OPENAI_COMPATIBLE_PRESETS[next.preset] ? next.preset : defaults.openAICompatiblePreset;
     const baseURL = preset === "custom"
       ? String(next.baseURL || "").trim().slice(0, 2048)
       : OPENAI_COMPATIBLE_PRESETS[preset].baseURL;
-    const model = String(next.model || "").trim().slice(0, 512);
+    const enteredModel = String(next.model || "").trim().slice(0, 512);
+    const model = preset === "opencode-go" || preset === "opencode-zen"
+      ? enteredModel.toLowerCase() : enteredModel;
     const changed = settings.openAICompatiblePreset !== preset
       || settings.openAICompatibleBaseURL !== baseURL
       || settings.openAICompatibleModel !== model;

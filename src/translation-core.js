@@ -151,12 +151,24 @@
 
   function isOpaqueEncodedText(value) {
     const source = String(value == null ? "" : value);
+    const speakerPayload = source.match(
+      /^\\>[^:\r\n]{2,80}:\s*\\<([A-Za-z0-9+/]{16,}={0,2})\s*$/
+    );
+    if (speakerPayload) return true;
     if (!/\\n<ROBOHEART>/i.test(source)) return false;
     const encoded = source
       .replace(/<br\s*\/?\s*>/gi, "")
       .replace(/\\n<ROBOHEART>[\s\S]*$/i, "")
       .replace(/\s+/g, "");
     return encoded.length >= 16 && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded);
+  }
+
+  function isOpaqueForeignText(value) {
+    const source = String(value == null ? "" : value);
+    if (/^\\>[^:\r\n]{2,80}:\s*\\<(?:\\quake\[1\])?Acta deos numquam mortalia fallunt\.\.\.\s*$/i
+      .test(source)) return true;
+    return /^\\n<[^>\r\n]{2,80}>(?:Sors de ma chambre ou j'appellerai les flics!|Yahoo!)\s*$/i
+      .test(source);
   }
 
   function isFontCoverageText(value) {
@@ -172,7 +184,8 @@
   }
 
   function hasTranslatableText(value) {
-    if (isOpaqueEncodedText(value) || isFontCoverageText(value) || isTechnicalIdentifierText(value)) return false;
+    if (isOpaqueEncodedText(value) || isOpaqueForeignText(value)
+      || isFontCoverageText(value) || isTechnicalIdentifierText(value)) return false;
     return tokenizeProtectedMarkup(value).some((segment) =>
       segment.type === "text" && (hasEnglishText(segment.value) || /^[AIai]$/.test(segment.value.trim()))
     );
@@ -186,8 +199,11 @@
     match = rest.match(/^[A-Za-z0-9_-]+\.rpgsave\b/i);
     if (match) return match[0];
 
-    match = rest.match(/^(?:[$€£¥₽]\s*\d[\d,.]*|\d[\d,.]*\s*[$€£¥₽]|\d{1,2}(?:AM|PM)\b|\d+(?:[.,]\d+)?\s*(?:mcg|mg|kg|ml|g|l)\b|\d{1,3}(?:,\d{3})+|\d{4,}|\d\b|\d+(?:ST|ND|RD|TH)\b)/i);
-    if (match) return match[0];
+    const numericBoundary = offset === 0 || !/[A-Za-z0-9/]/.test(text[offset - 1]);
+    if (numericBoundary) {
+      match = rest.match(/^(?:[$€£¥₽]\s*\d[\d,.]*|\d[\d,.]*\s*[$€£¥₽]|\d{1,2}(?:AM|PM)\b|\d+(?:[.,]\d+)?\s*(?:mcg|mg|kg|ml|g|l)\b|\d{1,3}(?:,\d{3})+|\d{4,}|\d+[.,]\d+|\d+(?:ST|ND|RD|TH)S?\b|\d(?![A-Za-z0-9/]|[.,]\d))/i);
+      if (match) return match[0];
+    }
 
     if (rest[0] === "\\") {
       for (const command of OMORI_BARE_COMMANDS) {
@@ -380,6 +396,17 @@
         stems.add(englishWordStem(word));
       }
     }
+    const titlePhrases = text.match(
+      /\b[A-Z][a-z]+(?:[A-Z][A-Za-z]*)?(?:\s+[A-Z][a-z]+(?:[A-Z][A-Za-z]*)?)+\b/g
+    ) || [];
+    for (const phrase of titlePhrases) {
+      for (const word of phrase.match(/[A-Z][A-Za-z'’-]{3,}/g) || []) {
+        stems.add(englishWordStem(word));
+      }
+    }
+    for (const word of text.match(/\b[A-Z][a-z]+(?:[A-Z][A-Za-z]*)+\b/g) || []) {
+      stems.add(englishWordStem(word));
+    }
     return stems;
   }
 
@@ -406,10 +433,21 @@
     const sourceLetters = visibleLetterCount(source);
     const targetLetters = visibleLetterCount(translation);
     if (!sourceLetters || !targetLetters) return sourceLetters === targetLetters ? "" : "visible_text_missing";
+    if (CYRILLIC_TARGET_LANGUAGES.has(String(language || ""))) {
+      const sourceVisible = plainProtectedText(source).replace(/\s+/g, " ").trim().toLowerCase();
+      const targetVisible = plainProtectedText(translation).replace(/\s+/g, " ").trim().toLowerCase();
+      // A provider may echo a short ALL CAPS skill or UI label verbatim. Keep
+      // true abbreviations such as DVD, but do not cache a four-letter-or-longer
+      // Latin source as a completed Cyrillic translation. Preserved game names
+      // inside an otherwise translated sentence remain handled below.
+      if (sourceVisible === targetVisible && /[a-z]{4,}/.test(sourceVisible)) {
+        return "english_carryover";
+      }
+    }
     const ratio = targetLetters / sourceLetters;
     const compactTarget = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(plainProtectedText(translation));
     const numericLiterals = (value) => Array.from(
-      String(value).matchAll(/(?:^|[^A-Za-z])(\d+)(?![A-Za-z])/g),
+      String(value).matchAll(/(?:^|[^A-Za-z])(\d+)(?:(?:st|nd|rd|th)s?)?(?![A-Za-z])/gi),
       (match) => match[1]
     );
     const sourceNumbers = numericLiterals(source);

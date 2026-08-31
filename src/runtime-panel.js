@@ -78,6 +78,7 @@
           <div class="openAICompatibleUsage">Exact usage: no provider responses recorded.</div>
           <select class="openAICompatiblePreset" aria-label="OpenAI-compatible preset">
             <option value="opencode-go">OpenCode Go</option>
+            <option value="opencode-zen">OpenCode Zen</option>
             <option value="openrouter">OpenRouter</option>
             <option value="deepseek">DeepSeek</option>
             <option value="lmstudio">LM Studio</option>
@@ -92,7 +93,7 @@
             <button class="secondary openAICompatibleRefresh" type="button">Refresh models</button>
             <button class="danger openAICompatibleRemove" type="button" hidden>Remove key</button>
           </div>
-          <div class="openAICompatibleNotice"><a class="openCodeGoReferral" href="${OPENCODE_GO_REFERRAL_URL}" target="_blank" rel="noopener noreferrer">Create an OpenCode Go account with our referral link and receive $5 in credits.</a><span class="openAICompatibleProtocol"> Uses OpenAI Chat Completions. Remote text is sent to the selected provider. Custom remote URLs must use HTTPS.</span></div>
+          <div class="openAICompatibleNotice"><a class="openCodeGoReferral" href="${OPENCODE_GO_REFERRAL_URL}" target="_blank" rel="noopener noreferrer">Create an OpenCode account with our referral link and receive $5 in Zen credits. OpenCode Go requires a separate $10/month subscription.</a><span class="openAICompatibleProtocol"> Uses OpenAI Chat Completions. Remote text is sent to the selected provider. Custom remote URLs must use HTTPS.</span></div>
         </div>
         <div class="cacheBox">
           <div class="cacheStats">Calculating cache…</div>

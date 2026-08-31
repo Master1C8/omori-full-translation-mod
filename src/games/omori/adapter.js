@@ -69,6 +69,13 @@
     );
   }
 
+  function isVisibleGameWindow(windowObject) {
+    return !!(windowObject
+      && windowObject.visible !== false
+      && !(Number.isFinite(windowObject.openness) && windowObject.openness <= 0)
+      && !(Number.isFinite(windowObject.contentsOpacity) && windowObject.contentsOpacity <= 0));
+  }
+
   function visitActiveGameWindows(callback) {
     if (typeof window === "undefined" || !window.SceneManager || !window.SceneManager._scene
       || !window.Window_Base || typeof callback !== "function") return;
@@ -89,7 +96,8 @@
       if (typeof window.__vnRevivalMapWindowBitmap === "function") {
         try { window.__vnRevivalMapWindowBitmap(windowObject); } catch (_) {}
       }
-      if (isDialogueWindow(windowObject) || typeof windowObject.refresh !== "function") return;
+      if (!isVisibleGameWindow(windowObject) || isDialogueWindow(windowObject)
+        || typeof windowObject.refresh !== "function") return;
       try { windowObject.refresh(); } catch (_) {}
     });
   }
@@ -119,6 +127,28 @@
     },
     hasSourceText(value, core) {
       return core.hasEnglishText(value);
+    },
+    deriveCacheAliases(source, translation) {
+      const original = String(source || "");
+      const translated = String(translation || "");
+      const patterns = [
+        /\\>([^:\r\n]{2,80}):\s*\\</,
+        /\\n<([^>\r\n]{2,80})>/
+      ];
+      const aliases = [];
+      for (const pattern of patterns) {
+        const sourceMatch = original.match(pattern);
+        const translationMatch = translated.match(pattern);
+        if (!sourceMatch || !translationMatch) continue;
+        const sourceName = sourceMatch[1].trim();
+        const compactSource = sourceName.replace(/[\s_-]+/g, "");
+        const translatedName = translationMatch[1].trim();
+        if (compactSource.length >= 4 && compactSource !== sourceName && translatedName
+          && translatedName.toLocaleLowerCase() !== sourceName.toLocaleLowerCase()) {
+          aliases.push({ source: compactSource, translation: translatedName });
+        }
+      }
+      return aliases;
     },
     collectVisibleTexts() {
       return collectVisibleGameTexts();
@@ -202,16 +232,20 @@
         const messageWindow = sc._messageWindow;
         const nameWindow = sc._nameBoxWindow
           || (messageWindow && (messageWindow._nameBoxWindow || messageWindow._nameWindow));
-        if (nameWindow && nameWindow.visible !== false && typeof nameWindow.refresh === "function") {
+        const raw = rawGameMessageText(window.$gameMessage)
+          || (messageWindow && messageWindow._vnRevivalCurrentText)
+          || "";
+        const messageIsOpen = !!(messageWindow && typeof messageWindow.isOpen === "function"
+          && messageWindow.isOpen());
+        const nameIsOpen = !!(nameWindow && isVisibleGameWindow(nameWindow)
+          && (typeof nameWindow.isOpen !== "function" || nameWindow.isOpen()));
+        if (nameIsOpen && messageIsOpen && raw && typeof nameWindow.refresh === "function") {
           const nameSource = nameWindow._vnRevivalScreenSourceText || nameWindow._text;
           if (nameSource) {
             try { nameWindow.refresh(nameSource, nameWindow._position); } catch (_) {}
           }
         }
-        const raw = rawGameMessageText(window.$gameMessage)
-          || (messageWindow && messageWindow._vnRevivalCurrentText)
-          || "";
-        if (messageWindow && messageWindow.isOpen && messageWindow.isOpen()
+        if (messageIsOpen
           && !messageWindow._textState && raw
           && typeof window.__vnRevivalRedrawCompletedMessage === "function") {
           try { window.__vnRevivalRedrawCompletedMessage(raw, "translated"); } catch (_) {}
@@ -271,14 +305,9 @@
       beginApprovedScreenRefresh = () => { approvedScreenRefreshDepth += 1; };
       endApprovedScreenRefresh = () => { approvedScreenRefreshDepth = Math.max(0, approvedScreenRefreshDepth - 1); };
 
-      const isWindowVisible = (windowObject) => !!(windowObject
-        && windowObject.visible !== false
-        && !(Number.isFinite(windowObject.openness) && windowObject.openness <= 0)
-        && !(Number.isFinite(windowObject.contentsOpacity) && windowObject.contentsOpacity <= 0));
-
       const rememberVisibleWindowText = (windowObject, value) => {
         const text = String(value == null ? "" : value).trim();
-        if (!isScreenTranslationActive() || !isWindowVisible(windowObject) || text.length < 2) return;
+        if (!isScreenTranslationActive() || !isVisibleGameWindow(windowObject) || text.length < 2) return;
         if (!visibleWindowTexts.has(windowObject)) visibleWindowTexts.set(windowObject, new Set());
         visibleWindowTexts.get(windowObject).add(text);
       };
@@ -309,7 +338,7 @@
         approvedScreenScene = window.SceneManager && window.SceneManager._scene;
         visitActiveGameWindows((windowObject) => {
           approvedScreenTexts.delete(windowObject);
-          if (!isWindowVisible(windowObject)) return;
+          if (!isVisibleGameWindow(windowObject)) return;
           const approved = new Set();
           const add = (value) => {
             const text = String(value == null ? "" : value).trim();
@@ -390,13 +419,71 @@
           .join("");
       };
 
-      const fitTranslatedBitmapFont = (bitmap, value, maxWidth) => {
+      const minimumTranslatedSystemFontSize = (windowObject) => {
+        if (window.Window_OmoMenuItemList && windowObject instanceof window.Window_OmoMenuItemList) return 8;
+        if (window.Window_OmoriFileCommand && windowObject instanceof window.Window_OmoriFileCommand) return 10;
+        if (window.Window_OmoriFileInformation
+          && windowObject instanceof window.Window_OmoriFileInformation) return 10;
+        if (window.Window_MenuCommand && windowObject instanceof window.Window_MenuCommand) return 12;
+        return MIN_TRANSLATED_SYSTEM_FONT_SIZE;
+      };
+
+      const translatedSystemTextMaxWidth = (windowObject, source, requestedWidth) => {
+        const width = Number(requestedWidth);
+        if (!windowObject || !window.Window_OmoriFileInformation
+          || !(windowObject instanceof window.Window_OmoriFileInformation)
+          || !Number.isFinite(width)) return requestedWidth;
+        // Omori Save & Load draws labels and their values in overlapping
+        // rectangles. English fits by accident; reserve the real label column
+        // so a cached translation cannot paint over the chapter/value beside it.
+        const text = String(source == null ? "" : source);
+        let labelWidth = null;
+        if (/^FILE\s+\d+:$/i.test(text)) labelWidth = 70;
+        else if (/^LEVEL:$/i.test(text)) labelWidth = 50;
+        else if (/^TOTAL PLAYTIME:$/i.test(text)) labelWidth = 190;
+        else if (/^LOCATION:$/i.test(text)) labelWidth = 105;
+        return labelWidth === null ? requestedWidth : Math.min(width, labelWidth);
+      };
+
+      const translatedHelpWordwrapWidth = (windowObject) => {
+        if (!windowObject || !window.Window_OmoMenuHelp
+          || !(windowObject instanceof window.Window_OmoMenuHelp)) return null;
+        const contentsWidth = Number(windowObject.contents && windowObject.contents.width);
+        if (!Number.isFinite(contentsWidth) || contentsWidth <= 0) return null;
+        const item = windowObject._item;
+        const iconWidth = item && item.meta && item.meta.IconIndex
+          ? 106 * (Number(windowObject._iconRate) || 1)
+          : 0;
+        return Math.max(40, contentsWidth - 8 - iconWidth);
+      };
+
+      const prepareTranslatedHelpText = (windowObject, value) => {
+        if (!windowObject || !window.Window_OmoMenuHelp
+          || !(windowObject instanceof window.Window_OmoMenuHelp)) return value;
+        const text = String(value == null ? "" : value);
+        if (/<(?:WordWrap)>/i.test(text)) return text;
+        // OMORI enables YEP word wrapping here only for Eastern locales. Full
+        // Translation can display a wider cached string while the game locale
+        // remains English, so opt this translated draw into the same layout.
+        // Preserve intentional source line breaks (for example the Cost line),
+        // because YEP otherwise flattens literal newlines in WordWrap mode.
+        const normalizedBreaks = text
+          .replace(/<br\s*\/?\s*>[ \t]*\r?\n/gi, "<br>")
+          .replace(/\r?\n[ \t]*<br\s*\/?\s*>/gi, "<br>")
+          .replace(/\r?\n/g, "<br>");
+        return "<WordWrap>" + normalizedBreaks;
+      };
+
+      const fitTranslatedBitmapFont = (bitmap, value, maxWidth, minimumFontSize) => {
         if (!bitmap || typeof bitmap.measureTextWidth !== "function") return null;
+        const minimum = Number.isFinite(Number(minimumFontSize))
+          ? Math.max(8, Number(minimumFontSize))
+          : MIN_TRANSLATED_SYSTEM_FONT_SIZE;
         const originalFontSize = Number(bitmap.fontSize);
-        if (!Number.isFinite(originalFontSize) || originalFontSize <= MIN_TRANSLATED_SYSTEM_FONT_SIZE) return null;
+        if (!Number.isFinite(originalFontSize) || originalFontSize <= minimum) return null;
         const lines = visibleTextForFontFit(value).split("\n");
         let targetFontSize = lines.some((line) => CYRILLIC_SCRIPT_PATTERN.test(line))
-          ? Math.max(MIN_TRANSLATED_SYSTEM_FONT_SIZE, originalFontSize - CYRILLIC_SYSTEM_FONT_REDUCTION)
+          ? Math.max(minimum, originalFontSize - CYRILLIC_SYSTEM_FONT_REDUCTION)
           : originalFontSize;
         bitmap.fontSize = targetFontSize;
         try {
@@ -406,7 +493,7 @@
               Math.max(width, Number(bitmap.measureTextWidth(line)) || 0), 0);
             if (measuredWidth > availableWidth) {
               targetFontSize = Math.max(
-                MIN_TRANSLATED_SYSTEM_FONT_SIZE,
+                minimum,
                 Math.floor(targetFontSize * availableWidth / measuredWidth)
               );
               bitmap.fontSize = targetFontSize;
@@ -430,10 +517,64 @@
         }
 
         const translator = window.__vnRevivalTranslator;
-        if (!translator || !translator.isSourceText || !translator.isSourceText(str)) return str;
+        if (!translator || typeof translator.queryMemoryCache !== "function") return str;
+
+        // Some battle lines wrap an already-translated speaker name around an
+        // opaque Base64 payload or an intentionally Latin quotation. Compose
+        // those exact display forms from the name cache and preserve the payload
+        // byte-for-byte; neither part needs a gameplay provider request.
+        const opaqueSpeaker = str.match(
+          /^(\\>)([^:\r\n]{2,80})(:\s*\\<)((?:[A-Za-z0-9+/]{16,}={0,2}|(?:\\quake\[1\])?Acta deos numquam mortalia fallunt\.\.\.))(\s*)$/i
+        );
+        if (opaqueSpeaker) {
+          const speakerHit = translator.queryMemoryCache(opaqueSpeaker[2]);
+          if (speakerHit && !speakerHit.toLowerCase().includes("undefined")) {
+            return opaqueSpeaker[1] + speakerHit + opaqueSpeaker[3]
+              + opaqueSpeaker[4] + opaqueSpeaker[5];
+          }
+          return str;
+        }
+
+        const opaqueNamedLine = str.match(
+          /^(\\n<)([^>\r\n]{2,80})(>)(Sors de ma chambre ou j'appellerai les flics!|Yahoo!)(\s*)$/i
+        );
+        if (opaqueNamedLine) {
+          const speakerHit = translator.queryMemoryCache(opaqueNamedLine[2]);
+          if (speakerHit && !speakerHit.toLowerCase().includes("undefined")) {
+            return opaqueNamedLine[1] + speakerHit + opaqueNamedLine[3]
+              + opaqueNamedLine[4] + opaqueNamedLine[5];
+          }
+          return str;
+        }
+
+        if (!translator.isSourceText || !translator.isSourceText(str)) return str;
 
         const cached = translator.queryMemoryCache(str);
         if (cached && !cached.toLowerCase().includes("undefined")) return cached;
+
+        // OMORI constructs some visible labels after loading localization data.
+        // Reuse only already-cached source templates; never turn the synthesized
+        // display string into a hidden gameplay provider request.
+        const replacements = [];
+        const template = str.replace(/\b\d+\b/g, (value) => {
+          replacements.push(value);
+          return `%${replacements.length}`;
+        });
+        if (template !== str) {
+          const templateHit = translator.queryMemoryCache(template);
+          if (templateHit && !templateHit.toLowerCase().includes("undefined")) {
+            return templateHit.replace(/%(\d+)/g, (token, index) =>
+              replacements[Number(index) - 1] === undefined
+                ? token
+                : replacements[Number(index) - 1]);
+          }
+        }
+        if (str.endsWith(":")) {
+          const unpunctuatedHit = translator.queryMemoryCache(str.slice(0, -1));
+          if (unpunctuatedHit && !unpunctuatedHit.toLowerCase().includes("undefined")) {
+            return unpunctuatedHit.replace(/\s+$/, "") + ":";
+          }
+        }
 
         requestTranslation(translator, str);
         return str;
@@ -593,8 +734,18 @@
               && !owner.__vnRevivalDrawingTextEx;
             const args = Array.prototype.slice.call(arguments);
             if (shouldTranslate && typeof text === "string") args[0] = translateString(text, owner);
+            const requestedWidth = Number(args[3]);
+            const drawX = Number(args[1]) || 0;
+            const bitmapWidth = Number(this.width);
+            const boundedWidth = Number.isFinite(bitmapWidth)
+              ? Math.max(0, Math.min(
+                Number.isFinite(requestedWidth) ? requestedWidth : bitmapWidth,
+                bitmapWidth - drawX
+              ))
+              : requestedWidth;
+            const actualWidth = translatedSystemTextMaxWidth(owner, text, boundedWidth);
             const fittedFontSize = args[0] !== text
-              ? fitTranslatedBitmapFont(this, args[0], args[3])
+              ? fitTranslatedBitmapFont(this, args[0], actualWidth, minimumTranslatedSystemFontSize(owner))
               : null;
             try {
               return _bitmapDrawText.apply(this, args);
@@ -629,19 +780,52 @@
             }
             const args = Array.prototype.slice.call(arguments);
             args[0] = translateString(text, this);
+            const translatedHelpWidth = args[0] !== text ? translatedHelpWordwrapWidth(this) : null;
+            if (args[0] !== text) args[0] = prepareTranslatedHelpText(this, args[0]);
             const drawX = Number(args[1]) || 0;
-            const requestedWidth = Number(args[3]);
-            const availableWidth = Number.isFinite(requestedWidth) && requestedWidth > 0
-              ? requestedWidth
-              : Math.max(0, Number(this.contents && this.contents.width) - drawX);
+            // Window_Base.drawTextEx has no width argument. OMORI's help window
+            // passes a fourth value (28), but treating it as pixels forces the
+            // translated description toward the minimum font size.
+            const availableWidth = Math.max(0,
+              (translatedHelpWidth === null
+                ? Number(this.contents && this.contents.width)
+                : translatedHelpWidth) - drawX);
             const fittedFontSize = args[0] !== text
-              ? fitTranslatedBitmapFont(this.contents, args[0], availableWidth)
+              ? fitTranslatedBitmapFont(
+                this.contents,
+                args[0],
+                availableWidth,
+                minimumTranslatedSystemFontSize(this)
+              )
               : null;
+            const targetFontSize = fittedFontSize !== null ? this.contents.fontSize : null;
+            const originalResetFontSettings = this.resetFontSettings;
+            const originalWordwrapWidth = this.wordwrapWidth;
+            if (targetFontSize !== null && typeof originalResetFontSettings === "function") {
+              this.resetFontSettings = function() {
+                originalResetFontSettings.call(this);
+                this.contents.fontSize = targetFontSize;
+              };
+            }
+            if (translatedHelpWidth !== null && typeof originalWordwrapWidth === "function") {
+              this.wordwrapWidth = function() {
+                const originalWidth = Number(originalWordwrapWidth.call(this));
+                return Number.isFinite(originalWidth)
+                  ? Math.min(originalWidth, translatedHelpWidth)
+                  : translatedHelpWidth;
+              };
+            }
             this.__vnRevivalDrawingTextEx = true;
             try {
               return _drawTextEx.apply(this, args);
             } finally {
               this.__vnRevivalDrawingTextEx = false;
+              if (this.resetFontSettings !== originalResetFontSettings) {
+                this.resetFontSettings = originalResetFontSettings;
+              }
+              if (this.wordwrapWidth !== originalWordwrapWidth) {
+                this.wordwrapWidth = originalWordwrapWidth;
+              }
               if (fittedFontSize !== null) this.contents.fontSize = fittedFontSize;
             }
           };
@@ -804,6 +988,33 @@
         // 6. Dialogue choices use their dedicated hook in both scopes.
         if (window.Window_ChoiceList && !window.Window_ChoiceList.prototype.__vnRevivalDialogueChoicesHooked) {
           window.Window_ChoiceList.prototype.__vnRevivalDialogueChoicesHooked = true;
+          const _choiceMaxChoiceWidth = window.Window_ChoiceList.prototype.maxChoiceWidth;
+          if (typeof _choiceMaxChoiceWidth === "function") {
+            window.Window_ChoiceList.prototype.maxChoiceWidth = function() {
+              let width = Number(_choiceMaxChoiceWidth.call(this)) || 0;
+              if (!isTranslateActive() || !window.$gameMessage
+                || typeof window.$gameMessage.choices !== "function") return width;
+              const choices = window.$gameMessage.choices();
+              const cursorOffset = typeof this.customCursorRectTextXOffset === "function"
+                ? Math.max(0, Number(this.customCursorRectTextXOffset()) || 0)
+                : 0;
+              const textPadding = typeof this.textPadding === "function"
+                ? Math.max(0, Number(this.textPadding()) || 0)
+                : 0;
+              for (const sourceValue of choices) {
+                const source = String(sourceValue || "");
+                const translated = source ? translateString(source, this) : source;
+                if (!translated || translated === source) continue;
+                const measured = typeof this.textWidthEx === "function"
+                  ? Number(this.textWidthEx(translated)) || 0
+                  : typeof this.textWidth === "function"
+                  ? Number(this.textWidth(translated)) || 0
+                  : 0;
+                width = Math.max(width, measured + cursorOffset + textPadding * 2 + 24);
+              }
+              return width;
+            };
+          }
           const _choiceDrawItem = window.Window_ChoiceList.prototype.drawItem;
           window.Window_ChoiceList.prototype.drawItem = function(index) {
             const source = typeof this.commandName === "function" ? String(this.commandName(index) || "") : "";

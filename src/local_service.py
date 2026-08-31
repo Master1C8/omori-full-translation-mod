@@ -32,8 +32,10 @@ GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMI
 LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
 LM_STUDIO_PROMPT_VERSION = "omori-translation-v1"
 OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v1"
+OPENAI_COMPATIBLE_MIN_COMPLETION_TOKENS = 2048
 OPENAI_COMPATIBLE_PRESETS = {
     "opencode-go": {"name": "OpenCode Go", "baseURL": "https://opencode.ai/zen/go/v1", "requiresKey": True},
+    "opencode-zen": {"name": "OpenCode Zen", "baseURL": "https://opencode.ai/zen/v1", "requiresKey": True},
     "openrouter": {"name": "OpenRouter", "baseURL": "https://openrouter.ai/api/v1", "requiresKey": True},
     "deepseek": {"name": "DeepSeek", "baseURL": "https://api.deepseek.com", "requiresKey": True},
     "lmstudio": {"name": "LM Studio", "baseURL": "http://127.0.0.1:1234/v1", "requiresKey": False},
@@ -41,7 +43,7 @@ OPENAI_COMPATIBLE_PRESETS = {
 }
 MAX_REQUEST_BYTES = 1_048_576
 MAX_TEXT_CHARS = 120_000
-ASSET_INDEX_SCHEMA = 3
+ASSET_INDEX_SCHEMA = 4
 ASSET_INDEX_MAX_BYTES = 16 * 1024 * 1024
 OMORI_DATABASE_FIELDS = {
     "actors.kel": ("name", "nickname", "profile"),
@@ -235,6 +237,10 @@ def extract_system_ui_strings(decrypted: str) -> list[str]:
                     or re.fullmatch(r"[a-z0-9_/-]+(?:\.[a-z0-9_/-]+)+", candidate)):
                 continue
             texts.append(candidate)
+            if top_level == "plugins" and stripped.startswith("text:"):
+                # Several OMORI option windows append punctuation in plugin
+                # code instead of storing the exact drawn label in YAML.
+                texts.append(candidate + ":")
             if parameter_indent is not None:
                 label = candidate
                 if candidate.casefold() == "max hp":
@@ -245,21 +251,106 @@ def extract_system_ui_strings(decrypted: str) -> list[str]:
     return texts
 
 
+def _yaml_block_scalar(lines: list[str], index: int, base_indent: int,
+                       marker: str) -> tuple[str, int]:
+    """Decode the small YAML block-scalar subset used by OMORI text fields."""
+    block_lines: list[str] = []
+    cursor = index + 1
+    while cursor < len(lines):
+        line = lines[cursor]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped and indent <= base_indent:
+            break
+        block_lines.append(line)
+        cursor += 1
+
+    content_indents = [
+        len(line) - len(line.lstrip()) for line in block_lines if line.strip()
+    ]
+    content_indent = min(content_indents, default=base_indent + 2)
+    normalized = [line[content_indent:] if line.strip() else "" for line in block_lines]
+    style = marker[0]
+    if style == "|":
+        text = "\n".join(normalized)
+    else:
+        folded: list[str] = []
+        for line in normalized:
+            if not folded:
+                folded.append(line)
+            elif line and folded[-1]:
+                folded[-1] += " " + line
+            else:
+                folded.append(line)
+        text = "\n".join(folded)
+
+    chomping = marker[1:2]
+    text = text.rstrip("\n")
+    if not text:
+        return "", cursor
+    if chomping != "-":
+        text += "\n"
+    return text, cursor
+
+
+def extract_xx_blue_ui_strings(decrypted: str) -> list[str]:
+    """Extract visible menu/save scalars stored outside conventional text fields."""
+    allowed_sections = {
+        "Chapter_Names": None,
+        "Omori_Mainmenu_Sceneoptions": {"commands"},
+        "Omori_Save_Load": {
+            "file", "level", "playtime", "location", "overwrite_file",
+            "load_file", "save_command", "load_command",
+        },
+    }
+    texts: list[str] = []
+    section = ""
+    for line in decrypted.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(line) == len(line.lstrip()) and stripped.endswith(":"):
+            section = stripped[:-1]
+            continue
+        allowed_keys = allowed_sections.get(section)
+        if section not in allowed_sections or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if allowed_keys is not None and key.strip() not in allowed_keys:
+            continue
+        for candidate in _system_yaml_values(value.strip()):
+            candidate = candidate.strip()
+            if sum(character.isalpha() for character in candidate) >= 2:
+                texts.append(candidate)
+    return texts
+
+
 def extract_strings_from_hero(path: Path) -> list[str]:
     data = path.read_bytes()
     decrypted = decrypt_omori_data(data).decode("utf-8", errors="strict").replace("\r", "")
     texts = []
-    for line in decrypted.splitlines():
-        match = re.search(r"^\s*text:\s*(.*)$", line)
+    lines = decrypted.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.search(r"^(\s*)text:\s*(.*)$", line)
         if match:
-            text = match.group(1).strip()
-            if text and text not in ('""', "''", "|", ">", "|-", ">-"):
+            text = match.group(2).strip()
+            if re.fullmatch(r"[>|][+-]?", text):
+                text, index = _yaml_block_scalar(lines, index, len(match.group(1)), text)
+                if text:
+                    texts.append(text)
+                continue
+            if text and text not in ('""', "''"):
                 if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
                     text = text[1:-1]
                 if text:
                     texts.append(text)
+        index += 1
     if path.name.casefold() == "system.hero":
         texts.extend(extract_system_ui_strings(decrypted))
+    if path.name.casefold() == "xx_blue.hero":
+        texts.extend(extract_xx_blue_ui_strings(decrypted))
     return texts
 
 
@@ -398,7 +489,10 @@ class GeminiCredentialStore:
             result = subprocess.run(
                 ["/usr/bin/security", "add-generic-password", "-U", "-a", self.credential_id,
                  "-s", self.MACOS_SERVICE, "-w"],
-                input=api_key + "\n",
+                # When a Keychain item is created, `security -w` asks for the
+                # password twice. Keep the secret out of the process arguments
+                # while satisfying both prompts through stdin.
+                input=f"{api_key}\n{api_key}\n",
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                 timeout=10, check=False,
             )
@@ -1347,6 +1441,33 @@ class LocalServiceBridge:
             return "".join(parts).strip()
         return ""
 
+    @staticmethod
+    def _openai_translation_content(content: str, structured: bool) -> str:
+        """Read schema output while tolerating providers that return plain text."""
+        if not structured:
+            return content
+        candidate = content.strip()
+        fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.I | re.S)
+        if fence:
+            candidate = fence.group(1).strip()
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as error:
+            if candidate.startswith(("{", "[")):
+                raise BridgeError(
+                    "openai_invalid_response", "The provider returned invalid structured output", 502
+                ) from error
+            return candidate
+        if isinstance(parsed, dict):
+            translation = parsed.get("translation")
+        elif isinstance(parsed, str):
+            translation = parsed
+        else:
+            translation = None
+        if not isinstance(translation, str):
+            raise BridgeError("openai_invalid_response", "The provider returned invalid structured output", 502)
+        return translation
+
     def openai_compatible_translate(self, target: Any, target_name: Any, text: Any, model: Any,
                                     preset: Any, base_url: Any) -> dict[str, Any]:
         connection = self._openai_connection(preset, base_url)
@@ -1377,7 +1498,10 @@ class LocalServiceBridge:
                 {"role": "user", "content": text},
             ],
             "temperature": 0,
-            "max_tokens": min(8192, max(256, len(text) * 3)),
+            # Reasoning models count hidden reasoning against max_tokens. A 256-token
+            # floor lets models such as GLM-5.3-Flash spend the entire allowance on
+            # reasoning and return an empty message, even for a one-word source.
+            "max_tokens": min(8192, max(OPENAI_COMPATIBLE_MIN_COMPLETION_TOKENS, len(text) * 3)),
             "stream": False,
         }
         schema = {
@@ -1423,14 +1547,24 @@ class LocalServiceBridge:
         try:
             content = self._openai_completion_content(payload)
             if not content:
-                raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
-            if structured:
+                finish_reason = None
                 try:
-                    translation = json.loads(content).get("translation")
-                except (AttributeError, json.JSONDecodeError) as error:
-                    raise BridgeError("openai_invalid_response", "The provider returned invalid structured output", 502) from error
-            else:
-                translation = content
+                    finish_reason = payload["choices"][0].get("finish_reason")
+                except (KeyError, IndexError, TypeError, AttributeError):
+                    pass
+                completion_tokens = usage.get("completionTokens") if isinstance(usage, dict) else None
+                reasoning_tokens = usage.get("reasoningTokens") if isinstance(usage, dict) else None
+                if finish_reason in ("length", "max_tokens") or (
+                    type(completion_tokens) is int and completion_tokens > 0
+                    and type(reasoning_tokens) is int and reasoning_tokens >= completion_tokens
+                ):
+                    raise BridgeError(
+                        "openai_reasoning_budget_exhausted",
+                        "The provider used the entire completion budget for reasoning and returned no translation",
+                        502,
+                    )
+                raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
+            translation = self._openai_translation_content(content, structured)
             if not isinstance(translation, str) or not translation.strip():
                 raise BridgeError("openai_empty_translation", "The provider returned an empty translation", 502)
             translation = translation.strip()

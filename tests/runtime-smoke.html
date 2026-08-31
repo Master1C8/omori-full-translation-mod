@@ -246,6 +246,8 @@
       await new Promise((resolve) => setTimeout(resolve, 30));
       const openAICompatibleSetupVisible = !shadow.querySelector(".openAICompatibleBox").hidden
         && shadow.querySelector(".openAICompatibleStatus").textContent.includes("OpenCode Go")
+        && Array.from(shadow.querySelector(".openAICompatiblePreset").options)
+          .some((option) => option.value === "opencode-zen" && option.textContent === "OpenCode Zen")
         && shadow.querySelector(".openAICompatibleModel").value === "kimi-k2.5"
         && shadow.querySelector(".openAICompatibleBaseURL").value === "https://opencode.ai/zen/go/v1"
         && shadow.querySelector(".openAICompatibleBaseURL").disabled
@@ -255,7 +257,8 @@
       const openCodeReferral = shadow.querySelector(".openCodeGoReferral");
       openCodeReferral.click();
       const openCodeReferralPresent = !openCodeReferral.hidden
-        && openCodeReferral.textContent.includes("receive $5 in credits")
+        && openCodeReferral.textContent.includes("receive $5 in Zen credits")
+        && openCodeReferral.textContent.includes("$10/month subscription")
         && window.externalUrls.includes("https://opencode.ai/go?ref=SS6M8DKPP0");
       const languageSelect = shadow.querySelector(".language");
       languageSelect.value = "ja";
@@ -400,7 +403,7 @@
         && bulkCancelButton.textContent === "Back to translator"
         && !bulkCancelButton.classList.contains("working")
         && !bulkCancelButton.disabled
-        && shadow.querySelector(".status").textContent.includes("Bulk stopped at");
+        && shadow.querySelector(".status").textContent.startsWith("Bulk stopped");
       const stoppedStatus = shadow.querySelector(".status").textContent;
       window.__vnRevivalTranslator.showTranslations();
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -467,9 +470,14 @@
       }
       const scrolledTranslation = later.textContent.trim();
 
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      const repairedMetadata = JSON.parse(localStorage.getItem("omori-translator.cache-meta.v3") || "null");
-      const metadataDirty = localStorage.getItem("omori-translator.cache-meta-dirty.v3");
+      let repairedMetadata = null;
+      let metadataDirty = null;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        repairedMetadata = JSON.parse(localStorage.getItem("omori-translator.cache-meta.v3") || "null");
+        metadataDirty = localStorage.getItem("omori-translator.cache-meta-dirty.v3");
+        if (repairedMetadata?.records === window.smokeCache.size && metadataDirty === null) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
 
       const legacyMigrated = true;
       const legacyGlobalsScopedToCoC2 = Boolean(window.__vnRevivalTranslator);
@@ -545,7 +553,7 @@
         && translated.buttonHeight === "auto"
         && translated.buttonWrap === "normal"
         && scrolledTranslation === "ترجمة"
-        && repairedMetadata.records === window.smokeInitialCacheSize
+        && repairedMetadata.records === window.smokeCache.size
         && metadataDirty === null
         && legacyMigrated
         && legacyGlobalsScopedToCoC2

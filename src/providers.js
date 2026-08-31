@@ -130,7 +130,7 @@
         return core.splitLongText(text, 6000);
       },
       hint() {
-        return "OpenAI-compatible: connect OpenCode Go, OpenRouter, DeepSeek, LM Studio, or a custom Chat Completions endpoint.";
+        return "OpenAI-compatible: connect OpenCode Go, OpenCode Zen, OpenRouter, DeepSeek, LM Studio, or a custom Chat Completions endpoint.";
       },
       async translateChunk(context) {
         const connection = context.openAICompatible || {};

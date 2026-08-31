@@ -23,6 +23,26 @@ test("omori adapter detects source text correctly", () => {
   assert.equal(adapter.hasSourceText("", core), false);
 });
 
+test("omori adapter derives compact enemy-name aliases from translated speaker commands", () => {
+  assert.deepEqual(
+    adapter.deriveCacheAliases(
+      "\\>HUSH PUPPY: \\<Shh...",
+      "\\>ТИШЕ, ЩЕНОК: \\<Тсс...",
+      core
+    ),
+    [{ source: "HUSHPUPPY", translation: "ТИШЕ, ЩЕНОК" }]
+  );
+  assert.deepEqual(
+    adapter.deriveCacheAliases("\\n<VEGGIE KID>Yahoo!", "\\n<ВЕГГИ-МАЛЫШ>Yahoo!", core),
+    [{ source: "VEGGIEKID", translation: "ВЕГГИ-МАЛЫШ" }]
+  );
+  assert.deepEqual(
+    adapter.deriveCacheAliases("\\>HUSH PUPPY: \\<Shh...", "\\>HUSH PUPPY: \\<Шшш...", core),
+    []
+  );
+  assert.deepEqual(adapter.deriveCacheAliases("ANNOY", "РАЗДРАЖАТЬ", core), []);
+});
+
 test("omori adapter extracts game version", () => {
   assert.equal(adapter.getGameVersion({ Utils: { RPGMAKER_VERSION: "1.6.1" } }), "1.6.1");
   assert.equal(adapter.getGameVersion({ version: "1.0.8" }), "1.0.8");
@@ -44,6 +64,19 @@ test("omori message rendering wraps translated canvas text", () => {
   assert.match(source, /this instanceof window\.Window_Message/);
   assert.match(source, /this\.textWidth\(word\[0\]\)/);
   assert.match(source, /this\.processNewLine\(textState\)/);
+});
+
+test("omori sizes dialogue choices from cached translations", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "adapter.js"), "utf8");
+  assert.match(source, /const _choiceMaxChoiceWidth = window\.Window_ChoiceList\.prototype\.maxChoiceWidth/);
+  assert.match(source, /measured \+ cursorOffset \+ textPadding \* 2 \+ 24/);
+});
+
+test("omori reuses cached templates for constructed UI labels", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "adapter.js"), "utf8");
+  assert.match(source, /const template = str\.replace\(\/\\b\\d\+\\b\/g/);
+  assert.match(source, /translator\.queryMemoryCache\(template\)/);
+  assert.match(source, /translator\.queryMemoryCache\(str\.slice\(0, -1\)\)/);
 });
 
 test("omori registers its bundled CJK font and uses it for CJK targets", () => {
@@ -187,15 +220,27 @@ test("Full uses cache automatically while Screen requires approval from the curr
   WindowBase.prototype.drawText = function(text) { this.contents.drawText(text, 0, 0, 200, 36, "left"); };
   WindowBase.prototype.drawTextEx = function(text) { this.contents.drawText(text, 0, 0, 200, 36, "left"); };
   WindowBase.prototype.processNormalCharacter = function(textState) { textState.index += 1; };
-  function WindowMessage() { WindowBase.call(this); this.visible = true; }
+  function WindowMessage() { WindowBase.call(this); this.visible = true; this.openness = 255; }
   WindowMessage.prototype = Object.create(WindowBase.prototype);
   WindowMessage.prototype.constructor = WindowMessage;
   WindowMessage.prototype.startMessage = function() {};
   WindowMessage.prototype.update = function() {};
   WindowMessage.prototype.onEndOfText = function() { this._textState = null; this.pause = true; };
+  WindowMessage.prototype.isOpen = function() { return this.openness > 0; };
   WindowMessage.prototype.convertEscapeCharacters = function(text) {
     return String(text).replace(/\\V\[1\]/g, "3");
   };
+  function WindowNameBox() {
+    WindowBase.call(this);
+    this.visible = true;
+    this.openness = 0;
+    this._text = "???";
+    this.refreshCount = 0;
+  }
+  WindowNameBox.prototype = Object.create(WindowBase.prototype);
+  WindowNameBox.prototype.constructor = WindowNameBox;
+  WindowNameBox.prototype.isOpen = function() { return this.openness > 0; };
+  WindowNameBox.prototype.refresh = function() { this.refreshCount += 1; this.openness = 255; };
   function GameMessage() { this._texts = []; }
   GameMessage.prototype.add = function(text) { this._texts.push(text); };
   GameMessage.prototype.allText = function() { return this._texts.join("\n"); };
@@ -206,6 +251,7 @@ test("Full uses cache automatically while Screen requires approval from the curr
     Bitmap,
     Window_Base: WindowBase,
     Window_Message: WindowMessage,
+    Window_NameBox: WindowNameBox,
     Game_Message: GameMessage,
     SceneManager: { _scene: scene },
     $gameMessage: new GameMessage(),
@@ -221,6 +267,9 @@ test("Full uses cache automatically while Screen requires approval from the curr
       isSourceText: (text) => /[A-Za-z]/.test(text),
       queryMemoryCache: (text) => ({
         ITEMS: "ПРЕДМЕТЫ",
+        ROBOHEART: "РОБОСЕРДЦЕ",
+        "SNOW ANGEL": "СНЕЖНЫЙ АНГЕЛ",
+        "VEGGIE KID": "ВЕГГИ-МАЛЫШ",
         "Buy 3 APPLES": "Купить 3 ЯБЛОКА",
         "<WordWrap>\\marYou found 3 APPLES\\!": "<WordWrap>\\marВы нашли 3 ЯБЛОКА\\!"
       })[text] || null,
@@ -245,15 +294,36 @@ test("Full uses cache automatically while Screen requires approval from the curr
   const portrait = new WindowBase();
   let portraitRefreshes = 0;
   portrait.refresh = function() { portraitRefreshes += 1; this.contents.clear(); };
-  scene.children.push(menu, message, portrait);
+  const hiddenWindow = new WindowBase();
+  hiddenWindow.visible = false;
+  hiddenWindow.refreshCount = 0;
+  hiddenWindow.refresh = function() { this.refreshCount += 1; this.visible = true; };
+  const closedNameBox = new WindowNameBox();
+  scene._messageWindow = message;
+  scene._nameBoxWindow = closedNameBox;
+  scene.children.push(menu, message, portrait, hiddenWindow, closedNameBox);
 
   menu.drawText("ITEMS");
   assert.equal(draws.at(-1), "ITEMS");
 
   scope = "full";
   context.VNRevivalGameAdapter.onTranslationScopeChanged("full");
+  assert.equal(hiddenWindow.refreshCount, 0);
+  assert.equal(hiddenWindow.visible, false);
   menu.drawTextEx("ITEMS");
   assert.equal(draws.at(-1), "ПРЕДМЕТЫ");
+  menu.drawText("\\>SNOW ANGEL: \\<\\quake[1]Acta deos numquam mortalia fallunt...\n");
+  assert.equal(draws.at(-1), "\\>СНЕЖНЫЙ АНГЕЛ: \\<\\quake[1]Acta deos numquam mortalia fallunt...\n");
+  menu.drawText("\\>ROBOHEART: \\<SGVscC4uLiBtZS4uLgo=\n");
+  assert.equal(draws.at(-1), "\\>РОБОСЕРДЦЕ: \\<SGVscC4uLiBtZS4uLgo=\n");
+  menu.drawText("\\>ROBOHEART: \\<TXkgbGlmZSBpcyBzdWZmZXJpbmch\n");
+  assert.equal(draws.at(-1), "\\>РОБОСЕРДЦЕ: \\<TXkgbGlmZSBpcyBzdWZmZXJpbmch\n");
+  menu.drawText("\\>ROBOHEART: \\<Tm8sIEkgZGlkbid0IG1lYW4gdG8h\n");
+  assert.equal(draws.at(-1), "\\>РОБОСЕРДЦЕ: \\<Tm8sIEkgZGlkbid0IG1lYW4gdG8h\n");
+  menu.drawText("\\n<VEGGIE KID>Yahoo!");
+  assert.equal(draws.at(-1), "\\n<ВЕГГИ-МАЛЫШ>Yahoo!");
+  menu.drawText("\\n<BUTLER MOLE>Sors de ma chambre ou j'appellerai les flics!");
+  assert.equal(draws.at(-1), "\\n<BUTLER MOLE>Sors de ma chambre ou j'appellerai les flics!");
   message.drawText("ITEMS");
   assert.equal(draws.at(-1), "ITEMS");
 
@@ -287,6 +357,11 @@ test("Full uses cache automatically while Screen requires approval from the curr
   context.VNRevivalGameAdapter.onTranslationsChanged();
   assert.equal(draws.at(-1), "Купить 3 ЯБЛОКА");
   assert.equal(portraitRefreshes, portraitRefreshesBeforeTranslation);
+  assert.equal(closedNameBox.refreshCount, 0);
+  assert.equal(closedNameBox.openness, 0);
+  closedNameBox.openness = 255;
+  context.VNRevivalGameAdapter.onTranslationsChanged();
+  assert.equal(closedNameBox.refreshCount, 1);
   menu.refresh();
   assert.equal(draws.at(-1), "Buy 3 APPLES");
 });
@@ -298,8 +373,8 @@ test("translated system labels reduce Cyrillic fallback size, fit overflow, and 
   Bitmap.prototype.measureTextWidth = function(text) {
     return String(text).length * this.fontSize;
   };
-  Bitmap.prototype.drawText = function(text) {
-    draws.push({ text: String(text), fontSize: this.fontSize });
+  Bitmap.prototype.drawText = function(text, x, y, maxWidth) {
+    draws.push({ text: String(text), fontSize: this.fontSize, x, maxWidth });
   };
   Bitmap.prototype.clear = function() {};
   function WindowBase() { this.children = []; this.createContents(); }
@@ -307,8 +382,26 @@ test("translated system labels reduce Cyrillic fallback size, fit overflow, and 
   WindowBase.prototype.drawText = function(text, width) {
     this.contents.drawText(text, 0, 0, width, 36, "left");
   };
-  WindowBase.prototype.drawTextEx = function(text) { this.contents.drawText(text, 0, 0, 180, 36, "left"); };
+  WindowBase.prototype.resetFontSettings = function() { this.contents.fontSize = 28; };
+  WindowBase.prototype.wordwrapWidth = function() { return this.contents.width; };
+  WindowBase.prototype.drawTextEx = function(text) {
+    this.resetFontSettings();
+    this.lastWordwrapWidth = this.wordwrapWidth();
+    this.contents.drawText(text, 0, 0, 180, 36, "left");
+  };
   WindowBase.prototype.processNormalCharacter = function(textState) { textState.index += 1; };
+  function WindowMenuCommand() { WindowBase.call(this); }
+  WindowMenuCommand.prototype = Object.create(WindowBase.prototype);
+  WindowMenuCommand.prototype.constructor = WindowMenuCommand;
+  function WindowOmoMenuItemList() { WindowBase.call(this); }
+  WindowOmoMenuItemList.prototype = Object.create(WindowBase.prototype);
+  WindowOmoMenuItemList.prototype.constructor = WindowOmoMenuItemList;
+  function WindowOmoMenuHelp() { WindowBase.call(this); }
+  WindowOmoMenuHelp.prototype = Object.create(WindowBase.prototype);
+  WindowOmoMenuHelp.prototype.constructor = WindowOmoMenuHelp;
+  function WindowOmoriFileInformation() { WindowBase.call(this); }
+  WindowOmoriFileInformation.prototype = Object.create(WindowBase.prototype);
+  WindowOmoriFileInformation.prototype.constructor = WindowOmoriFileInformation;
   function WindowMessage() { WindowBase.call(this); }
   WindowMessage.prototype = Object.create(WindowBase.prototype);
   WindowMessage.prototype.constructor = WindowMessage;
@@ -322,6 +415,10 @@ test("translated system labels reduce Cyrillic fallback size, fit overflow, and 
   const windowObject = {
     Bitmap,
     Window_Base: WindowBase,
+    Window_MenuCommand: WindowMenuCommand,
+    Window_OmoMenuItemList: WindowOmoMenuItemList,
+    Window_OmoMenuHelp: WindowOmoMenuHelp,
+    Window_OmoriFileInformation: WindowOmoriFileInformation,
     Window_Message: WindowMessage,
     Game_Message: GameMessage,
     SceneManager: { _scene: scene },
@@ -338,7 +435,14 @@ test("translated system labels reduce Cyrillic fallback size, fit overflow, and 
       isSourceText: () => true,
       queryMemoryCache: (text) => ({
         BASIL: "ВАСИЛИЙ",
-        INCOMPLETE: "НЕПОЛНЫЙ"
+        INCOMPLETE: "НЕПОЛНЫЙ",
+        "FILE 2:": "ФАЙЛ 2:",
+        "LEVEL:": "УРОВЕНЬ:",
+        "TOTAL PLAYTIME:": "ОБЩЕЕ ВРЕМЯ ИГРЫ:",
+        "LOCATION:": "МЕСТОПОЛОЖЕНИЕ:",
+        "Short description\nCost": "ТЕКСТ\n0",
+        "A shiny new knife.<br>\nYou can see your reflection in the blade.":
+          "Новый блестящий нож.<br>\nВы можете увидеть свое отражение в лезвии."
       })[text] || null,
       registerAdapterText() {}
     }
@@ -366,9 +470,60 @@ test("translated system labels reduce Cyrillic fallback size, fit overflow, and 
   assert.equal(draws.at(-1).fontSize, 16);
   assert.equal(menu.contents.fontSize, 28);
 
+  const mainMenu = new WindowMenuCommand();
+  scene.children.push(mainMenu);
+  mainMenu.drawText("INCOMPLETE", 100);
+  assert.equal(draws.at(-1).fontSize, 12);
+  assert.equal(mainMenu.contents.fontSize, 28);
+
+  const itemList = new WindowOmoMenuItemList();
+  scene.children.push(itemList);
+  itemList.drawText("INCOMPLETE", 50);
+  assert.equal(draws.at(-1).fontSize, 8);
+  assert.equal(itemList.contents.fontSize, 28);
+
   menu.drawText("ORIGINAL", 100);
   assert.equal(draws.at(-1).text, "ORIGINAL");
   assert.equal(draws.at(-1).fontSize, 28);
+
+  const help = new WindowOmoMenuHelp();
+  scene.children.push(help);
+  help.drawTextEx("Short description\nCost", 6, 22, 28);
+  assert.equal(draws.at(-1).text, "<WordWrap>ТЕКСТ<br>0");
+  assert.equal(draws.at(-1).fontSize, 20);
+  assert.equal(help.contents.fontSize, 28);
+
+  help._item = { meta: { IconIndex: "17" } };
+  help.drawTextEx(
+    "A shiny new knife.<br>\nYou can see your reflection in the blade.",
+    6,
+    22,
+    28
+  );
+  assert.equal(
+    draws.at(-1).text,
+    "<WordWrap>Новый блестящий нож.<br>Вы можете увидеть свое отражение в лезвии."
+  );
+  assert.equal(help.lastWordwrapWidth, 66);
+  assert.equal(draws.at(-1).fontSize, 16);
+  assert.equal(help.contents.fontSize, 28);
+
+  const fileInfo = new WindowOmoriFileInformation();
+  scene.children.push(fileInfo);
+  fileInfo.contents.width = 428;
+  fileInfo.contents.fontSize = 30;
+  fileInfo.contents.drawText("FILE 2:", 40, -5, 100, 30);
+  assert.equal(draws.at(-1).text, "ФАЙЛ 2:");
+  assert.ok(draws.at(-1).fontSize <= 12);
+  assert.equal(fileInfo.contents.fontSize, 30);
+  fileInfo.contents.fontSize = 24;
+  fileInfo.contents.drawText("LEVEL:", 345, 30, 100, 24);
+  assert.equal(draws.at(-1).fontSize, 10);
+  fileInfo.contents.drawText("TOTAL PLAYTIME:", 118, 55, 200, 24);
+  assert.equal(draws.at(-1).fontSize, 10);
+  fileInfo.contents.drawText("LOCATION:", 118, 80, 200, 24);
+  assert.equal(draws.at(-1).fontSize, 10);
+  assert.equal(fileInfo.contents.fontSize, 24);
 });
 
 test("screen translation resumes a message paused by an OMORI flow command after replacing its text", () => {
