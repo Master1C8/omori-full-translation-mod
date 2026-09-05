@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("game_manifest", ROOT / "scripts/game-manifest.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+CATALOG_SPEC = importlib.util.spec_from_file_location("game_catalog", ROOT / "scripts/game-catalog.py")
+CATALOG_MODULE = importlib.util.module_from_spec(CATALOG_SPEC)
+CATALOG_SPEC.loader.exec_module(CATALOG_MODULE)
 
 
 class GameManifestTests(unittest.TestCase):
@@ -35,6 +38,23 @@ class GameManifestTests(unittest.TestCase):
         self.assertEqual(manifest["releaseStatus"], "prototype")
         self.assertNotIn("localizationProfileFile", manifest)
         self.assertNotIn("testPhraseSource", manifest)
+
+    def test_launcher_catalog_contains_both_games_in_ui_order(self):
+        games = CATALOG_MODULE.load_catalog(ROOT / "src/games/catalog.json")
+        self.assertEqual([game["id"] for game in games], ["omori", "coc2"])
+        self.assertEqual(games[0]["releaseStatus"], "production")
+        self.assertEqual(games[1]["releaseStatus"], "prototype")
+
+    def test_windows_launcher_catalog_is_generated_from_manifests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "game-catalog.generated.h"
+            subprocess.run([
+                "python3", str(ROOT / "scripts/generate-windows-game-catalog.py"),
+                str(ROOT / "src/games/catalog.json"), str(output),
+            ], check=True)
+            source = output.read_text(encoding="utf-8")
+            self.assertIn('L"omori", L"OMORI"', source)
+            self.assertIn('L"coc2", L"Corruption of Champions II", L"Corruption of Champions II — Prototype"', source)
 
     def test_translation_strategy_controls_asset_requirements(self):
         with tempfile.TemporaryDirectory() as directory:

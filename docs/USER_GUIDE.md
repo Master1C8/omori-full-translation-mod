@@ -4,12 +4,15 @@
 
 ### Starting the mod
 
-1. Close OMORI if it is already running.
+1. Close the game you want to translate if it is already running.
 2. On Windows, fully extract the ZIP and run `OMORI Translator.exe`. On macOS, open `OMORI Translator.app`.
-3. The translator starts OMORI for you. If it cannot find the game, choose the main `OMORI.exe` file when asked.
-4. Wait for the translator panel to appear in the top-right corner of the game.
+3. In the first native window, choose `OMORI` or `Corruption of Champions II — Prototype` and press `Launch`.
+4. The launcher starts the selected game. If it cannot find the installation, choose that game's main executable when asked (`OMORI.exe` or `CoC II.exe`).
+5. Wait for the translator panel to appear in the top-right corner of the game.
 
-Always start the game through OMORI Translator. The panel cannot appear if OMORI was started normally.
+Always start the game through OMORI Translator. The panel cannot appear if the game was started normally. The launcher remembers a separate path for each game, and each game has isolated settings, cache, history, and diagnostics.
+
+CoC2 is currently marked as a prototype. It supports only realtime translation of visible or newly changed DOM text; its assets are never scanned, extracted, or bulk-translated. OMORI keeps its Story, Full, Screen, Bulk, and Super Bulk workflows.
 
 If macOS asks you to locate the game, select the real `OMORI.app` inside the Steam library, not the small `OMORI.app` shortcut on the Desktop. The real app contains `Contents/Resources/app.nw`. Version 0.9.18 and newer reject a saved Steam shortcut and automatically recover the installed Steam copy when possible.
 
@@ -141,12 +144,15 @@ If `Test Phrase · All Languages` shows a Google retry countdown, leave it runni
 
 ### Запуск мода
 
-1. Закройте OMORI, если игра уже запущена.
+1. Закройте игру, которую хотите переводить, если она уже запущена.
 2. На Windows полностью распакуйте ZIP и запустите `OMORI Translator.exe`. На macOS откройте `OMORI Translator.app`.
-3. Переводчик сам запустит OMORI. Если он не найдёт игру, укажите основной файл `OMORI.exe`.
-4. Дождитесь появления панели переводчика в правом верхнем углу игры.
+3. В первом системном окне выберите `OMORI` или `Corruption of Champions II — Prototype` и нажмите `Launch`.
+4. Лаунчер сам запустит выбранную игру. Если установка не найдена, укажите основной файл этой игры: `OMORI.exe` или `CoC II.exe`.
+5. Дождитесь появления панели переводчика в правом верхнем углу игры.
 
-Всегда запускайте игру через OMORI Translator. При обычном запуске OMORI панель появиться не сможет.
+Всегда запускайте игру через OMORI Translator. При обычном запуске игры панель появиться не сможет. Путь запоминается отдельно для каждой игры; настройки, кэш, история и диагностика игр также изолированы.
+
+CoC2 пока помечена как прототип. В ней доступен только realtime-перевод видимого и вновь изменившегося DOM-текста; ассеты CoC2 никогда не сканируются, не извлекаются и не переводятся массово. Для OMORI сохраняются режимы Story, Full, Screen, Bulk и Super Bulk.
 
 Если macOS просит найти игру, выберите настоящую `OMORI.app` внутри библиотеки Steam, а не маленький ярлык `OMORI.app` на рабочем столе. В настоящем приложении есть `Contents/Resources/app.nw`. Версия 0.9.18 и новее отбрасывает сохранённый Steam-ярлык и при возможности автоматически восстанавливает путь к установленной копии.
 

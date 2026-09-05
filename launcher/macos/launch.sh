@@ -7,20 +7,59 @@ INFO_PLIST="${SCRIPT_DIR:h}/Info.plist"
 plist_value() { /usr/libexec/PlistBuddy -c "Print :$1" "$INFO_PLIST"; }
 
 PRODUCT_NAME=$(plist_value CFBundleDisplayName)
-GAME_ID=$(plist_value VNRevivalGameID)
-GAME_TITLE=$(plist_value VNRevivalGameTitle)
-GAME_SHORT_TITLE=$(plist_value VNRevivalShortTitle)
-STEAM_APP_ID=$(plist_value VNRevivalSteamAppID)
-WINDOWS_EXECUTABLE=$(plist_value VNRevivalWindowsExecutable)
-DEFAULT_BOTTLE=$(plist_value VNRevivalCrossOverBottle)
-CROSSOVER_GAME_PATH=$(plist_value VNRevivalCrossOverGamePath)
-DATA_DIRECTORY=$(plist_value VNRevivalDataDirectory)
-LAUNCH_STRATEGY=$(plist_value VNRevivalLaunchStrategy)
-DEBUG_TARGET_TITLE=$(plist_value VNRevivalDebugTargetTitle)
-DEBUG_TARGET_URL=$(plist_value VNRevivalDebugTargetURL)
+GAMES_DIR="$RESOURCE_DIR/games"
+GAME_CATALOG_FILE="$GAMES_DIR/catalog.txt"
+GAME_IDS=("${(@f)$(<"$GAME_CATALOG_FILE" 2>/dev/null)}")
+GAME_MANIFESTS=()
+for CATALOG_GAME_ID in "${GAME_IDS[@]}"; do
+  GAME_MANIFESTS+=("$GAMES_DIR/$CATALOG_GAME_ID/game.json")
+done
+if (( ${#GAME_MANIFESTS} < 2 )) || [[ ! -s "$GAME_CATALOG_FILE" ]]; then
+  VNREVIVAL_TRANSLATOR_TITLE="$PRODUCT_NAME" /usr/bin/osascript \
+    -e 'display alert (system attribute "VNREVIVAL_TRANSLATOR_TITLE") message "The game catalog is missing or incomplete. Reinstall the application." as critical' \
+    >/dev/null 2>&1 || true
+  exit 1
+fi
+
+GAME_LABELS=()
+for CANDIDATE_MANIFEST in "${GAME_MANIFESTS[@]}"; do
+  CANDIDATE_TITLE=$(/usr/bin/plutil -extract title raw -o - "$CANDIDATE_MANIFEST" 2>/dev/null) || exit 1
+  CANDIDATE_STATUS=$(/usr/bin/plutil -extract releaseStatus raw -o - "$CANDIDATE_MANIFEST" 2>/dev/null) || exit 1
+  [[ "$CANDIDATE_STATUS" == "prototype" ]] && CANDIDATE_TITLE="$CANDIDATE_TITLE — Prototype"
+  GAME_LABELS+=("$CANDIDATE_TITLE")
+done
+GAME_OPTIONS="${(F)GAME_LABELS}"
+SELECTED_GAME=$(VNREVIVAL_TRANSLATOR_TITLE="$PRODUCT_NAME" VNREVIVAL_GAME_OPTIONS="$GAME_OPTIONS" /usr/bin/osascript \
+  -e 'set gameOptions to paragraphs of (system attribute "VNREVIVAL_GAME_OPTIONS")' \
+  -e 'set selectedGame to choose from list gameOptions with title (system attribute "VNREVIVAL_TRANSLATOR_TITLE") with prompt "Choose a game to launch" OK button name "Launch" cancel button name "Cancel"' \
+  -e 'if selectedGame is false then return ""' \
+  -e 'return item 1 of selectedGame' 2>/dev/null) || exit 0
+[[ -n "$SELECTED_GAME" ]] || exit 0
+GAME_MANIFEST=""
+for (( INDEX=1; INDEX <= ${#GAME_LABELS}; INDEX++ )); do
+  if [[ "${GAME_LABELS[$INDEX]}" == "$SELECTED_GAME" ]]; then
+    GAME_MANIFEST="${GAME_MANIFESTS[$INDEX]}"
+    break
+  fi
+done
+[[ -s "$GAME_MANIFEST" ]] || exit 1
+GAME_RESOURCE_DIR="${GAME_MANIFEST:h}"
+manifest_value() { /usr/bin/plutil -extract "$1" raw -o - "$GAME_MANIFEST"; }
+
+GAME_ID=$(manifest_value id)
+GAME_TITLE=$(manifest_value title)
+GAME_SHORT_TITLE=$(manifest_value shortTitle)
+STEAM_APP_ID=$(manifest_value steamAppId)
+WINDOWS_EXECUTABLE=$(manifest_value windowsExecutable)
+DEFAULT_BOTTLE=$(manifest_value crossOverBottle)
+CROSSOVER_GAME_PATH=$(manifest_value crossOverGamePath)
+DATA_DIRECTORY=$(manifest_value dataDirectory)
+LAUNCH_STRATEGY=$(manifest_value launchStrategy)
+DEBUG_TARGET_TITLE=$(manifest_value debugTargetTitleContains)
+DEBUG_TARGET_URL=$(manifest_value debugTargetUrlContains)
 
 CONTROLLER="$RESOURCE_DIR/VNRevivalTranslatorController"
-TRANSLATOR="$RESOURCE_DIR/translator.bundle.js"
+TRANSLATOR="$GAME_RESOURCE_DIR/translator.bundle.js"
 LOCAL_SERVICE="$RESOURCE_DIR/local_service.py"
 CROSSOVER_APP="${VNREVIVAL_CROSSOVER_APP:-/Applications/CrossOver.app}"
 BOTTLE="${VNREVIVAL_CROSSOVER_BOTTLE:-$DEFAULT_BOTTLE}"
@@ -47,7 +86,7 @@ cleanup() {
   if [[ -n "$GAME_PID" ]] && kill -0 "$GAME_PID" >/dev/null 2>&1; then
     kill "$GAME_PID" >/dev/null 2>&1 || true
   fi
-  if [[ -n "$RUNTIME_SESSION_DIR" && "$RUNTIME_SESSION_DIR" == "${TMPDIR%/}/vnrevival-omori-runtime."* ]]; then
+  if [[ -n "$RUNTIME_SESSION_DIR" && "$RUNTIME_SESSION_DIR" == "${TMPDIR%/}/vnrevival-$GAME_ID-runtime."* ]]; then
     /bin/rm -rf -- "$RUNTIME_SESSION_DIR"
   fi
 }
@@ -163,7 +202,7 @@ if (( FORCE_RESELECT )) || [[ -z "$GAME_TARGET" ]]; then
   GAME_TARGET=$(choose_game_executable || true)
   GAME_TARGET=$(normalize_game_target "$GAME_TARGET")
   if [[ -z "$GAME_TARGET" ]] || ! valid_game_target "$GAME_TARGET"; then
-    show_error "The selected file is not the real $GAME_TITLE application. Select the game app containing Contents/Resources/app.nw, not a Steam desktop shortcut."
+    show_error "The selected file is not the main executable or application for $GAME_TITLE. Select the installed game itself, not a Steam desktop shortcut."
     exit 1
   fi
 fi
@@ -199,8 +238,8 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
   # untouched game package through the bundled native ARM64 NW.js instead.
   BUNDLED_NWJS_APP="$RESOURCE_DIR/NWJS Runtime.app"
   APPLE_SILICON_AVAILABLE=$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null || print 0)
-  if [[ "$APPLE_SILICON_AVAILABLE" == "1" && -x "$BUNDLED_NWJS_APP/Contents/MacOS/nwjs" ]]; then
-    RUNTIME_SESSION_DIR=$(/usr/bin/mktemp -d "${TMPDIR%/}/vnrevival-omori-runtime.XXXXXX") || {
+  if [[ "$GAME_ID" == "omori" && "$APPLE_SILICON_AVAILABLE" == "1" && -x "$BUNDLED_NWJS_APP/Contents/MacOS/nwjs" ]]; then
+    RUNTIME_SESSION_DIR=$(/usr/bin/mktemp -d "${TMPDIR%/}/vnrevival-$GAME_ID-runtime.XXXXXX") || {
       show_error "Could not prepare the compatible Apple Silicon game runtime."
       exit 1
     }
@@ -221,12 +260,12 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
     for PACKAGE_ITEM in "$GAME_PACKAGE"/*(DN); do
       [[ "${PACKAGE_ITEM:t}" == "package.json" ]] && continue
       /bin/ln -s "$PACKAGE_ITEM" "$COMPAT_PACKAGE/${PACKAGE_ITEM:t}" || {
-        show_error "Could not prepare the compatible OMORI game files."
+        show_error "Could not prepare the compatible $GAME_TITLE game files."
         exit 1
       }
     done
     /bin/cp "$GAME_PACKAGE/package.json" "$COMPAT_PACKAGE/package.json" || {
-      show_error "Could not prepare the compatible OMORI package."
+      show_error "Could not prepare the compatible $GAME_TITLE package."
       exit 1
     }
     /bin/cp "$RESOURCE_DIR/steam-compat.js" "$COMPAT_PACKAGE/steam-compat.js" || {
@@ -235,11 +274,11 @@ if [[ -d "$GAME_TARGET" && "$GAME_TARGET" == *.app ]]; then
     }
     /usr/bin/plutil -replace inject_js_start -string steam-compat.js "$COMPAT_PACKAGE/package.json" >/dev/null 2>&1 || \
       /usr/bin/plutil -insert inject_js_start -string steam-compat.js "$COMPAT_PACKAGE/package.json" >/dev/null 2>&1 || {
-        show_error "Could not enable Apple Silicon compatibility for OMORI."
+        show_error "Could not enable Apple Silicon compatibility for $GAME_TITLE."
         exit 1
       }
     /bin/ln -s "$COMPAT_PACKAGE" "$RUNTIME_APP/Contents/Resources/app.nw" || {
-      show_error "Could not connect the compatible runtime to the OMORI game files."
+      show_error "Could not connect the compatible runtime to the $GAME_TITLE game files."
       exit 1
     }
     /usr/bin/codesign --force --deep --sign - "$RUNTIME_APP" >/dev/null 2>&1 || {
@@ -304,7 +343,7 @@ fi
 
 if (( APPLE_SILICON_COMPAT )); then
   if ! capture_steam_argument; then
-    show_error "Steam did not provide the OMORI startup authorization. Make sure Steam is open and you own the game, then try again."
+    show_error "Steam did not provide the $GAME_TITLE startup authorization. Make sure Steam is open and you own the game, then try again."
     exit 1
   fi
 fi
@@ -344,7 +383,7 @@ if [[ -n "$LOCAL_SERVICE_PORT" && -x "$PYTHON" ]]; then
   LOCAL_SERVICE_TOKEN=$(/usr/bin/uuidgen | tr -d '-')
   "$PYTHON" -s "$LOCAL_SERVICE" --port "$LOCAL_SERVICE_PORT" --token "$LOCAL_SERVICE_TOKEN" \
     --data-dir "$LOCAL_DATA_DIR" --credential-id "$GAME_ID" --game-path "$GAME_TARGET" \
-    --game-config "$RESOURCE_DIR/game.json" \
+    --game-config "$GAME_RESOURCE_DIR/game.json" \
     >>"$LOCAL_SERVICE_LOG" 2>&1 &
   LOCAL_SERVICE_PID=$!
   for _ in {1..40}; do

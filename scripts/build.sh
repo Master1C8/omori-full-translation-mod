@@ -33,6 +33,7 @@ DEBUG_TARGET_TITLE=$(manifest_value debugTargetTitleContains)
 DEBUG_TARGET_URL=$(manifest_value debugTargetUrlContains)
 [[ "$LAUNCH_STRATEGY" == "electron-cdp" ]] || { echo "Unsupported launch strategy: $LAUNCH_STRATEGY" >&2; exit 1; }
 BUILD_DIR="$ROOT/.build"
+GAME_RESOURCE_BUILD="$BUILD_DIR/game-resources"
 READY_DIR="$ROOT/launcher/READY_TO_SHARE"
 APP="$BUILD_DIR/macos/$PRODUCT_NAME.app"
 MAC_ZIP="$READY_DIR/$ARCHIVE_PREFIX-macOS-$VERSION.zip"
@@ -49,6 +50,7 @@ rm -rf "$BUILD_DIR/macos"
 mkdir -p "$BUILD_DIR/checksums" "$READY_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/build-game-bundle.sh" "$BUILD_DIR/translator.bundle.js" >/dev/null
+"$ROOT/scripts/prepare-game-resources.sh" "$GAME_RESOURCE_BUILD" >/dev/null
 
 [[ -x "$SWIFTC" && -d "$SDK" ]]
 for ARCH in arm64 x86_64; do
@@ -75,6 +77,7 @@ cp "$ROOT/launcher/macos/launch.sh" "$APP/Contents/MacOS/$PRODUCT_NAME"
 cp "$BUILD_DIR/VNRevivalTranslatorController" "$APP/Contents/Resources/"
 cp "$BUILD_DIR/translator.bundle.js" "$APP/Contents/Resources/"
 cp "$GAME_MANIFEST" "$APP/Contents/Resources/game.json"
+cp -R "$GAME_RESOURCE_BUILD" "$APP/Contents/Resources/games"
 cp "$ROOT/src/local_service.py" "$APP/Contents/Resources/"
 cp "$ROOT/src/local_router.py" "$APP/Contents/Resources/"
 if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then

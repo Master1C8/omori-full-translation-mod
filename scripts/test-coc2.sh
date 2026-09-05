@@ -9,6 +9,10 @@ VNREVIVAL_GAME=coc2 node --test --test-reporter=dot \
   src/games/coc2/tests/adapter.test.js
 python3 scripts/game-manifest.py src/games/coc2/game.json >/dev/null
 VNREVIVAL_GAME=coc2 ./scripts/build-game-bundle.sh .build/coc2/translator.bundle.js >/dev/null
+./scripts/prepare-game-resources.sh "$ROOT/.build/test-game-resources" >/dev/null
+[[ "$(<"$ROOT/.build/test-game-resources/catalog.txt")" == $'omori\ncoc2' ]]
+[[ -s "$ROOT/.build/test-game-resources/omori/translator.bundle.js" ]]
+[[ -s "$ROOT/.build/test-game-resources/coc2/translator.bundle.js" ]]
 node --check .build/coc2/game-config.js
 node --check src/games/coc2/adapter.js
 node --check src/translator-runtime.js

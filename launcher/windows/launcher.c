@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <objbase.h>
@@ -20,18 +21,34 @@
 #include <wchar.h>
 
 #define APP_TITLE L"__PRODUCT_NAME_C__"
-#define GAME_TITLE L"__GAME_TITLE_C__"
-#define GAME_EXECUTABLE L"__WINDOWS_EXECUTABLE_C__"
-#define LOCAL_DATA_DIRECTORY L"__DATA_DIRECTORY_WINDOWS_C__"
-#define SOURCE_LABEL "__GAME_ID_C__-translator.bundle.js"
-#define GAME_ID_W L"__GAME_ID_C__"
-#define TARGET_TITLE_HINT "__DEBUG_TARGET_TITLE_C__"
-#define TARGET_URL_HINT "__DEBUG_TARGET_URL_C__"
 #define RESELECT_MARKER L".reselect-game-executable"
-#define APP_ID __STEAM_APP_ID__
 #define APP_VERSION L"__VERSION__"
 #define PATH_CAP 32768
 #define HTTP_CAP (8 * 1024 * 1024)
+
+typedef struct {
+    const WCHAR *id;
+    const WCHAR *title;
+    const WCHAR *display_name;
+    const WCHAR *executable;
+    const WCHAR *data_directory;
+    const char *target_title_hint;
+    const char *target_url_hint;
+    const char *source_label;
+    unsigned long steam_app_id;
+} GameDefinition;
+
+#include "game-catalog.generated.h"
+
+static const GameDefinition *g_game = NULL;
+#define GAME_TITLE (g_game->title)
+#define GAME_EXECUTABLE (g_game->executable)
+#define LOCAL_DATA_DIRECTORY (g_game->data_directory)
+#define SOURCE_LABEL (g_game->source_label)
+#define GAME_ID_W (g_game->id)
+#define TARGET_TITLE_HINT (g_game->target_title_hint)
+#define TARGET_URL_HINT (g_game->target_url_hint)
+#define APP_ID (g_game->steam_app_id)
 
 static HANDLE g_local_service_process = NULL;
 static HANDLE g_game_process = NULL;
@@ -72,6 +89,37 @@ static void parent_dir(const WCHAR *path, WCHAR *out)
 static void show_error(const WCHAR *message)
 {
     MessageBoxW(NULL, message, APP_TITLE, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+}
+
+static BOOL select_game(void)
+{
+    TASKDIALOGCONFIG config;
+    TASKDIALOG_BUTTON *buttons;
+    int selected = 0;
+    HRESULT result;
+    size_t index;
+    if (GAME_CATALOG_COUNT < 2) return FALSE;
+    buttons = (TASKDIALOG_BUTTON *)calloc(GAME_CATALOG_COUNT, sizeof(TASKDIALOG_BUTTON));
+    if (!buttons) return FALSE;
+    for (index = 0; index < GAME_CATALOG_COUNT; index++) {
+        buttons[index].nButtonID = 1000 + (int)index;
+        buttons[index].pszButtonText = GAME_CATALOG[index].display_name;
+    }
+    ZeroMemory(&config, sizeof(config));
+    config.cbSize = sizeof(config);
+    config.hwndParent = NULL;
+    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    config.pszWindowTitle = APP_TITLE;
+    config.pszMainInstruction = L"Choose a game to launch";
+    config.pszContent = L"Each game keeps its own translation mode, settings, and cache.";
+    config.cButtons = (UINT)GAME_CATALOG_COUNT;
+    config.pButtons = buttons;
+    config.nDefaultButton = buttons[0].nButtonID;
+    result = TaskDialogIndirect(&config, &selected, NULL, NULL);
+    free(buttons);
+    if (FAILED(result) || selected < 1000 || (size_t)(selected - 1000) >= GAME_CATALOG_COUNT) return FALSE;
+    g_game = &GAME_CATALOG[selected - 1000];
+    return TRUE;
 }
 
 static BOOL ensure_directory(const WCHAR *path)
@@ -415,6 +463,7 @@ static BOOL start_hidden_process(const WCHAR *command, const WCHAR *working_dir,
 
 static BOOL start_local_service(
     const WCHAR *resources,
+    const WCHAR *game_resources,
     const WCHAR *game_path,
     USHORT port,
     const WCHAR *token,
@@ -445,7 +494,7 @@ static BOOL start_local_service(
         command,
         sizeof(command) / sizeof(command[0]),
         L"\"%ls\" -s \"%ls\" --port %u --token %ls --data-dir \"%ls\" --credential-id %ls --game-path \"%ls\" --game-config \"%ls\\game.json\"",
-        python, service, (unsigned int)port, token, data_dir, GAME_ID_W, game_path, resources) < 0) {
+        python, service, (unsigned int)port, token, data_dir, GAME_ID_W, game_path, game_resources) < 0) {
         CloseHandle(log_file);
         return FALSE;
     }
@@ -915,7 +964,8 @@ static void cleanup(void)
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show_command)
 {
-    WCHAR executable[PATH_CAP], executable_dir[PATH_CAP], resources[PATH_CAP], bundle[PATH_CAP];
+    WCHAR executable[PATH_CAP], executable_dir[PATH_CAP], resources[PATH_CAP], games_root[PATH_CAP];
+    WCHAR game_resources[PATH_CAP], bundle[PATH_CAP], message[2048];
     WCHAR game_path[PATH_CAP], steam_path[PATH_CAP], token_wide[64], local_service_url[128];
     char token_utf8[64];
     USHORT debug_port, local_service_port;
@@ -944,15 +994,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     }
     parent_dir(executable, executable_dir);
     path_join(resources, PATH_CAP, executable_dir, L"resources");
-    path_join(bundle, PATH_CAP, resources, L"translator.bundle.js");
+    if (!select_game()) return 0;
+    path_join(games_root, PATH_CAP, resources, L"games");
+    path_join(game_resources, PATH_CAP, games_root, GAME_ID_W);
+    path_join(bundle, PATH_CAP, game_resources, L"translator.bundle.js");
     if (!file_exists(bundle)) {
-        show_error(L"The application is incomplete: translator.bundle.js is missing.");
+        show_error(L"The selected game's translator bundle is missing. Reinstall the application.");
         return 1;
     }
     game_path[0] = steam_path[0] = L'\0';
     if (consume_reselect_marker()) {
         if (!choose_game_executable(game_path)) {
-            show_error(L"The executable for " GAME_TITLE L" was not selected.");
+            _snwprintf(message, sizeof(message) / sizeof(message[0]), L"The executable for %ls was not selected.", GAME_TITLE);
+            show_error(message);
             return 1;
         }
         save_game_path(game_path);
@@ -961,14 +1015,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         find_steam_executable(steam_path);
     } else if (!find_steam_game(game_path, steam_path)) {
         if (!choose_game_executable(game_path)) {
-            show_error(L"The executable for " GAME_TITLE L" was not selected.");
+            _snwprintf(message, sizeof(message) / sizeof(message[0]), L"The executable for %ls was not selected.", GAME_TITLE);
+            show_error(message);
             return 1;
         }
         save_game_path(game_path);
         find_steam_executable(steam_path);
     }
     if (process_running(game_path, NULL)) {
-        show_error(GAME_TITLE L" is already running. Close the game and launch it through " APP_TITLE L".");
+        _snwprintf(message, sizeof(message) / sizeof(message[0]),
+            L"%ls is already running. Close the game and launch it through %ls.", GAME_TITLE, APP_TITLE);
+        show_error(message);
         return 1;
     }
     debug_port = free_loopback_port(9317, 9399);
@@ -977,7 +1034,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         show_error(L"Could not prepare the translator's local ports.");
         return 1;
     }
-    if (!start_local_service(resources, game_path, local_service_port, token_wide, local_service_url, sizeof(local_service_url) / sizeof(local_service_url[0]))) {
+    if (!start_local_service(resources, game_resources, game_path, local_service_port, token_wide,
+            local_service_url, sizeof(local_service_url) / sizeof(local_service_url[0]))) {
         show_error(L"Could not start local translator service. Make sure the translator archive was fully extracted.");
         return 1;
     }
@@ -989,7 +1047,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
         0);
     if (g_http_session) WinHttpSetTimeouts(g_http_session, 2000, 2000, 2000, 2000);
     if (!g_http_session || !launch_game(steam_path, game_path, debug_port)) {
-        show_error(L"Could not launch " GAME_TITLE L".");
+        _snwprintf(message, sizeof(message) / sizeof(message[0]), L"Could not launch %ls.", GAME_TITLE);
+        show_error(message);
         return 1;
     }
     if (!connect_and_inject(debug_port, bundle, local_service_url, token_utf8)) {

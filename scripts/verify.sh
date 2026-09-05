@@ -17,6 +17,7 @@ ZIP="$READY/$ARCHIVE_PREFIX-macOS-$VERSION.zip"
 WINDOWS_ZIP="$READY/$ARCHIVE_PREFIX-Windows-$VERSION.zip"
 MAC_CHECKSUM="$BUILD_DIR/checksums/${ZIP:t}.sha256"
 WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
+GAME_IDS=("${(@f)$(python3 "$ROOT/scripts/game-catalog.py" "$ROOT/src/games/catalog.json" list)}")
 
 [[ -x "$APP/Contents/MacOS/$PRODUCT_NAME" ]]
 [[ -x "$APP/Contents/Resources/VNRevivalTranslatorController" ]]
@@ -27,6 +28,12 @@ if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
 fi
 [[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
 [[ -s "$APP/Contents/Resources/game.json" ]]
+[[ -s "$APP/Contents/Resources/games/catalog.json" ]]
+[[ -s "$APP/Contents/Resources/games/catalog.txt" ]]
+for CATALOG_GAME_ID in "${GAME_IDS[@]}"; do
+  [[ -s "$APP/Contents/Resources/games/$CATALOG_GAME_ID/translator.bundle.js" ]]
+  [[ -s "$APP/Contents/Resources/games/$CATALOG_GAME_ID/game.json" ]]
+done
 [[ -s "$APP/Contents/Resources/steam-compat.js" ]]
 [[ -s "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md" ]]
 [[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
@@ -68,6 +75,12 @@ if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
   grep -Fqx "$DIST_NAME/resources/$LOCALIZATION_PROFILE_FILE" <<< "$WINDOWS_CONTENTS"
 fi
 grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/games/catalog.json" <<< "$WINDOWS_CONTENTS"
+grep -Fqx "$DIST_NAME/resources/games/catalog.txt" <<< "$WINDOWS_CONTENTS"
+for CATALOG_GAME_ID in "${GAME_IDS[@]}"; do
+  grep -Fqx "$DIST_NAME/resources/games/$CATALOG_GAME_ID/translator.bundle.js" <<< "$WINDOWS_CONTENTS"
+  grep -Fqx "$DIST_NAME/resources/games/$CATALOG_GAME_ID/game.json" <<< "$WINDOWS_CONTENTS"
+done
 WINDOWS_NOTICES=$(unzip -p "$WINDOWS_ZIP" "$DIST_NAME/THIRD_PARTY_NOTICES.txt")
 grep -Fq "$PRODUCT_NAME bundles the Python embeddable runtime" <<< "$WINDOWS_NOTICES"
 if grep -Fq '__PRODUCT_NAME__' <<< "$WINDOWS_NOTICES"; then

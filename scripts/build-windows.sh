@@ -75,6 +75,7 @@ mkdir -p "$PYTHON_DIR"
 unzip -q "$PYTHON_ZIP" -d "$PYTHON_DIR"
 
 cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
+cp -R "$ROOT/.build/game-resources" "$RESOURCE_DIR/games"
 cp "$ROOT/src/local_service.py" "$RESOURCE_DIR/local_service.py"
 cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"
 if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
@@ -91,6 +92,8 @@ cp "$ROOT/LICENSE" "$DIST_DIR/LICENSE"
   "$ROOT/$ICON_PNG" "$BUILD_ROOT/AppIcon.ico"
 
 VERSION_COMMAS=${VERSION//./,}
+python3 "$ROOT/scripts/generate-windows-game-catalog.py" \
+  "$ROOT/src/games/catalog.json" "$BUILD_ROOT/game-catalog.generated.h"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/launcher.c" "$BUILD_ROOT/launcher.c" \
   VERSION "$VERSION" PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" \
   WINDOWS_EXECUTABLE "$WINDOWS_EXECUTABLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS" \
@@ -106,7 +109,7 @@ python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/app.rc.in" "$
   "$BUILD_ROOT/launcher.c" "$BUILD_ROOT/app-res.o" \
   -o "$DIST_DIR/$PRODUCT_NAME.exe" \
   -Wl,--major-subsystem-version,6,--minor-subsystem-version,2 \
-  -lwinhttp -lws2_32 -lshell32 -lole32 -ladvapi32 -lcomdlg32
+  -lwinhttp -lws2_32 -lshell32 -lole32 -ladvapi32 -lcomdlg32 -lcomctl32
 
 if [[ -n "$WINDOWS_SIGN_CERT" ]]; then
   [[ -x "$WINDOWS_SIGN_TOOL" && -s "$WINDOWS_SIGN_CERT" ]]

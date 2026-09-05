@@ -44,9 +44,11 @@ python3 scripts/render-template.py launcher/windows/launcher.c "$ROOT/.build/win
   VERSION "$(tr -d '[:space:]' < VERSION)" PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" \
   WINDOWS_EXECUTABLE "$WINDOWS_EXECUTABLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS" \
   GAME_ID "$GAME_ID" STEAM_APP_ID "$STEAM_APP_ID" DEBUG_TARGET_TITLE "$DEBUG_TARGET_TITLE" DEBUG_TARGET_URL "$DEBUG_TARGET_URL"
+python3 scripts/generate-windows-game-catalog.py \
+  src/games/catalog.json "$ROOT/.build/game-catalog.generated.h"
 PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m unittest discover -s tests -p 'test_*.py'
 for SCRIPT in \
-  launcher/macos/launch.sh scripts/build.sh scripts/build-game-bundle.sh scripts/build-windows.sh scripts/test.sh \
+  launcher/macos/launch.sh scripts/build.sh scripts/build-game-bundle.sh scripts/prepare-game-resources.sh scripts/build-windows.sh scripts/test.sh \
   scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh \
   scripts/prepare-nwjs-macos.sh scripts/run-browser-smoke.sh; do
   zsh -n "$SCRIPT"
@@ -55,7 +57,7 @@ done
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -municode -mwindows \
     "$ROOT/.build/windows-launcher-smoke.c" -o "$ROOT/.build/windows-launcher-smoke.exe" \
-    -lwinhttp -lws2_32 -lshell32 -lole32 -ladvapi32 -lcomdlg32
+    -lwinhttp -lws2_32 -lshell32 -lole32 -ladvapi32 -lcomdlg32 -lcomctl32
 fi
 
 if grep -RInE "381780|BepInEx|StorySentenceElement|EightyDaysRussianTranslator" src launcher/macos launcher/windows; then
@@ -119,12 +121,14 @@ if rg -n -i 'argos|ctranslate|opus' src/providers.js src/runtime-panel.js src/tr
   exit 1
 fi
 
-for REQUIRED in "#define APP_ID $STEAM_APP_ID" 'WinHttpWebSocket' "$WINDOWS_EXECUTABLE" 'local_service.py' 'python.exe' '__vnRevivalLocalBridge' '--credential-id' '--game-path' 'GetOpenFileNameW' 'load_saved_game_path' 'consume_reselect_marker' 'debug_target_running'; do
+for REQUIRED in '#define APP_ID (g_game->steam_app_id)' 'TaskDialogIndirect' 'game-catalog.generated.h' 'WinHttpWebSocket' 'local_service.py' 'python.exe' '__vnRevivalLocalBridge' '--credential-id' '--game-path' 'GetOpenFileNameW' 'load_saved_game_path' 'consume_reselect_marker' 'debug_target_running'; do
   grep -Fq -- "$REQUIRED" "$ROOT/.build/windows-launcher-smoke.c" || {
     echo "Missing Windows launcher feature: $REQUIRED" >&2
     exit 1
   }
 done
+grep -Fq "L\"omori\", L\"OMORI\"" "$ROOT/.build/game-catalog.generated.h"
+grep -Fq "L\"coc2\", L\"Corruption of Champions II\"" "$ROOT/.build/game-catalog.generated.h"
 
 for REQUIRED in 'ASSET_INDEX_SCHEMA' 'assetCache' 'GeminiCredentialStore' 'gemini_translate' 'lmstudio_status' 'lmstudio_translate' 'OpenAICompatibleCredentialStore' 'openai_compatible_status' 'openai_compatible_translate' 'LocalPostRouter' 'game_language_candidates' '_aes256_encrypt_block' 'request_game_executable_change' '/v1/gemini/status' '/v1/lmstudio/status' '/v1/game/strings' '/v1/localization/profile'; do
   grep -Eq "$REQUIRED" src/local_service.py || {
@@ -163,7 +167,7 @@ grep -Fq 'Contents/Resources/app.nw' launcher/macos/launch.sh
 grep -Fq 'not a Steam desktop shortcut' launcher/macos/launch.sh
 grep -Fq 'NWJS Runtime.app' launcher/macos/launch.sh
 grep -Fq 'hw.optional.arm64' launcher/macos/launch.sh
-grep -Fq 'vnrevival-omori-runtime.' launcher/macos/launch.sh
+grep -Fq 'vnrevival-$GAME_ID-runtime.' launcher/macos/launch.sh
 grep -Fq 'GAME_ICON="$GAME_TARGET/Contents/Resources/app.icns"' launcher/macos/launch.sh
 grep -Fq '/bin/cp "$GAME_ICON" "$RUNTIME_APP/Contents/Resources/app.icns"' launcher/macos/launch.sh
 grep -Fq 'capture_steam_argument' launcher/macos/launch.sh
@@ -196,7 +200,9 @@ grep -Fq '"$ROOT/$PRODUCT_NAME.app"' scripts/build.sh
 grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh
 grep -Fq -- '--credential-id "$GAME_ID"' launcher/macos/launch.sh
 grep -Fq -- '--game-path "$GAME_TARGET"' launcher/macos/launch.sh
-grep -Fq -- '--game-config "$RESOURCE_DIR/game.json"' launcher/macos/launch.sh
+grep -Fq -- '--game-config "$GAME_RESOURCE_DIR/game.json"' launcher/macos/launch.sh
+grep -Fq 'choose from list gameOptions' launcher/macos/launch.sh
+grep -Fq '"$GAMES_DIR/$CATALOG_GAME_ID/game.json"' launcher/macos/launch.sh
 grep -Eq 'persistControlSettings' src/translator-runtime.js
 if grep -Eq 'class="(cacheActions|launcherActions|settingsActions|clearLanguage|export|import|changeExecutable|save|reset)"' src/runtime-panel.js; then
   echo "Removed settings actions are still present in the panel" >&2
