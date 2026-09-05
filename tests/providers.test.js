@@ -7,11 +7,11 @@ require("../src/languages.js");
 require("../src/providers.js");
 const registry = globalThis.VNRevivalTranslationProviders;
 
-test("language catalog matches the VN Revival Stardew Valley editions", () => {
+test("language catalog matches the canonical VN Revival site locales", () => {
   assert.deepEqual(globalThis.VNRevivalTranslatorLanguages.map(([code]) => code), [
-    "en", "ru", "fr", "de", "es", "pl", "tr", "ar", "pt", "ja", "ko", "zh-CN", "zh-TW",
-    "it", "th", "vi", "id", "fa", "hi", "bn", "ur", "ta", "te", "my", "mr", "ml", "kn",
-    "uz", "sw", "am"
+    "zh", "en", "ru", "es", "pt-BR", "ja", "de", "ko", "fr", "tr", "pl", "zh-TW",
+    "it", "th", "vi", "id", "uk", "ar", "cs", "hu", "nl", "fa", "ro", "hi", "fil",
+    "el", "bg", "sr", "sw", "he"
   ]);
 });
 
@@ -63,6 +63,16 @@ test("online providers own URL construction and response parsing", async () => {
   assert.equal(registry.byId.google.bulkMaxItems, 12);
   assert.equal(registry.byId.google.bulkMaxSegments, 16);
   assert.equal(registry.byId.google.bulkConsecutiveFailureLimit, 3);
+
+  await registry.byId.google.translateChunk({
+    text: "Hello", language: "zh", sourceLanguage: "en", signal: undefined,
+    decodeHtmlEntities: (value) => value,
+    fetch: async (url) => {
+      requestedURL = url;
+      return { ok: true, json: async () => [[["你好", "Hello"]]] };
+    }
+  });
+  assert.equal(new URL(requestedURL).searchParams.get("tl"), "zh-CN");
 
   let batchURL = "";
   const translatedBatch = await registry.byId.google.translateChunks({

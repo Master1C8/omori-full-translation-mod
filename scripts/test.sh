@@ -90,17 +90,12 @@ if grep -RInE '[А-Яа-яЁё]' \
   exit 1
 fi
 
-for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage'; do
+for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage' 'superBulkTranslateAll'; do
   grep -Fq "$REQUIRED" src/translator-runtime.js || {
     echo "Missing runtime feature: $REQUIRED" >&2
     exit 1
   }
 done
-
-if grep -Eq 'SUPER_BULK_LANGUAGES|superBulkTranslateAll|superBulkTranslate|super-bulk|Super Bulk' src/translator-runtime.js; then
-  echo "Removed Super Bulk mode is still present in translator-runtime.js" >&2
-  exit 1
-fi
 
 if rg -n -i 'mymemory' src/translation-core.js src/providers.js src/translator-runtime.js; then
   echo "Removed MyMemory provider is still present in browser product code" >&2
@@ -209,14 +204,14 @@ grep -Fq 'makeTranslationCacheKey(source, language, provider)' src/translator-ru
 
 COUNT=$(wc -l < src/languages.txt | tr -d ' ')
 if [[ "$COUNT" != "30" ]]; then
-  echo "Language catalog must match the 30 VN Revival Stardew Valley editions: $COUNT" >&2
+  echo "Language catalog must match the 30 canonical VN Revival site locales: $COUNT" >&2
   exit 1
 fi
 
-EXPECTED_LANGUAGE_CODES="en ru fr de es pl tr ar pt ja ko zh-CN zh-TW it th vi id fa hi bn ur ta te my mr ml kn uz sw am"
+EXPECTED_LANGUAGE_CODES="zh en ru es pt-BR ja de ko fr tr pl zh-TW it th vi id uk ar cs hu nl fa ro hi fil el bg sr sw he"
 ACTUAL_LANGUAGE_CODES=$(cut -d'|' -f1 src/languages.txt | paste -sd' ' -)
 if [[ "$ACTUAL_LANGUAGE_CODES" != "$EXPECTED_LANGUAGE_CODES" ]]; then
-  echo "Language catalog does not match the VN Revival Stardew Valley editions" >&2
+  echo "Language catalog does not match the canonical VN Revival site locales" >&2
   exit 1
 fi
 

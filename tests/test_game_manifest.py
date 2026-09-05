@@ -26,7 +26,7 @@ class GameManifestTests(unittest.TestCase):
     def test_current_manifest_is_valid(self):
         manifest = MODULE.load_manifest(self.manifest_path)
         self.assertEqual(manifest["id"], "omori")
-        self.assertEqual(manifest["officialLocalizations"], ["en", "ja", "ko", "zh-CN"])
+        self.assertEqual(manifest["officialLocalizations"], ["en", "ja", "ko", "zh"])
 
     def test_official_localizations_are_required_unique_and_include_source(self):
         with tempfile.TemporaryDirectory() as directory:

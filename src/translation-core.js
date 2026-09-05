@@ -15,7 +15,7 @@
     "km", "kn", "lo", "ml", "mr", "my", "ne", "or", "pa", "pa-Arab",
     "ps", "si", "ta", "te", "th", "ti", "ur"
   ]);
-  const CJK_LANGUAGES = new Set(["ja", "ko", "yue", "zh-CN", "zh-TW"]);
+  const CJK_LANGUAGES = new Set(["ja", "ko", "yue", "zh", "zh-CN", "zh-TW"]);
   const CYRILLIC_TARGET_LANGUAGES = new Set(["be", "bg", "kk", "ky", "mk", "mn", "ru", "sr", "tg", "uk"]);
   const CONTEXT_MARKER_PREFIX = "VRCTXSEP";
   const CONTEXT_MARKER_SUFFIX = "X";
@@ -92,6 +92,7 @@
       iw: "he",
       jw: "jv",
       tl: "fil",
+      zh: "zh-Hans",
       "zh-CN": "zh-Hans",
       "zh-TW": "zh-Hant",
       ber: "zgh-Tfng",
@@ -102,6 +103,10 @@
 
   function providerLanguageCode(provider, language) {
     const code = String(language || "");
+    if (provider === "google") {
+      if (code === "zh") return "zh-CN";
+      if (code === "fil") return "tl";
+    }
     return code;
   }
 

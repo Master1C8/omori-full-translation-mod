@@ -288,7 +288,8 @@
       const obsoleteControlsRemoved = !shadow.querySelector(".translate,.auto,.hotkey")
         && shadow.querySelector(".screenTranslate")?.getAttribute("aria-keyshortcuts") === "Control+Shift+T"
         && shadow.querySelector(".screenTranslate")?.textContent.includes("Ctrl+Shift+T");
-      const superBulkButtonRemoved = !shadow.querySelector(".superBulkTranslate");
+      const superBulkButtonPresent = shadow.querySelector(".superBulkTranslate")?.textContent.trim()
+        === "Super Bulk Translation";
       const storyScopeButton = shadow.querySelector(".storyTranslationScope");
       const fullScopeButton = shadow.querySelector(".fullTranslationScope");
       const screenScopeButton = shadow.querySelector(".screenTranslationScope");
@@ -570,7 +571,7 @@
         && officialLocalizationUnlock
         && autoApplyForcedOn
         && obsoleteControlsRemoved
-        && superBulkButtonRemoved
+        && superBulkButtonPresent
         && translationScopesPresent
         && fullTranslationScopeSwitch
         && liveTranslationLogPresent
@@ -622,7 +623,7 @@
         officialLocalizationUnlock,
         autoApplyForcedOn,
         obsoleteControlsRemoved,
-        superBulkButtonRemoved,
+        superBulkButtonPresent,
         translationScopesPresent,
         fullTranslationScopeSwitch,
         liveTranslationLogPresent,

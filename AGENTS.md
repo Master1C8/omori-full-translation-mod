@@ -11,9 +11,11 @@ authoritative when documentation and code disagree.
 - Full Translation is experimental and applies only translations already present
   in an imported pack or the selected provider cache. Gameplay cache misses must
   never start a provider request.
-- Do not restore Bergamot, Super Bulk, or hidden character-name dictionaries.
+- Do not restore Bergamot or hidden character-name dictionaries.
 - Character names use the same cache and selected provider as other text.
-- Google Bulk and Test Phrase allow at most one fresh request per second.
+- Google Bulk, Super Bulk, and Test Phrase allow at most one fresh request per second.
+- In Super Bulk, repeated late Google failures stop only the current language;
+  preserve its completed cache and continue with the next target language.
 - HTTP 429 must retain the current operation, show `Rate limited`, persist the
   cooldown, and continue after it expires.
 - ETA measures only fresh translations in the current pass. Cache hits, startup,

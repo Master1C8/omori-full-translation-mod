@@ -41,7 +41,7 @@ test("selected game manifest supplies universal runtime identity", () => {
   assert.equal(manifest.launchStrategy, "electron-cdp");
   assert.ok(manifest.translatorName);
   assert.ok(manifest.storageNamespace);
-  assert.deepEqual(manifest.officialLocalizations, ["en", "ja", "ko", "zh-CN"]);
+  assert.deepEqual(manifest.officialLocalizations, ["en", "ja", "ko", "zh"]);
   assert.ok(manifest.officialLocalizations.includes(manifest.sourceLanguage));
   assert.ok(manifest.windowsExecutable.toLowerCase().endsWith(".exe"));
   assert.ok(manifest.debugTargetTitleContains || manifest.debugTargetUrlContains);
@@ -229,10 +229,12 @@ test("expanded panel shows all settings with one collapse control and a mode tog
 
 test("active translation uses the full app for word progress, live log, and its cancel button", () => {
   const bulkButtonIndex = runtimeSource.indexOf('class="primary bulkTranslate"');
+  const superBulkButtonIndex = runtimeSource.indexOf('class="primary superBulkTranslate"');
   const testPhraseButtonIndex = runtimeSource.indexOf('class="primary testPhraseTranslate"');
   const importButtonIndex = runtimeSource.indexOf('class="secondary importCache"');
   const exportButtonIndex = runtimeSource.indexOf('class="secondary exportCache"');
-  assert.ok(bulkButtonIndex > 0 && bulkButtonIndex < testPhraseButtonIndex
+  assert.ok(bulkButtonIndex > 0 && bulkButtonIndex < superBulkButtonIndex
+    && superBulkButtonIndex < testPhraseButtonIndex
     && testPhraseButtonIndex < importButtonIndex && importButtonIndex < exportButtonIndex);
   assert.match(runtimeSource, /setBulkButtonWorking\("Starting…"\)/);
   assert.match(runtimeSource, /runtimeUI\.setButtonState\(bulkButton, \{ working: true, label, disabled: false \}\)/);
@@ -242,7 +244,7 @@ test("active translation uses the full app for word progress, live log, and its 
   assert.match(runtimeSource, /Interrupt translation \(progress will be saved\)/);
   assert.match(runtimeSource, /setBulkUiBusy\(true\)/);
   assert.match(runtimeSource, /const bulkCancelButton = shadow\.querySelector\("\.bulkCancel"\)/);
-  assert.match(runtimeSource, /activeOperation === "test-phrase" \? testPhraseButton : bulkButton/);
+  assert.match(runtimeSource, /activeOperation === "super-bulk" \? superBulkButton : bulkButton/);
   assert.match(runtimeSource, /host\.classList\.toggle\("bulkBusyHost", busy\)/);
   assert.match(runtimeSource, /row\.classList\.toggle\("activeBulkAction", busy && row\.contains\(cancelButton\)\)/);
   assert.match(runtimeSource, /if \(busy\) translationLogBox\.open = true/);
@@ -374,8 +376,28 @@ test("startup update check reports availability, cache impact, and failure", () 
   assert.match(runtimeSource, /checkForUpdates\(\);/);
 });
 
-test("removed Super Bulk mode is absent from the runtime", () => {
-  assert.doesNotMatch(runtimeSource, /SUPER_BULK_LANGUAGES|superBulkTranslateAll|superBulkTranslate|super-bulk|Super Bulk/);
+test("Super Bulk processes every non-official provider language sequentially", () => {
+  assert.match(runtimeSource, /class="primary superBulkTranslate"/);
+  assert.match(runtimeSource, /function superBulkTargets\(provider\)/);
+  assert.match(runtimeSource, /code !== SOURCE_LANGUAGE\s*&& !hasOfficialLocalization\(code\)/);
+  assert.match(runtimeSource, /async function superBulkTranslateAll\(\)/);
+  assert.match(runtimeSource, /for \(let index = 0; index < targets\.length && !signal\.aborted; index \+= 1\)/);
+  assert.match(runtimeSource, /await translateBulkLanguage\(\s*entries, language, provider, signal/);
+  assert.match(runtimeSource, /\{ requestPacer: sharedRequestPacer \}/);
+  assert.match(runtimeSource, /error\.code !== "google_bulk_block_failures"/);
+  assert.match(runtimeSource, /Super Bulk stopped \$\{language\} after repeated Google errors/);
+  assert.match(runtimeSource, /activeOperation = "super-bulk"/);
+  assert.match(runtimeSource, /activeOperation === "super-bulk"\) void superBulkTranslateAll\(\)/);
+  assert.match(runtimeSource, /Super Bulk complete: \$\{targets\.length\} languages/);
+});
+
+test("renamed site locales preserve saved settings, imported packs, and Google cache", () => {
+  assert.match(runtimeSource, /const LEGACY_LANGUAGE_ALIASES = Object\.freeze\(\{ "zh-CN": "zh", pt: "pt-BR" \}\)/);
+  assert.match(runtimeSource, /const savedLanguage = canonicalLanguageCode\(source\.language\)/);
+  assert.match(runtimeSource, /const language = canonicalLanguageCode\(storedLanguage\)/);
+  assert.match(runtimeSource, /canonicalLanguageCode\(core\.cacheKeyLanguage\(key\)\) === selection\.language/);
+  assert.match(runtimeSource, /provider === "google" \? legacyLanguageCode\(language\) : ""/);
+  assert.doesNotMatch(runtimeSource, /delete.*LEGACY_LANGUAGE_ALIASES/i);
 });
 
 test("test phrase control builds one exact live-dialogue cache entry for every available language", () => {
@@ -603,7 +625,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
     global.window.$gameMessage._texts = ["Hello"];
     global.window.SceneManager._scene._messageWindow._textState = null;
     global.window.SceneManager._scene._messageWindow.pause = true;
-    adapter.onLanguageChanged("zh-CN", "google");
+    adapter.onLanguageChanged("zh", "google");
     assert.equal(directRedraws, 1);
     assert.equal(messageRestarts, 2);
     assert.equal(choiceRefreshes, 3);
@@ -613,7 +635,7 @@ test("changing language waits for its cache and redraws the current OMORI dialog
 });
 
 test("bulk translation continues while the game window is hidden", () => {
-  assert.match(runtimeSource, /activeOperation !== "bulk" && activeOperation !== "test-phrase"/);
+  assert.match(runtimeSource, /activeOperation !== "bulk" && activeOperation !== "super-bulk"\s*&& activeOperation !== "test-phrase"/);
 });
 
 test("incomplete bulk translation reports its cancellation or provider failure", () => {

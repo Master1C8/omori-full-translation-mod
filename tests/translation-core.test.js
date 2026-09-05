@@ -11,18 +11,20 @@ test("recognizes right-to-left target languages and normalizes Hebrew for HTML",
   for (const language of ["ar", "bal", "bm-Nkoo", "ckb", "dv", "fa", "fa-AF", "iw", "ms-Arab", "pa-Arab", "ps", "sd", "ug", "ur", "yi"]) {
     assert.equal(core.isRtlLanguage(language), true, language);
   }
-  for (const language of ["en", "ru", "no", "ku", "zh-CN"]) {
+  for (const language of ["en", "ru", "no", "ku", "zh"]) {
     assert.equal(core.isRtlLanguage(language), false, language);
   }
   assert.equal(core.htmlLanguageCode("iw"), "he");
   assert.equal(core.htmlLanguageCode("jw"), "jv");
-  assert.equal(core.htmlLanguageCode("zh-CN"), "zh-Hans");
+  assert.equal(core.htmlLanguageCode("zh"), "zh-Hans");
   assert.equal(core.htmlLanguageCode("zh-TW"), "zh-Hant");
   assert.equal(core.htmlLanguageCode("fa-AF"), "fa-AF");
 });
 
 test("maps provider language codes and rejects removed providers", () => {
   assert.equal(core.providerLanguageCode("google", "iw"), "iw");
+  assert.equal(core.providerLanguageCode("google", "zh"), "zh-CN");
+  assert.equal(core.providerLanguageCode("google", "fil"), "tl");
   assert.equal(core.providerSupportsLanguage("google", "ab"), true);
   assert.equal(core.providerSupportsLanguage("argos", "ru"), false);
   assert.equal(core.providerSupportsLanguage("ctranslate2-opus", "ru"), false);
@@ -33,7 +35,7 @@ test("selects script-aware font fallbacks without dropping universal fonts", () 
   assert.ok(core.fontFallbacks("ar").includes("Noto Sans Arabic"));
   assert.ok(core.fontFallbacks("hi").includes("Noto Sans Devanagari"));
   assert.ok(core.fontFallbacks("zh-TW").includes("PingFang TC"));
-  assert.ok(core.fontFallbacks("zh-CN").includes("Songti SC"));
+  assert.ok(core.fontFallbacks("zh").includes("Songti SC"));
   assert.ok(core.fontFallbacks("zh-TW").includes("Songti TC"));
   assert.ok(core.fontFallbacks("bm-Nkoo").includes("Noto Sans NKo"));
   assert.ok(core.fontFallbacks("no").includes("Noto Sans"));

@@ -91,6 +91,7 @@
   const GOOGLE_RATE_LIMIT_STATE_KEY = `${game.storageNamespace}.google-rate-limit-state.v2`;
   const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
+  const LEGACY_LANGUAGE_ALIASES = Object.freeze({ "zh-CN": "zh", pt: "pt-BR" });
   const OFFICIAL_LOCALIZATIONS = new Set(game.officialLocalizations || []);
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -191,6 +192,18 @@
     return { version: 1, languages: {} };
   }
 
+  function canonicalLanguageCode(language) {
+    const code = String(language || "");
+    return LEGACY_LANGUAGE_ALIASES[code] || code;
+  }
+
+  function legacyLanguageCode(language) {
+    const code = String(language || "");
+    const entry = Object.entries(LEGACY_LANGUAGE_ALIASES)
+      .find(([, canonical]) => canonical === code);
+    return entry ? entry[0] : "";
+  }
+
   function loadTranslationPackMetadata() {
     try {
       const value = JSON.parse(localStorage.getItem(TRANSLATION_PACK_META_KEY) || "null");
@@ -198,9 +211,11 @@
         return emptyTranslationPackMetadata();
       }
       const languages = {};
-      for (const [language, record] of Object.entries(value.languages)) {
+      for (const [storedLanguage, record] of Object.entries(value.languages)) {
+        const language = canonicalLanguageCode(storedLanguage);
         if (!LANGUAGES.some(([code]) => code === language) || !record || typeof record !== "object") continue;
         if (typeof record.packId !== "string" || !/^[A-Za-z0-9-]{16,80}$/.test(record.packId)) continue;
+        if (languages[language] && storedLanguage !== language) continue;
         languages[language] = {
           packId: record.packId,
           records: Math.max(0, Number(record.records) || 0),
@@ -310,6 +325,7 @@
       } catch (_) {}
     }
     const source = parsed || {};
+    const savedLanguage = canonicalLanguageCode(source.language);
     const openAICompatiblePreset = Object.prototype.hasOwnProperty.call(
       OPENAI_COMPATIBLE_PRESETS, source.openAICompatiblePreset
     ) ? source.openAICompatiblePreset : defaults.openAICompatiblePreset;
@@ -317,7 +333,7 @@
     const customBaseURL = typeof source.openAICompatibleBaseURL === "string"
       && source.openAICompatibleBaseURL.length <= 2048 ? source.openAICompatibleBaseURL.trim() : "";
     return {
-      language: LANGUAGES.some(([code]) => code === source.language) ? source.language : defaults.language,
+      language: LANGUAGES.some(([code]) => code === savedLanguage) ? savedLanguage : defaults.language,
       provider: PROVIDERS[source.provider] ? source.provider : defaults.provider,
       // Retain this field only for settings compatibility. Cache application is
       // intentionally always enabled and is no longer a user-facing option.
@@ -594,7 +610,9 @@
     for (const entry of normalized) {
       memoryCacheSet(entry.key, entry.value);
       knownCacheKeys.add(entry.key);
-      updateProviderAliasRecord(entry.key, entry.value, settings.language, settings.provider);
+      updateProviderAliasRecord(
+        entry.key, entry.value, core.cacheKeyLanguage(entry.key), core.cacheKeyProvider(entry.key)
+      );
       const oldValue = previous.get(entry.key);
       if (oldValue !== null && oldValue !== undefined) adjustCacheMetadata(metadata, entry.key, oldValue, -1);
       adjustCacheMetadata(metadata, entry.key, entry.value, 1);
@@ -648,42 +666,53 @@
     }
   }
 
-  async function preloadMemoryCache() {
+  async function preloadMemoryCache(language = settings.language, provider = settings.provider) {
     let loaded = 0;
     knownCacheKeys.clear();
     knownCacheKeysComplete = false;
     providerAliasRecords.clear();
     providerAliasMemoryCache.clear();
     try {
-      const language = settings.language;
-      const provider = settings.provider;
       const variant = providerCacheVariant(provider);
       const variantFingerprint = variant ? core.fingerprint(variant) : "";
       knownCacheScope = translationCacheScope(language, provider);
       const db = await openDb();
-      await new Promise((resolve, reject) => {
-        const transaction = db.transaction(STORE_NAME, "readonly");
-        const store = transaction.objectStore(STORE_NAME);
-        const request = store.openCursor();
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) { resolve(); return; }
-          const key = cursor.key;
-          if (typeof key === "string" && typeof cursor.value === "string") {
-            if (core.cacheKeyLanguage(key) === language && core.cacheKeyProvider(key) === provider
-              && (!variantFingerprint || core.cacheKeyVariant(key) === variantFingerprint)) {
-              if (core.cacheKeyGame(key) === game.id || !core.cacheKeyGame(key)) {
-                knownCacheKeys.add(key);
-                memoryCacheSet(key, cursor.value);
-                updateProviderAliasRecord(key, cursor.value, language, provider);
-                loaded += 1;
+      async function loadLanguageScope(storedLanguage, useCanonicalKeys) {
+        await new Promise((resolve, reject) => {
+          const transaction = db.transaction(STORE_NAME, "readonly");
+          const store = transaction.objectStore(STORE_NAME);
+          const prefix = variantFingerprint
+            ? ["v4", game.id, provider, storedLanguage, variantFingerprint, ""].join("\n")
+            : "";
+          const range = prefix ? IDBKeyRange.bound(prefix, `${prefix}\uffff`) : undefined;
+          const request = store.openCursor(range);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) { resolve(); return; }
+            const storedKey = cursor.key;
+            if (typeof storedKey === "string" && typeof cursor.value === "string") {
+              if (core.cacheKeyLanguage(storedKey) === storedLanguage
+                && core.cacheKeyProvider(storedKey) === provider
+                && (!variantFingerprint || core.cacheKeyVariant(storedKey) === variantFingerprint)) {
+                if (core.cacheKeyGame(storedKey) === game.id || !core.cacheKeyGame(storedKey)) {
+                  const key = useCanonicalKeys
+                    ? makeTranslationCacheKey(core.cacheKeySource(storedKey), language, provider)
+                    : storedKey;
+                  if (!knownCacheKeys.has(key)) loaded += 1;
+                  knownCacheKeys.add(key);
+                  memoryCacheSet(key, cursor.value);
+                  updateProviderAliasRecord(key, cursor.value, language, provider);
+                }
               }
             }
-          }
-          cursor.continue();
-        };
-      });
+            cursor.continue();
+          };
+        });
+      }
+      await loadLanguageScope(language, false);
+      const legacyLanguage = provider === "google" ? legacyLanguageCode(language) : "";
+      if (legacyLanguage) await loadLanguageScope(legacyLanguage, true);
       rebuildProviderAliasMemoryCache();
       knownCacheKeysComplete = true;
     } catch (_) {}
@@ -818,7 +847,15 @@
     try {
       const metadata = await getCacheMetadata();
       const language = metadata.languages[settings.language] || { records: 0, bytes: 0 };
-      return { records: metadata.records, bytes: metadata.bytes, languageRecords: language.records, languageBytes: language.bytes };
+      const legacyCode = legacyLanguageCode(settings.language);
+      const legacy = legacyCode && metadata.languages[legacyCode]
+        ? metadata.languages[legacyCode] : { records: 0, bytes: 0 };
+      return {
+        records: metadata.records,
+        bytes: metadata.bytes,
+        languageRecords: language.records + legacy.records,
+        languageBytes: language.bytes + legacy.bytes
+      };
     } catch (_) { return { records: 0, bytes: 0, languageRecords: 0, languageBytes: 0 }; }
   }
 
@@ -2395,6 +2432,7 @@
   }
 
   function addTranslationFileSelection(inspection, language, provider, variant) {
+    language = canonicalLanguageCode(language);
     if (!LANGUAGES.some(([code]) => code === language)) throw new Error(`Unsupported language: ${language}`);
     const key = translationSelectionKey(language, provider, variant);
     let selection = inspection.selectionMap.get(key);
@@ -2529,7 +2567,7 @@
   }
 
   function translationPairMatchesSelection(key, selection) {
-    return core.cacheKeyLanguage(key) === selection.language
+    return canonicalLanguageCode(core.cacheKeyLanguage(key)) === selection.language
       && core.cacheKeyProvider(key) === selection.provider
       && core.cacheKeyVariant(key) === selection.variant;
   }
@@ -2743,7 +2781,7 @@
     return saved;
   }
 
-  async function translateGoogleBulkLanguage(strings, language, provider, signal, onProgress) {
+  async function translateGoogleBulkLanguage(strings, language, provider, signal, onProgress, sharedRequestPacer) {
     const providerConfig = PROVIDERS[provider];
     const wordCounts = strings.map(countTranslationWords);
     const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
@@ -2753,7 +2791,7 @@
     let failed = 0;
     const failureReasons = new Map();
     const freshEntries = [];
-    const requestPacer = createRequestPacer(
+    const requestPacer = sharedRequestPacer || createRequestPacer(
       providerConfig.bulkDelay,
       providerConfig.bulkMaxDelay || providerConfig.bulkDelay,
       providerConfig.bulkDelayJitter
@@ -3053,6 +3091,22 @@
             + "Completed translations were saved; run it again or choose another provider."
           );
           stopError.code = "google_bulk_block_failures";
+          stopError.bulkResult = {
+            done,
+            completedWords,
+            totalWords,
+            newlyTranslated,
+            failed,
+            failureReasons,
+            googleMetrics: {
+              requests: metrics.requests,
+              requestErrors: metrics.requestErrors,
+              cacheHits: metrics.cacheHits,
+              cacheMisses: metrics.cacheMisses,
+              averageAcceptedPerRequest: metrics.requests ? newlyTranslated / metrics.requests : 0,
+              durationMs: Date.now() - metrics.startedAt
+            }
+          };
           throw stopError;
         }
       }
@@ -3083,9 +3137,12 @@
     return { done, completedWords, totalWords, newlyTranslated, failed, failureReasons, googleMetrics };
   }
 
-  async function translateBulkLanguage(entries, language, provider, signal, onProgress) {
+  async function translateBulkLanguage(entries, language, provider, signal, onProgress, options) {
     if (provider === "google") {
-      return translateGoogleBulkLanguage(entries.map((entry) => entry.source), language, provider, signal, onProgress);
+      return translateGoogleBulkLanguage(
+        entries.map((entry) => entry.source), language, provider, signal, onProgress,
+        options && options.requestPacer
+      );
     }
     const providerConfig = PROVIDERS[provider];
     const wordCounts = entries.map((entry) => countTranslationWords(entry.source));
@@ -3259,6 +3316,201 @@
       }
       else setBulkUiBusy(false);
       setBulkButtonIdle();
+      refreshCacheStats();
+    }
+  }
+
+  function superBulkTargets(provider) {
+    const providerConfig = PROVIDERS[provider];
+    if (!providerConfig) return [];
+    return languagesForProvider(provider).filter(([code]) =>
+      code !== SOURCE_LANGUAGE
+      && !hasOfficialLocalization(code)
+      && providerConfig.supportsLanguage(code));
+  }
+
+  async function superBulkTranslateAll() {
+    if (running) {
+      if (activeOperation === "super-bulk") {
+        superBulkButton.textContent = "Interrupting…";
+        superBulkButton.disabled = true;
+        abortActiveOperation("Interrupt translation was pressed");
+      }
+      return;
+    }
+    if (bulkPreparing) return;
+    bulkPreparing = true;
+    let keepWorkspaceOpen = false;
+    let workspaceFinished = false;
+    setSuperBulkButtonWorking("Starting…");
+    try {
+      await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => { if (!settled) { settled = true; resolve(); } };
+        requestAnimationFrame(finish);
+        setTimeout(finish, 100);
+      });
+      const provider = settings.provider;
+      const providerConfig = PROVIDERS[provider];
+      if (!(await ensureTranslationProviderReady("bulk"))) return;
+      const targets = superBulkTargets(provider);
+      if (!targets.length) throw new Error("Selected service has no non-official target languages");
+      if (!confirm(
+        `Translate all OMORI assets into ${targets.length} non-official languages using ${providerConfig.label}? `
+        + "Languages will be processed one at a time and existing cached translations will be skipped. "
+        + "This operation may take a long time and may use paid provider credits."
+      )) {
+        setStatus("Super Bulk translation cancelled before start");
+        return;
+      }
+
+      running = true;
+      activeOperation = "super-bulk";
+      activeAbortReason = "";
+      abortController = new AbortController();
+      const signal = abortController.signal;
+      setBulkUiBusy(true);
+      clearTranslationLog();
+      setSuperBulkButtonWorking(INTERRUPT_TRANSLATION_LABEL);
+      setStatus(`Preparing ${targets.length} languages…`);
+
+      const firstLanguage = targets[0][0];
+      const payload = await requestLocalHelper(
+        `/v1/game/strings?gameId=${encodeURIComponent(game.id)}&language=${encodeURIComponent(firstLanguage)}`,
+        { signal }
+      );
+      if (!payload || !Array.isArray(payload.strings)) throw new Error("Could not extract strings");
+      if (payload.localizationProfile) acceptLocalizationProfileSummary(payload.localizationProfile);
+      const rawEntries = Array.isArray(payload.entries) && payload.entries.length === payload.strings.length
+        ? payload.entries : payload.strings.map((source) => ({ source }));
+      const entries = rawEntries.filter((entry) => entry && typeof entry.source === "string"
+        && core.hasTranslatableText(entry.source));
+      if (!entries.length) throw new Error("No strings found in game assets");
+
+      const wordsPerLanguage = entries.reduce(
+        (sum, entry) => sum + countTranslationWords(entry.source), 0
+      );
+      const totalWords = wordsPerLanguage * targets.length;
+      const totalJobs = entries.length * targets.length;
+      const etaTracker = createTranslationEtaTracker();
+      const sharedRequestPacer = provider === "google" ? createRequestPacer(
+        providerConfig.bulkDelay,
+        providerConfig.bulkMaxDelay || providerConfig.bulkDelay,
+        providerConfig.bulkDelayJitter
+      ) : null;
+      let completedLanguages = 0;
+      let completedJobs = 0;
+      let completedWords = 0;
+      let newlyTranslated = 0;
+      let failed = 0;
+      const failureReasons = new Map();
+      const googleMetrics = { requests: 0, accepted: 0 };
+
+      for (let index = 0; index < targets.length && !signal.aborted; index += 1) {
+        const [language] = targets[index];
+        const targetName = languageName(language);
+        await refreshLocalizationProfile(language, signal);
+        await Promise.all([
+          preloadMemoryCache(language, provider),
+          preloadImportedPackCache(language)
+        ]);
+        setStatus(`Language ${index + 1}/${targets.length} · ${targetName} · Words: ${completedWords.toLocaleString("en-US")}/${totalWords.toLocaleString("en-US")} · Time left: calculating…`);
+        let result;
+        try {
+          result = await translateBulkLanguage(
+            entries, language, provider, signal,
+            ({ done, completedWords: languageWords, newlyTranslated: languageNew, rateLimitSeconds }) => {
+              const overallWords = completedWords + languageWords;
+              const overallNew = newlyTranslated + languageNew;
+              const remainingJobs = Math.max(0, totalJobs - completedJobs - done);
+              if (rateLimitSeconds > 0) etaTracker.pause();
+              const progress = translationProgressText(
+                overallWords,
+                totalWords,
+                rateLimitSeconds > 0
+                  ? etaTracker.current()
+                  : etaTracker.update(overallNew, overallNew + remainingJobs),
+                rateLimitSeconds,
+                provider
+              );
+              setStatus(`Language ${index + 1}/${targets.length} · ${targetName} · ${progress}`);
+            },
+            { requestPacer: sharedRequestPacer }
+          );
+        } catch (error) {
+          if (signal.aborted || !error || error.code !== "google_bulk_block_failures"
+            || !error.bulkResult) throw error;
+          result = error.bulkResult;
+          const unfinished = Math.max(0, entries.length - result.done);
+          if (unfinished > 0) {
+            const reason = "Skipped after repeated Google errors";
+            result.failureReasons.set(
+              reason, (result.failureReasons.get(reason) || 0) + unfinished
+            );
+            result.failed += unfinished;
+          }
+          result.done = entries.length;
+          result.completedWords = wordsPerLanguage;
+          console.warn(
+            `Super Bulk stopped ${language} after repeated Google errors, skipped ${unfinished} unfinished entries, and is continuing with the next language.`
+          );
+        }
+        if (result.done === entries.length) completedLanguages += 1;
+        completedJobs += result.done;
+        completedWords += result.completedWords;
+        newlyTranslated += result.newlyTranslated;
+        failed += result.failed;
+        for (const [reason, count] of result.failureReasons) {
+          failureReasons.set(reason, (failureReasons.get(reason) || 0) + count);
+        }
+        if (result.googleMetrics) {
+          googleMetrics.requests += result.googleMetrics.requests;
+          googleMetrics.accepted += result.newlyTranslated;
+        }
+      }
+
+      const googleDetail = provider === "google"
+        ? ` · Google: ${googleMetrics.requests} requests, ${(googleMetrics.requests ? googleMetrics.accepted / googleMetrics.requests : 0).toFixed(1)} accepted/request`
+        : "";
+      if (signal.aborted) {
+        keepWorkspaceOpen = true;
+        setStatus(`Super Bulk stopped after ${completedLanguages}/${targets.length} languages · ${completedJobs}/${totalJobs} assets processed: ${activeAbortReason || "cancelled by user"}${googleDetail}`);
+      } else if (failed > 0) {
+        keepWorkspaceOpen = true;
+        const reasons = Array.from(failureReasons.entries())
+          .map(([reason, count]) => `${reason} (${count})`)
+          .join("; ");
+        setStatus(`Super Bulk incomplete: ${totalJobs - failed}/${totalJobs} saved across ${targets.length} languages · ${reasons}${googleDetail}`);
+      } else {
+        setStatus(`Super Bulk complete: ${targets.length} languages · ${totalJobs} total, ${newlyTranslated} new${googleDetail}`);
+        keepWorkspaceOpen = true;
+        workspaceFinished = true;
+      }
+    } catch (error) {
+      keepWorkspaceOpen = panel.classList.contains("bulkBusy");
+      setStatus(error && error.name === "AbortError"
+        ? `Super Bulk stopped: ${activeAbortReason || "cancelled by user"}`
+        : (error.message || "Super Bulk translation failed"));
+    } finally {
+      bulkPreparing = false;
+      running = false;
+      abortController = null;
+      activeOperation = null;
+      activeAbortReason = "";
+      try {
+        await reloadSelectedLanguageCache(false);
+      } catch (error) {
+        console.warn("Could not restore the selected-language cache after Super Bulk:", error);
+        memoryCache.clear();
+        fuzzyMemoryCache.clear();
+        providerAliasRecords.clear();
+        providerAliasMemoryCache.clear();
+      }
+      if (keepWorkspaceOpen && panel.classList.contains("bulkBusy")) {
+        if (workspaceFinished) setBulkUiFinished();
+        else setBulkUiStopped();
+      } else setBulkUiBusy(false);
+      setSuperBulkButtonIdle();
       refreshCacheStats();
     }
   }
@@ -3551,6 +3803,7 @@
   const translationPackStatusElement = shadow.querySelector(".translationPackStatus");
   const exportButton = shadow.querySelector(".exportCache");
   const bulkButton = shadow.querySelector(".bulkTranslate");
+  const superBulkButton = shadow.querySelector(".superBulkTranslate");
   const testPhraseButton = shadow.querySelector(".testPhraseTranslate");
   const bulkCancelButton = shadow.querySelector(".bulkCancel");
   const translationLogBox = shadow.querySelector(".translationLogBox");
@@ -3647,6 +3900,16 @@
   function setBulkButtonIdle() {
     runtimeUI.setButtonState(bulkButton, {
       working: false, label: "Bulk Translate All Assets", disabled: false
+    });
+  }
+
+  function setSuperBulkButtonWorking(label) {
+    runtimeUI.setButtonState(superBulkButton, { working: true, label, disabled: false });
+  }
+
+  function setSuperBulkButtonIdle() {
+    runtimeUI.setButtonState(superBulkButton, {
+      working: false, label: "Super Bulk Translation", disabled: false
     });
   }
 
@@ -3810,7 +4073,9 @@
     if (busy) bulkWorkspaceAwaitingDismissal = false;
     panel.classList.toggle("bulkBusy", busy);
     host.classList.toggle("bulkBusyHost", busy);
-    const cancelButton = activeOperation === "test-phrase" ? testPhraseButton : bulkButton;
+    const cancelButton = activeOperation === "test-phrase"
+      ? testPhraseButton
+      : activeOperation === "super-bulk" ? superBulkButton : bulkButton;
     for (const row of shadow.querySelectorAll(".bulkActionRow")) {
       row.classList.toggle("activeBulkAction", busy && row.contains(cancelButton));
     }
@@ -4601,6 +4866,7 @@
     if (event.target === packModal) closePackDialog(null);
   });
   bulkButton.addEventListener("click", bulkTranslateAll);
+  superBulkButton.addEventListener("click", superBulkTranslateAll);
   testPhraseButton.addEventListener("click", translateTestPhraseAllLanguages);
   bulkCancelButton.addEventListener("click", () => {
     if (!running || !activeOperation) {
@@ -4613,6 +4879,7 @@
     bulkCancelButton.textContent = "Interrupting…";
     bulkCancelButton.disabled = true;
     if (activeOperation === "test-phrase") void translateTestPhraseAllLanguages();
+    else if (activeOperation === "super-bulk") void superBulkTranslateAll();
     else void bulkTranslateAll();
   });
   translationLogViewButton.addEventListener("click", viewSavedTranslationLog);
@@ -4917,7 +5184,8 @@
     if (document.hidden) {
       clearTimeout(scanTimer);
       scanTimer = 0;
-      if (activeOperation !== "bulk" && activeOperation !== "test-phrase") {
+      if (activeOperation !== "bulk" && activeOperation !== "super-bulk"
+        && activeOperation !== "test-phrase") {
         abortActiveOperation("game window was hidden");
       }
       return;
