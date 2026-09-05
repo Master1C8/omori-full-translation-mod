@@ -10,7 +10,8 @@
   const runtimeProgress = window.VNRevivalRuntimeProgress;
   const runtimePanel = window.VNRevivalRuntimePanel;
   if (!core) throw new Error("VN Revival translation core is missing");
-  if (!game || !game.id || !game.translatorName || !game.storageNamespace || game.sourceLanguage !== "en") {
+  if (!game || !game.id || !game.translatorName || !game.storageNamespace || game.sourceLanguage !== "en"
+    || !["asset-cache", "realtime-dom"].includes(game.translationStrategy)) {
     throw new Error("VN Revival game config is missing or incompatible");
   }
   if (!adapter || adapter.contractVersion !== 2) {
@@ -35,13 +36,16 @@
   const GAME_TITLE = game.title || game.id;
   const GAME_SHORT_TITLE = game.shortTitle || GAME_TITLE;
   const SOURCE_LANGUAGE = game.sourceLanguage || "en";
+  const TRANSLATION_STRATEGY = game.translationStrategy;
+  const REALTIME_DOM_TRANSLATION = TRANSLATION_STRATEGY === "realtime-dom";
+  const ASSET_TRANSLATION = TRANSLATION_STRATEGY === "asset-cache";
   const SITE_NAME = "VN Revival";
   const SITE_URL = "https://vnrevival.fun/";
   const OPENCODE_GO_REFERRAL_URL = "https://opencode.ai/go?ref=SS6M8DKPP0";
-  const GEMINI_PROMPT_VERSION = "omori-contextual-translation-v2";
-  const LM_STUDIO_PROMPT_VERSION = "omori-contextual-translation-v2";
-  const OPENAI_COMPATIBLE_PROMPT_VERSION = "omori-openai-compatible-v2";
-  const SPEAKER_CONTEXT_VERSION = "omori-speaker-context-v1";
+  const GEMINI_PROMPT_VERSION = `${game.id}-contextual-translation-v2`;
+  const LM_STUDIO_PROMPT_VERSION = `${game.id}-contextual-translation-v2`;
+  const OPENAI_COMPATIBLE_PROMPT_VERSION = `${game.id}-openai-compatible-v2`;
+  const SPEAKER_CONTEXT_VERSION = `${game.id}-speaker-context-v1`;
   const GOOGLE_CONTEXT_VERSION = "google-context-v1";
   const OPENAI_COMPATIBLE_PRESETS = Object.freeze({
     "opencode-go": Object.freeze({ name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresKey: true }),
@@ -51,7 +55,7 @@
     lmstudio: Object.freeze({ name: "LM Studio", baseURL: "http://127.0.0.1:1234/v1", requiresKey: false }),
     custom: Object.freeze({ name: "Custom", baseURL: "", requiresKey: false })
   });
-  const LANGUAGE_TEST_PHRASE_SOURCE = "<WordWrap>\\marHi, OMORI! Cliff-faced as usual, I see.\\!<br>You should totally smile more! I've always liked your smile.";
+  const LANGUAGE_TEST_PHRASE_SOURCE = String(game.testPhraseSource || "");
   const AUTO_APPLY_TRANSLATIONS = true;
   const SETTINGS_KEY = `${game.storageNamespace}.settings.v2`;
   const LEGACY_SETTINGS_KEY = `${game.storageNamespace}.settings.v1`;
@@ -110,8 +114,8 @@
     provider: "google",
     autoTranslate: AUTO_APPLY_TRANSLATIONS,
     mode: "translated",
-    translationScope: "story",
-    autoScreenTranslation: false,
+    translationScope: REALTIME_DOM_TRANSLATION ? "screen" : "story",
+    autoScreenTranslation: REALTIME_DOM_TRANSLATION,
     lmStudioModel: "",
     openAICompatiblePreset: "opencode-go",
     openAICompatibleBaseURL: OPENAI_COMPATIBLE_PRESETS["opencode-go"].baseURL,
@@ -343,9 +347,13 @@
       // intentionally always enabled and is no longer a user-facing option.
       autoTranslate: AUTO_APPLY_TRANSLATIONS,
       mode: source.mode === "source" ? "source" : defaults.mode,
-      translationScope: ["story", "full", "screen"].includes(source.translationScope)
-        ? source.translationScope : defaults.translationScope,
-      autoScreenTranslation: source.autoScreenTranslation === true,
+      translationScope: REALTIME_DOM_TRANSLATION
+        ? "screen"
+        : (["story", "full", "screen"].includes(source.translationScope)
+          ? source.translationScope : defaults.translationScope),
+      autoScreenTranslation: REALTIME_DOM_TRANSLATION
+        ? source.autoScreenTranslation !== false
+        : source.autoScreenTranslation === true,
       lmStudioModel: typeof source.lmStudioModel === "string" && source.lmStudioModel.length <= 512
         ? source.lmStudioModel : defaults.lmStudioModel,
       openAICompatiblePreset,
@@ -1294,7 +1302,7 @@
     if (code === "openai_empty_translation") return "The model returned no translation";
     if (code === "openai_invalid_response") return "The model returned an unsupported response format";
     if (code === "openai_format_invalid") return "The provider changed a protected game control code";
-    if (code === "markup_format_invalid") return "Protected OMORI markup could not be reconstructed safely";
+    if (code === "markup_format_invalid") return `Protected ${GAME_SHORT_TITLE} markup could not be reconstructed safely`;
     if (code === "translation_quality_invalid") return "The provider lost or duplicated visible source text";
     if (code === "openai_rate_limited") return "The provider rate limit was reached";
     if (code === "openai_unavailable") return "The OpenAI-compatible provider is unavailable";
@@ -2117,7 +2125,7 @@
         }
         done += 1;
         setStatus(`${automaticScreen
-          ? "Translating completed dialogue"
+          ? (REALTIME_DOM_TRANSLATION ? "Translating visible text" : "Translating completed dialogue")
           : allowNetwork ? "Translating current screen" : "Syncing"} ${done}/${jobs.length}`);
       }
     }
@@ -2136,7 +2144,7 @@
         retryButton.hidden = false;
       } else {
         setStatus(allowNetwork
-          ? `${automaticScreen ? "Dialogue" : "Current screen"} translated: ${jobs.length}`
+          ? `${automaticScreen ? (REALTIME_DOM_TRANSLATION ? "Visible text" : "Dialogue") : "Current screen"} translated: ${jobs.length}`
             + (cacheHits ? ` · from cache: ${cacheHits}` : "")
           : `Synced from cache: ${cacheHits}` + (cacheMisses ? ` · missing: ${cacheMisses}` : ""));
       }
@@ -2268,6 +2276,8 @@
 
   function translateScreen(manual) {
     const isManual = manual !== false;
+    const automaticRealtime = !isManual && REALTIME_DOM_TRANSLATION
+      && settings.autoScreenTranslation && settings.translationScope === "screen";
     if (hasOfficialLocalization()) {
       if (isManual) setStatus(`Official ${languageName(settings.language)} localization is available for ${GAME_SHORT_TITLE}`);
       return Promise.resolve();
@@ -2277,7 +2287,7 @@
       else pendingAutoRun = true;
       return;
     }
-    if (!isManual && settings.translationScope === "screen") {
+    if (!isManual && settings.translationScope === "screen" && !automaticRealtime) {
       takeAutoTranslationRoots();
       pendingAdapterTexts.clear();
       return Promise.resolve();
@@ -2305,7 +2315,11 @@
       if (adapterTexts === pendingAdapterTexts) pendingAdapterTexts.clear();
     }
     if (!isManual && !jobs.length) return Promise.resolve();
-    return runJobs(jobs, { manual: isManual, allowNetwork: manualScreen });
+    return runJobs(jobs, {
+      manual: isManual,
+      allowNetwork: manualScreen || automaticRealtime,
+      automaticScreen: automaticRealtime
+    });
   }
 
   function retryFailed() {
@@ -2338,6 +2352,7 @@
 
   function scheduleAutoTranslation(delay) {
     if (hasOfficialLocalization() || document.hidden || scanTimer) return;
+    if (REALTIME_DOM_TRANSLATION && !settings.autoScreenTranslation) return;
     scanTimer = setTimeout(() => {
       scanTimer = 0;
       if (document.hidden) return;
@@ -3239,6 +3254,7 @@
   }
 
   async function bulkTranslateAll() {
+    if (!ASSET_TRANSLATION) return;
     if (running) {
       if (activeOperation === "bulk") {
         bulkButton.textContent = "Interrupting…";
@@ -3369,6 +3385,7 @@
   }
 
   async function superBulkTranslateAll() {
+    if (!ASSET_TRANSLATION) return;
     if (running) {
       if (activeOperation === "super-bulk") {
         superBulkButton.textContent = "Interrupting…";
@@ -3395,7 +3412,7 @@
       const targets = superBulkTargets(provider);
       if (!targets.length) throw new Error("Selected service has no non-official target languages");
       if (!confirm(
-        `Translate all OMORI assets into ${targets.length} non-official languages using ${providerConfig.label}? `
+        `Translate all ${GAME_SHORT_TITLE} assets into ${targets.length} non-official languages using ${providerConfig.label}? `
         + "Languages will be processed one at a time and existing cached translations will be skipped. "
         + "This operation may take a long time and may use paid provider credits."
       )) {
@@ -3555,6 +3572,7 @@
   }
 
   async function translateTestPhraseAllLanguages() {
+    if (!ASSET_TRANSLATION) return;
     if (running) {
       if (activeOperation === "test-phrase") {
         testPhraseButton.textContent = "Interrupting…";
@@ -3582,7 +3600,7 @@
         !hasOfficialLocalization(code) && providerConfig.supportsLanguage(code));
       if (!targets.length) throw new Error("Selected service has no available target languages");
       if (!confirm(
-        `Translate the current OMORI test phrase into ${targets.length} languages using ${providerConfig.label}? `
+        `Translate the current ${GAME_SHORT_TITLE} test phrase into ${targets.length} languages using ${providerConfig.label}? `
         + "Existing cached languages will be skipped."
         + (provider === "google" ? " Google waits a random 1.2–1.8 seconds between languages and may pause after a temporary block." : "")
       )) {
@@ -4394,7 +4412,7 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `OMORI-translation-history-${new Date().toISOString().slice(0, 10)}.jsonl`;
+      link.download = `${game.id}-translation-history-${new Date().toISOString().slice(0, 10)}.jsonl`;
       document.documentElement.appendChild(link);
       link.click();
       link.remove();
@@ -4413,6 +4431,24 @@
     modeButton.setAttribute("aria-pressed", String(translated));
     modeButton.title = translated ? "Show original text" : "Show translation";
   }
+  function configureTranslationStrategyControls() {
+    for (const row of shadow.querySelectorAll(".bulkActionRow")) {
+      row.hidden = !ASSET_TRANSLATION;
+    }
+    if (!REALTIME_DOM_TRANSLATION) return;
+    storyTranslationScopeButton.hidden = true;
+    fullTranslationScopeButton.hidden = true;
+    const screenName = screenTranslationScopeButton.querySelector(".scopeName");
+    const screenState = screenTranslationScopeButton.querySelector(".scopeState");
+    if (screenName) screenName.textContent = "Realtime Translation";
+    if (screenState) screenState.textContent = "Visible DOM text · no asset scan";
+    const autoLabel = screenAutoCheckbox.closest("label");
+    if (autoLabel && autoLabel.lastChild && autoLabel.lastChild.nodeType === Node.TEXT_NODE) {
+      autoLabel.lastChild.nodeValue = " Automatically translate visible text";
+    }
+    const autoHint = shadow.querySelector(".screenAutoHint");
+    if (autoHint) autoHint.textContent = "Watches visible and newly changed text. Game assets are never opened or extracted.";
+  }
   function updateTranslationScopeControls() {
     const scope = settings.translationScope;
     const story = scope === "story";
@@ -4426,14 +4462,18 @@
     screenTranslationScopeButton.setAttribute("aria-pressed", String(screen));
     screenActionRow.hidden = !screen;
     screenAutoCheckbox.checked = settings.autoScreenTranslation;
-    translationScopeHint.textContent = screen
+    translationScopeHint.textContent = REALTIME_DOM_TRANSLATION
+      ? "Realtime: visible and newly changed DOM text is translated directly. Game assets are not scanned."
+      : screen
       ? "Manual: the button translates only text visible right now. Game assets are not scanned."
       : full
       ? "Experimental: cached translations are applied to menus and other game windows as well as dialogue."
       : "Stable: only dialogue windows, speaker names, and dialogue choices are translated.";
   }
   function setTranslationScope(scope) {
-    const nextScope = ["story", "full", "screen"].includes(scope) ? scope : "story";
+    const nextScope = REALTIME_DOM_TRANSLATION
+      ? "screen"
+      : (["story", "full", "screen"].includes(scope) ? scope : "story");
     if (settings.translationScope === nextScope) return;
     abortActiveOperation("translation mode changed");
     settingsGeneration += 1;
@@ -4791,6 +4831,7 @@
     }
   }
 
+  configureTranslationStrategyControls();
   updateModeButton();
   updateTranslationScopeControls();
   updateProviderHint();
@@ -4829,11 +4870,15 @@
     if (!settings.autoScreenTranslation) {
       clearCompletedScreenTranslationQueue();
       if (activeOperation === "screen-auto") abortActiveOperation("automatic Screen Translation disabled");
-      setStatus("Automatic completed-dialogue translation disabled");
+      setStatus(REALTIME_DOM_TRANSLATION
+        ? "Automatic realtime translation disabled"
+        : "Automatic completed-dialogue translation disabled");
       return;
     }
     if (settings.mode !== "translated") showTranslations();
-    setStatus("Automatic completed-dialogue translation enabled");
+    setStatus(REALTIME_DOM_TRANSLATION
+      ? "Automatic realtime translation enabled"
+      : "Automatic completed-dialogue translation enabled");
   });
   window.addEventListener("keydown", (event) => {
     const screenShortcut = event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
@@ -4877,7 +4922,7 @@
     if (!confirm(
       "Factory reset permanently deletes all translator caches, imported packs, saved translation history, "
       + "downloaded offline models/runtime, provider API keys, and settings (including the remembered game path). "
-      + "OMORI saves and game files are not affected. Continue?"
+      + `${GAME_SHORT_TITLE} saves and game files are not affected. Continue?`
     )) return;
     setResetButtonWorking();
     try {

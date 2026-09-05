@@ -27,6 +27,40 @@ class GameManifestTests(unittest.TestCase):
         manifest = MODULE.load_manifest(self.manifest_path)
         self.assertEqual(manifest["id"], "omori")
         self.assertEqual(manifest["officialLocalizations"], ["en", "ja", "ko", "zh"])
+        self.assertEqual(manifest["translationStrategy"], "asset-cache")
+
+    def test_realtime_prototype_manifest_is_valid_without_asset_profile(self):
+        manifest = MODULE.load_manifest(ROOT / "src/games/coc2/game.json")
+        self.assertEqual(manifest["translationStrategy"], "realtime-dom")
+        self.assertEqual(manifest["releaseStatus"], "prototype")
+        self.assertNotIn("localizationProfileFile", manifest)
+        self.assertNotIn("testPhraseSource", manifest)
+
+    def test_translation_strategy_controls_asset_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = copy.deepcopy(self.valid)
+            value["translationStrategy"] = "asset-cache"
+            value.pop("localizationProfileFile")
+            with self.assertRaises(ValueError):
+                MODULE.load_manifest(self.write_manifest(directory, value))
+            value["translationStrategy"] = "realtime-dom"
+            value["releaseStatus"] = "prototype"
+            value.pop("testPhraseSource")
+            self.assertEqual(
+                MODULE.load_manifest(self.write_manifest(directory, value))["translationStrategy"],
+                "realtime-dom",
+            )
+
+    def test_update_identity_must_match_game(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = copy.deepcopy(self.valid)
+            value["updateManifestUrl"] = "https://vnrevival.fun/downloads/coc2/latest.json"
+            with self.assertRaises(ValueError):
+                MODULE.load_manifest(self.write_manifest(directory, value))
+            value = copy.deepcopy(self.valid)
+            value["updateProduct"] = "coc2-translator"
+            with self.assertRaises(ValueError):
+                MODULE.load_manifest(self.write_manifest(directory, value))
 
     def test_official_localizations_are_required_unique_and_include_source(self):
         with tempfile.TemporaryDirectory() as directory:

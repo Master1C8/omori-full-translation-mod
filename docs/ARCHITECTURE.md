@@ -2,20 +2,24 @@
 
 ```text
 game.json
-  → единожды задаёт имя продукта, Steam AppID, процесс, пути, target matchers и launchStrategy
-OMORI Translator.app / OMORI Translator.exe
-  → запускает helper для Gemini/LM Studio/OpenAI-compatible, журналов и ассетов на случайном порту 127.0.0.1
-  → запускает Steam AppID 1150690 нативно или в бутылке CrossOver
+  → задаёт identity, Steam/process/paths, target matchers, launchStrategy и translationStrategy
+отдельное приложение игры
+  → запускает game-configured helper для провайдеров, журналов и разрешённых capabilities на случайном порту 127.0.0.1
+  → запускает Steam AppID из манифеста нативно или в бутылке CrossOver
   → Electron открывает локальный debugging port на 127.0.0.1
   → универсальный нативный контроллер подключается только к странице, совпавшей с target matchers
-  → translator.bundle.js = core + languages + providers + runtime helpers/panel + generated game config + OMORI adapter + runtime
+  → translator.bundle.js = core + languages + providers + runtime helpers/panel + generated game config + выбранный adapter + runtime
   → адаптер задаёт DOM-правила, runtime создаёт изолированную панель в Shadow DOM
-  → Bulk Translate читает атомарный asset index или расшифровывает изменившиеся .HERO и разрешённые .KEL рядом с выбранной копией игры
-  → Story/Full canvas-хуки применяют готовый кэш без сетевых запросов; Screen переводит видимый снимок только по явной кнопке
+asset-cache (OMORI)
+  → Bulk читает атомарный asset index; Story/Full остаются cache-only; Screen переводит явный снимок
+realtime-dom (прототип CoC2)
+  → переводит только видимый/изменившийся DOM; asset endpoint и все bulk-операции отключены
   → MutationObserver регистрирует изменённые блоки, а IntersectionObserver запускает перевод только при их появлении возле экрана
 ```
 
-`src/languages.txt` задаёт продуктовый каталог, а `src/languages.js` является его browser-представлением. Оба файла содержат ровно 30 канонических локалей VN Revival в том же порядке, что `SITE_LOCALE_CODES` сайта. Этот единый массив ограничивает сохранённую настройку, селектор, Bulk и импортированные pack metadata. `game.json.officialLocalizations` отдельно задаёт встроенные языки конкретной игры. Для OMORI это `en`, `ja`, `ko` и `zh`: при их выборе runtime прекращает cache/provider-применение, снимает уже применённый перевод, показывает game-specific уведомление и блокирует все элементы Shadow DOM кроме селектора языка. Test Phrase и Super Bulk исключают эти языки и обрабатывают оставшиеся 26. Старые коды `zh-CN` и `pt` нормализуются в `zh` и `pt-BR` для настройки и импортированных паков; Google-кэш этих двух локалей остаётся доступным через совместимый legacy lookup. Остальные существующие записи IndexedDB и импортированные паки отсутствующих в каталоге языков не удаляются.
+`src/languages.txt` задаёт продуктовый каталог, а `src/languages.js` является его browser-представлением. Оба файла содержат ровно 30 канонических локалей VN Revival в том же порядке, что `SITE_LOCALE_CODES` сайта. Этот единый массив ограничивает сохранённую настройку, селектор, Bulk и импортированные pack metadata. `game.json.officialLocalizations` отдельно задаёт встроенные языки конкретной игры. Для OMORI это `en`, `ja`, `ko` и `zh`: при их выборе runtime прекращает cache/provider-применение, снимает уже применённый перевод, показывает game-specific уведомление и блокирует все элементы Shadow DOM кроме селектора языка. Test Phrase и Super Bulk исключают эти языки и обрабатывают оставшиеся 26. Старые коды `zh-CN` и `pt` нормализуются в `zh` и `pt-BR` для настройки и импортированных паков; Google-кэш этих двух локалей остаётся доступным через совместимый legacy lookup. Provider-кэш десяти удалённых кодов очищается один раз в namespace каждой игры; imported packs, история и остальные пользовательские данные сохраняются.
+
+`translationStrategy` является исполняемым capability-контрактом, а не декоративной метаданной. `asset-cache` требует профиль и тестовую фразу и открывает OMORI asset workflow. `realtime-dom` принудительно выбирает scope `screen`, по умолчанию следит за видимым DOM и разрешает свежие запросы этого автопрохода; строки из `input`, `textarea`, `select`, `contenteditable` и game-specific приватных селекторов исключаются. В этом режиме runtime скрывает asset controls и повторно проверяет capability в самих обработчиках, а helper возвращает `asset_extraction_disabled` до поиска файлов. Поэтому CoC2-прототип не сканирует, не расшифровывает и не индексирует ассеты даже при прямом обращении к helper API.
 
 Перевод и показ перевода — разные стадии:
 
@@ -76,11 +80,11 @@ IndexedDB остаётся полным постоянным кэшем без �
 
 При старте текстовые контейнеры регистрируются один раз. После этого `IntersectionObserver` сообщает только о блоках, приблизившихся к viewport, а `MutationObserver` добавляет изменённые React-узлы. Автопроход работает по этому ограниченному набору и не повторяет полный `TreeWalker` на каждой прокрутке. При `document.hidden` таймер останавливается и активный запрос отменяется. Для старых Chromium без `IntersectionObserver` сохранён совместимый, но менее экономный fallback по событию прокрутки.
 
-Публичный сценарий сборки закреплён за одной игрой (`scripts/build-omori.sh`). Общий сборщик не имеет цели по умолчанию и требует явный `VNREVIVAL_GAME=<game-id>`, поэтому пропущенная переменная не может молча выпустить приложение с чужим адаптером. OMORI manifest указывает единый исходный `assets/icon-1024.png`, пиксельно эквивалентный игровому `app.nw/icon/icon.png`: macOS получает ICNS из `assets/AppIcon.icns`, Windows-сборщик создаёт из PNG ICO с размерами 16/24/32/48/64/128/256. Сборка macOS объединяет `arm64` и `x86_64` через `lipo`. По умолчанию применяется ad-hoc подпись; при наличии Developer ID и профиля `notarytool` включаются hardened runtime, временная метка, нотариальное заверение и stapling. Windows-сборка при наличии PFX и `osslsigncode` подписывает EXE Authenticode до упаковки.
+`scripts/build-game-bundle.sh` собирает отдельный проверяемый browser bundle по явному `VNREVIVAL_GAME=<game-id>` и доступен для прототипов. Публичный релизный сценарий пока закреплён за OMORI (`scripts/build-omori.sh`); общий релизный сборщик дополнительно требует `releaseStatus: production`, поэтому CoC2-прототип нельзя случайно упаковать и выдать за готовое приложение. OMORI manifest указывает единый исходный `assets/icon-1024.png`, пиксельно эквивалентный игровому `app.nw/icon/icon.png`: macOS получает ICNS из `assets/AppIcon.icns`, Windows-сборщик создаёт из PNG ICO с размерами 16/24/32/48/64/128/256. Сборка macOS объединяет `arm64` и `x86_64` через `lipo`. По умолчанию применяется ad-hoc подпись; при наличии Developer ID и профиля `notarytool` включаются hardened runtime, временная метка, нотариальное заверение и stapling. Windows-сборка при наличии PFX и `osslsigncode` подписывает EXE Authenticode до упаковки.
 
 Каталог `launcher/READY_TO_SHARE/` хранит ZIP-релизы и не отслеживается Git. Сборщик создаёт и проверяет пару текущей версии — macOS и Windows — но не удаляет предыдущие архивы и не доказывает их актуальность одним совпадением номера версии. В частности, существующие ZIP `0.9.44` датированы раньше текущего runtime/helper, всё ещё содержат прежний `argos_service.py` и не соответствуют обновлённой корневой `.app`; перед распространением их требуется отдельно пересобрать и проверить. Распакованное macOS-приложение и служебные SHA-256 находятся в `.build/` и не смешиваются с файлами для пользователей.
 
-Общее ядро не содержит идентичность конкретной игры. OMORI получает название, пути, matchers и ресурсы из `src/games/omori/game.json`; DOM- и canvas-правила находятся только в его адаптере.
+Общий orchestration runtime не содержит identity конкретной игры. Название, пути, matchers, update product/URL, namespaces, стратегия и необязательный профиль поступают из `src/games/<game-id>/game.json`; DOM- и canvas-правила находятся только в выбранном адаптере. `translation-core.js` сохраняет RPG Maker/OMORI markup-совместимость как допустимый superset для обычного DOM-текста, но не выбирает игру и не открывает её файлы.
 
 Canvas-адаптер использует только cache-only API runtime: мгновенно проверяет `queryMemoryCache`, регистрирует промах через `registerAdapterText` и, если нужен прямой асинхронный поиск, вызывает `translateAdapterText`. Ни один из этих методов не обращается к провайдеру: поиск ограничен RAM/IndexedDB, а после попадания adapter callback перерисовывает открытые окна. Опциональный `collectVisibleTexts()` также лишь возвращает точные строки активных окон; решение о свежем запросе принимает runtime только внутри обработчика явной Screen-кнопки или включённой пользователем auto-screen опции. Полный набор `.HERO` обрабатывается только явной кнопкой `Bulk Translate All Assets`, которая сразу запускает выбранный провайдер.
 
@@ -96,7 +100,7 @@ Chat Completions запрашивается с JSON Schema, но helper прин
 
 
 
-При старте runtime один раз вызывает авторизованный `/v1/update/check`. Helper с 10-секундным тайм-аутом получает только фиксированный HTTPS URL `https://vnrevival.fun/downloads/omori/latest.json`, запрещает смену host при redirect, ограничивает ответ 64 KiB и валидирует `schemaVersion`, `product`, SemVer-подобную версию, `cacheCompatibility` (`keep`/`rebuild`), положительный `cacheSchema` и до пяти непустых строк `changes` длиной не более 200 символов. Runtime дополнительно ограничивает всю операцию 12 секундами, сравнивает три числовых компонента версии и выводит результат в отдельный DOM-узел. Для доступного релиза безопасными `textContent`-элементами показываются первые три изменения; пустой список заменяется встроенной заглушкой до подключения реального источника описаний. Сбой проверки не влияет на запуск и не скрывается общим статусом Bulk. Контракт манифеста:
+При старте runtime один раз вызывает авторизованный `/v1/update/check`. Helper с 10-секундным тайм-аутом получает только game-specific HTTPS URL вида `https://vnrevival.fun/downloads/<game-id>/latest.json` из проверенного bundled-манифеста, запрещает смену host при redirect, ограничивает ответ 64 KiB и валидирует `schemaVersion`, ожидаемый `product`, SemVer-подобную версию, `cacheCompatibility` (`keep`/`rebuild`), положительный `cacheSchema` и до пяти непустых строк `changes` длиной не более 200 символов. Runtime дополнительно ограничивает всю операцию 12 секундами, сравнивает три числовых компонента версии и выводит результат в отдельный DOM-узел. Для доступного релиза безопасными `textContent`-элементами показываются первые три изменения; пустой список заменяется встроенной заглушкой до подключения реального источника описаний. Сбой проверки не влияет на запуск и не скрывается общим статусом Bulk. Для OMORI контракт манифеста выглядит так:
 
 ```json
 {"schemaVersion":1,"product":"omori-translator","version":"0.9.44","cacheCompatibility":"keep","cacheSchema":3,"changes":["Placeholder improvement","Placeholder bug fix"]}

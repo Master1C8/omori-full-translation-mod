@@ -1,5 +1,7 @@
 # Changelog
 
+- Общий runtime и local helper получили явную стратегию игры. OMORI объявлен как production `asset-cache`; прототип CoC2 — как `realtime-dom`, где переводятся только видимые и изменившиеся DOM-узлы, а Story/Full, Bulk, Super Bulk, Test Phrase и `/v1/game/strings` программно недоступны. Helper получает bundled `game.json`, использует отдельные identity, prompt versions, update endpoint, профиль, историю и asset-index namespace.
+- Добавлен проверяемый CoC2-адаптер на основе DOM-структуры существующего прототипа без анализа или извлечения игровых ассетов. `scripts/build-game-bundle.sh` собирает отдельный JS bundle любой валидной игры, `scripts/test-coc2.sh` проверяет realtime-контракт и изоляцию кэша, а релизный сборщик намеренно отклоняет `releaseStatus: prototype`.
 - При первом запуске после обновления translator runtime удаляет provider-кэш десяти языков, выведенных из общего каталога: `bn`, `ur`, `ta`, `te`, `my`, `mr`, `ml`, `kn`, `uz`, `am`. Совместимые прежние коды `zh-CN`/`pt`, imported packs, история и остальные пользовательские данные сохраняются.
 - Каталог OMORI Translator синхронизирован с обновлёнными 30 локалями VN Revival: порядок и коды теперь точно повторяют `SITE_LOCALE_CODES`, включая `zh`, `pt-BR`, украинский, чешский, венгерский, нидерландский, румынский, филиппинский, греческий, болгарский, сербский и иврит. Сохранённые `zh-CN`/`pt` настройки и imported-pack metadata нормализуются без удаления данных, а прежний Google-кэш этих локалей продолжает использоваться.
 

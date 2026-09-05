@@ -46,7 +46,7 @@ python3 scripts/render-template.py launcher/windows/launcher.c "$ROOT/.build/win
   GAME_ID "$GAME_ID" STEAM_APP_ID "$STEAM_APP_ID" DEBUG_TARGET_TITLE "$DEBUG_TARGET_TITLE" DEBUG_TARGET_URL "$DEBUG_TARGET_URL"
 PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m unittest discover -s tests -p 'test_*.py'
 for SCRIPT in \
-  launcher/macos/launch.sh scripts/build.sh scripts/build-windows.sh scripts/test.sh \
+  launcher/macos/launch.sh scripts/build.sh scripts/build-game-bundle.sh scripts/build-windows.sh scripts/test.sh \
   scripts/verify.sh scripts/build-omori.sh scripts/test-omori.sh \
   scripts/prepare-nwjs-macos.sh scripts/run-browser-smoke.sh; do
   zsh -n "$SCRIPT"
@@ -179,8 +179,9 @@ if grep -Eq 'console\.|writeFile|appendFile' launcher/macos/steam-compat.js; the
   exit 1
 fi
 grep -Fq 'prepare-nwjs-macos.sh' scripts/build.sh
-grep -Fq 'cat "$ROOT/src/runtime-progress.js"' scripts/build.sh
-grep -Fq 'cat "$ROOT/src/runtime-panel.js"' scripts/build.sh
+grep -Fq 'build-game-bundle.sh' scripts/build.sh
+grep -Fq 'cat "$ROOT/src/runtime-progress.js"' scripts/build-game-bundle.sh
+grep -Fq 'cat "$ROOT/src/runtime-panel.js"' scripts/build-game-bundle.sh
 grep -Fq 'cp "$ROOT/src/local_router.py" "$APP/Contents/Resources/"' scripts/build.sh
 grep -Fq 'cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"' scripts/build-windows.sh
 grep -Fq 'ROOT_APP_STAGING="$BUILD_DIR/root-app-staging.app"' scripts/build.sh
@@ -195,6 +196,7 @@ grep -Fq '"$ROOT/$PRODUCT_NAME.app"' scripts/build.sh
 grep -Eq 'RESELECT_MARKER' launcher/macos/launch.sh
 grep -Fq -- '--credential-id "$GAME_ID"' launcher/macos/launch.sh
 grep -Fq -- '--game-path "$GAME_TARGET"' launcher/macos/launch.sh
+grep -Fq -- '--game-config "$RESOURCE_DIR/game.json"' launcher/macos/launch.sh
 grep -Eq 'persistControlSettings' src/translator-runtime.js
 if grep -Eq 'class="(cacheActions|launcherActions|settingsActions|clearLanguage|export|import|changeExecutable|save|reset)"' src/runtime-panel.js; then
   echo "Removed settings actions are still present in the panel" >&2

@@ -8,6 +8,10 @@ GAME_MANIFEST="$GAME_DIR/game.json"
 manifest_value() { python3 "$ROOT/scripts/game-manifest.py" "$GAME_MANIFEST" "$1"; }
 python3 "$ROOT/scripts/game-manifest.py" "$GAME_MANIFEST" >/dev/null
 [[ -s "$GAME_DIR/adapter.js" ]]
+[[ "$(manifest_value releaseStatus)" == "production" ]] || {
+  echo "Prototype target $GAME_ID cannot produce release archives" >&2
+  exit 1
+}
 
 VERSION=$(tr -d '[:space:]' < "$ROOT/VERSION")
 BUILD_NUMBER=$(date -u +%Y%m%d%H%M)
@@ -19,6 +23,7 @@ WINDOWS_EXECUTABLE=$(manifest_value windowsExecutable)
 CROSSOVER_BOTTLE=$(manifest_value crossOverBottle)
 CROSSOVER_GAME_PATH=$(manifest_value crossOverGamePath)
 DATA_DIRECTORY=$(manifest_value dataDirectory)
+LOCALIZATION_PROFILE_FILE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("localizationProfileFile", ""))' "$GAME_MANIFEST")
 BUNDLE_IDENTIFIER=$(manifest_value bundleIdentifier)
 ICON_PNG=$(manifest_value iconPng)
 ICON_ICNS=$(manifest_value iconIcns)
@@ -43,20 +48,7 @@ VNREVIVAL_REQUIRE_BROWSER_SMOKE=1 VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/test.
 rm -rf "$BUILD_DIR/macos"
 mkdir -p "$BUILD_DIR/checksums" "$READY_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-sed "s/__VERSION__/$VERSION/g" "$ROOT/src/translator-runtime.js" > "$BUILD_DIR/translator-runtime.js"
-python3 "$ROOT/scripts/generate-game-config.py" "$GAME_MANIFEST" "$BUILD_DIR/game-config.js"
-{
-  printf '%s\n' "/* $PRODUCT_NAME — generated VN Revival bundle */"
-  cat "$ROOT/src/translation-core.js"
-  cat "$ROOT/src/languages.js"
-  cat "$ROOT/src/providers.js"
-  cat "$ROOT/src/runtime-ui.js"
-  cat "$ROOT/src/runtime-progress.js"
-  cat "$ROOT/src/runtime-panel.js"
-  cat "$BUILD_DIR/game-config.js"
-  cat "$GAME_DIR/adapter.js"
-  cat "$BUILD_DIR/translator-runtime.js"
-} > "$BUILD_DIR/translator.bundle.js"
+VNREVIVAL_GAME="$GAME_ID" "$ROOT/scripts/build-game-bundle.sh" "$BUILD_DIR/translator.bundle.js" >/dev/null
 
 [[ -x "$SWIFTC" && -d "$SDK" ]]
 for ARCH in arm64 x86_64; do
@@ -85,7 +77,9 @@ cp "$BUILD_DIR/translator.bundle.js" "$APP/Contents/Resources/"
 cp "$GAME_MANIFEST" "$APP/Contents/Resources/game.json"
 cp "$ROOT/src/local_service.py" "$APP/Contents/Resources/"
 cp "$ROOT/src/local_router.py" "$APP/Contents/Resources/"
-cp "$ROOT/src/omori-localization-profile.json" "$APP/Contents/Resources/"
+if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
+  cp "$ROOT/src/$LOCALIZATION_PROFILE_FILE" "$APP/Contents/Resources/$LOCALIZATION_PROFILE_FILE"
+fi
 cp "$ROOT/launcher/macos/steam-compat.js" "$APP/Contents/Resources/"
 /bin/cp -cR "$BUILD_DIR/nwjs-macos-arm64-${VNREVIVAL_NWJS_VERSION:-0.115.0}/NWJS Runtime.app" "$APP/Contents/Resources/NWJS Runtime.app"
 cp "$ROOT/$ICON_ICNS" "$APP/Contents/Resources/AppIcon.icns"

@@ -45,6 +45,24 @@ class FakeHTTPResponse:
 
 
 class LocalServiceTests(unittest.TestCase):
+    def test_realtime_game_config_disables_asset_extraction(self):
+        config = local_service.load_service_game_config(
+            ROOT / "src" / "games" / "coc2" / "game.json"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = local_service.LocalServiceBridge(Path(directory), game_config=config)
+            profile = bridge.localization_profile("ru")
+            self.assertEqual(profile["gameId"], "coc2")
+            self.assertEqual(profile["version"], "empty-1")
+            self.assertIn(
+                "Corruption of Champions II text",
+                bridge._localization_system_instruction("ru", "Russian", profile),
+            )
+            with self.assertRaises(local_service.BridgeError) as caught:
+                bridge.get_game_strings("coc2", "ru")
+            self.assertEqual(caught.exception.code, "asset_extraction_disabled")
+            self.assertEqual(caught.exception.status, 404)
+
     def test_post_router_rejects_removed_offline_engine_routes(self):
         router = local_service.LocalPostRouter(mock.Mock())
         for path in ("/v1/translate", "/v1/ctranslate2/translate", "/v1/models/install"):

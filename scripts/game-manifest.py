@@ -17,6 +17,8 @@ REQUIRED = {
     "translatorName": str,
     "sourceLanguage": str,
     "officialLocalizations": list,
+    "translationStrategy": str,
+    "releaseStatus": str,
     "supportedVersions": list,
     "launchStrategy": str,
     "debugTargetTitleContains": str,
@@ -33,6 +35,8 @@ REQUIRED = {
     "iconIcns": str,
     "archivePrefix": str,
     "windowsDistributionName": str,
+    "updateManifestUrl": str,
+    "updateProduct": str,
 }
 
 LEGACY_COMPATIBILITY_FIELDS = {
@@ -57,6 +61,10 @@ def load_manifest(path: Path) -> dict:
         raise ValueError("id must use lowercase ASCII letters, digits, and hyphens")
     if value["sourceLanguage"] != "en":
         raise ValueError("sourceLanguage must be en in contract version 1")
+    if value["translationStrategy"] not in {"asset-cache", "realtime-dom"}:
+        raise ValueError("unsupported translationStrategy")
+    if value["releaseStatus"] not in {"production", "prototype"}:
+        raise ValueError("unsupported releaseStatus")
     official_localizations = value["officialLocalizations"]
     if not official_localizations or not all(
         isinstance(item, str) and re.fullmatch(r"[a-z]{2}(?:-[A-Z]{2})?", item)
@@ -67,6 +75,27 @@ def load_manifest(path: Path) -> dict:
         raise ValueError("officialLocalizations must include sourceLanguage")
     if value["launchStrategy"] != "electron-cdp":
         raise ValueError("unsupported launchStrategy")
+    if not re.fullmatch(r"https://vnrevival\.fun/downloads/[a-z0-9-]+/latest\.json", value["updateManifestUrl"]):
+        raise ValueError("updateManifestUrl must use the canonical VN Revival download endpoint")
+    if value["updateManifestUrl"] != f'https://vnrevival.fun/downloads/{value["id"]}/latest.json':
+        raise ValueError("updateManifestUrl must match id")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*-translator", value["updateProduct"]):
+        raise ValueError("invalid updateProduct")
+    if value["updateProduct"] != f'{value["id"]}-translator':
+        raise ValueError("updateProduct must match id")
+    profile_file = value.get("localizationProfileFile")
+    if profile_file is not None:
+        if (not isinstance(profile_file, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.json", profile_file)
+                or "/" in profile_file or "\\" in profile_file):
+            raise ValueError("invalid localizationProfileFile")
+    if value["translationStrategy"] == "asset-cache" and not profile_file:
+        raise ValueError("asset-cache games require localizationProfileFile")
+    test_phrase = value.get("testPhraseSource")
+    if test_phrase is not None and (not isinstance(test_phrase, str) or not test_phrase.strip()
+                                    or len(test_phrase) > 2000):
+        raise ValueError("invalid testPhraseSource")
+    if value["translationStrategy"] == "asset-cache" and not test_phrase:
+        raise ValueError("asset-cache games require testPhraseSource")
     if value["steamAppId"] <= 0:
         raise ValueError("steamAppId must be positive")
     if not all(isinstance(item, str) and item for item in value["supportedVersions"]):

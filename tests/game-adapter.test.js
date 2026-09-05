@@ -203,8 +203,8 @@ test("translator panel keeps cache application automatic and offers opt-in compl
   assert.match(runtimeSource, /class="primary screenTranslate"[^>]*aria-keyshortcuts="Control\+Shift\+T"[^>]*>Translate current screen \(Ctrl\+Shift\+T\)<\/button>/);
   assert.match(runtimeSource, /const SCREEN_TRANSLATION_CANCEL_LABEL = "Cancel current screen \(Ctrl\+Shift\+T\)"/);
   assert.match(runtimeSource, /screenTranslateButton\.addEventListener\("click", triggerScreenTranslation\)/);
-  assert.match(runtimeSource, /autoScreenTranslation: false/);
-  assert.match(runtimeSource, /source\.autoScreenTranslation === true/);
+  assert.match(runtimeSource, /autoScreenTranslation: REALTIME_DOM_TRANSLATION/);
+  assert.match(runtimeSource, /REALTIME_DOM_TRANSLATION\s*\? source\.autoScreenTranslation !== false\s*: source\.autoScreenTranslation === true/);
   assert.match(runtimeSource, /class="screenAuto" type="checkbox"/);
   assert.match(runtimeSource, /screenAutoCheckbox\.addEventListener\("change"/);
   assert.match(runtimeSource, /registerCompletedScreenText/);
@@ -214,7 +214,7 @@ test("translator panel keeps cache application automatic and offers opt-in compl
   assert.match(runtimeSource, /event\.code === "KeyT"/);
   assert.match(runtimeSource, /settings\.translationScope !== "screen"/);
   assert.match(runtimeSource, /origin\.matches\("input,textarea,select,\[contenteditable='true'\]"\)/);
-  assert.match(runtimeSource, /allowNetwork: manualScreen/);
+  assert.match(runtimeSource, /allowNetwork: manualScreen \|\| automaticRealtime/);
   assert.match(runtimeSource, /adapter\.collectVisibleTexts\(\)/);
   assert.match(runtimeSource, /translateText\(\s*job\.source, language, provider, signal, allowNetwork === true/);
   assert.match(runtimeSource, /function buildScreenAdapterJobs\(sources\)/);
@@ -222,7 +222,7 @@ test("translator panel keeps cache application automatic and offers opt-in compl
   assert.match(runtimeSource, /contextSource = core\.buildContextSource\(slice\)/);
   assert.match(runtimeSource, /parts: slice\.map\(\(source\) => \(\{ source, node: null, kind: "ui" \}\)\)/);
   assert.match(runtimeSource, /queryMemoryTranslation\(source\)\) cachedJobs\.push\(job\)/);
-  assert.match(runtimeSource, /if \(!isManual && settings\.translationScope === "screen"\)/);
+  assert.match(runtimeSource, /if \(!isManual && settings\.translationScope === "screen" && !automaticRealtime\)/);
   assert.match(runtimeSource, /settings\.translationScope !== "screen" && hasSourceText\(text\)/);
   assert.match(runtimeSource, /if \(nextScope === "screen"\) invalidateAppliedTranslations\(\)/);
 });
@@ -306,7 +306,7 @@ test("reset all data shows activity until cache deletion finishes", () => {
   assert.match(runtimeSource, /runtimeUI\.setButtonState\(resetButton, \{ working: true, label: "Resetting…", disabled: true \}\)/);
   assert.match(runtimeSource, /resetButton\.addEventListener\("click", async \(\) =>/);
   assert.match(runtimeSource, /Factory reset permanently deletes all translator caches, imported packs, saved translation history/);
-  assert.match(runtimeSource, /OMORI saves and game files are not affected/);
+  assert.match(runtimeSource, /\$\{GAME_SHORT_TITLE\} saves and game files are not affected/);
   assert.match(runtimeSource, /requestLocalHelper\("\/v1\/reset"/);
   assert.match(runtimeSource, /body: \{ accepted: true, openAIBaseURLs: credentialScopes \}/);
   assert.match(runtimeSource, /fuzzyMemoryCache\.clear\(\)/);
@@ -356,7 +356,7 @@ test("translation history persists locally and can be viewed or saved", () => {
   assert.match(runtimeSource, />Clear view<\/button>/);
   assert.match(runtimeSource, /requestLocalHelper\(`\/v1\/log\/translations\?limit=\$\{TRANSLATION_LOG_VIEW_LIMIT\}`\)/);
   assert.match(runtimeSource, /\/v1\/log\/translations\/download/);
-  assert.match(runtimeSource, /OMORI-translation-history-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.jsonl/);
+  assert.match(runtimeSource, /\$\{game\.id\}-translation-history-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.jsonl/);
   assert.match(runtimeSource, /Saved history remains on disk/);
   assert.match(runtimeSource, /sourceLine\.textContent/);
   assert.doesNotMatch(runtimeSource, /translationLogEntries\.innerHTML/);
@@ -420,7 +420,8 @@ test("renamed site locales preserve saved settings, imported packs, and Google c
 });
 
 test("test phrase control builds one exact live-dialogue cache entry for every available language", () => {
-  assert.match(runtimeSource, /const LANGUAGE_TEST_PHRASE_SOURCE = "<WordWrap>\\\\marHi, OMORI!/);
+  assert.match(runtimeSource, /const LANGUAGE_TEST_PHRASE_SOURCE = String\(game\.testPhraseSource \|\| ""\)/);
+  assert.match(manifest.testPhraseSource, /^<WordWrap>\\marHi, OMORI!/);
   assert.match(runtimeSource, /class="primary testPhraseTranslate"/);
   assert.match(runtimeSource, /async function translateTestPhraseAllLanguages\(\)/);
   assert.match(runtimeSource, /requestAnimationFrame\(finish\);\s*setTimeout\(finish, 100\)/);

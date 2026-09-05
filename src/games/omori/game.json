@@ -6,6 +6,8 @@
   "translatorName": "OMORI Translator",
   "sourceLanguage": "en",
   "officialLocalizations": ["en", "ja", "ko", "zh"],
+  "translationStrategy": "asset-cache",
+  "releaseStatus": "production",
   "supportedVersions": ["1.0.8", "1.6.1"],
   "launchStrategy": "electron-cdp",
   "debugTargetTitleContains": "OMORI",
@@ -21,5 +23,9 @@
   "iconPng": "assets/icon-1024.png",
   "iconIcns": "assets/AppIcon.icns",
   "archivePrefix": "OMORI-Translator",
-  "windowsDistributionName": "OMORI Translator Windows"
+  "windowsDistributionName": "OMORI Translator Windows",
+  "localizationProfileFile": "omori-localization-profile.json",
+  "testPhraseSource": "<WordWrap>\\marHi, OMORI! Cliff-faced as usual, I see.\\!<br>You should totally smile more! I've always liked your smile.",
+  "updateManifestUrl": "https://vnrevival.fun/downloads/omori/latest.json",
+  "updateProduct": "omori-translator"
 }

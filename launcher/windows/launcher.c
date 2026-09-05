@@ -444,8 +444,8 @@ static BOOL start_local_service(
     if (_snwprintf(
         command,
         sizeof(command) / sizeof(command[0]),
-        L"\"%ls\" -s \"%ls\" --port %u --token %ls --data-dir \"%ls\" --credential-id %ls --game-path \"%ls\"",
-        python, service, (unsigned int)port, token, data_dir, GAME_ID_W, game_path) < 0) {
+        L"\"%ls\" -s \"%ls\" --port %u --token %ls --data-dir \"%ls\" --credential-id %ls --game-path \"%ls\" --game-config \"%ls\\game.json\"",
+        python, service, (unsigned int)port, token, data_dir, GAME_ID_W, game_path, resources) < 0) {
         CloseHandle(log_file);
         return FALSE;
     }

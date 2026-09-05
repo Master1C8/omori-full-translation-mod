@@ -29,9 +29,13 @@ def main() -> int:
         key: manifest[key]
         for key in (
             "id", "title", "shortTitle", "translatorName", "sourceLanguage",
-            "officialLocalizations", "supportedVersions", "storageNamespace", "cacheDatabase",
+            "officialLocalizations", "translationStrategy", "releaseStatus", "supportedVersions",
+            "storageNamespace", "cacheDatabase", "updateManifestUrl", "updateProduct",
         )
     }
+    for key in ("localizationProfileFile", "testPhraseSource"):
+        if key in manifest:
+            runtime_fields[key] = manifest[key]
     if "legacyCompatibility" in manifest:
         runtime_fields["legacyCompatibility"] = manifest["legacyCompatibility"]
     payload = json.dumps(runtime_fields, ensure_ascii=True, separators=(",", ":"))

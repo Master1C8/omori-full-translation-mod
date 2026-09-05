@@ -344,6 +344,7 @@ if [[ -n "$LOCAL_SERVICE_PORT" && -x "$PYTHON" ]]; then
   LOCAL_SERVICE_TOKEN=$(/usr/bin/uuidgen | tr -d '-')
   "$PYTHON" -s "$LOCAL_SERVICE" --port "$LOCAL_SERVICE_PORT" --token "$LOCAL_SERVICE_TOKEN" \
     --data-dir "$LOCAL_DATA_DIR" --credential-id "$GAME_ID" --game-path "$GAME_TARGET" \
+    --game-config "$RESOURCE_DIR/game.json" \
     >>"$LOCAL_SERVICE_LOG" 2>&1 &
   LOCAL_SERVICE_PID=$!
   for _ in {1..40}; do
