@@ -90,7 +90,7 @@ if grep -RInE '[А-Яа-яЁё]' \
   exit 1
 fi
 
-for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage' 'superBulkTranslateAll'; do
+for REQUIRED in 'autoTranslate' 'showOriginal' 'showTranslations' 'exportCache' 'loadTranslationFile' 'inspectTranslationFile' 'installTranslationPack' 'clearCacheForLanguage' 'pruneRetiredLocaleCaches' 'collapsed' 'collapseToggle' 'updateCollapsedState' 'applyLanguageFormatting' 'restoreLanguageFormatting' 'applyJobTranslation' 'populateLanguageOptions' 'MEMORY_CACHE_LIMIT' 'CACHE_META_KEY' 'CACHE_DIRTY_KEY' 'IntersectionObserver' 'visibilitychange' 'createCacheExportStream' 'providerRegistry' 'translateBulkLanguage' 'superBulkTranslateAll'; do
   grep -Fq "$REQUIRED" src/translator-runtime.js || {
     echo "Missing runtime feature: $REQUIRED" >&2
     exit 1

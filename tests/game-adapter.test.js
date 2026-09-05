@@ -175,6 +175,25 @@ test("Google context isolates and narrowly removes only its old selected-languag
   assert.doesNotMatch(migrationBody, /TRANSLATION_PACK_STORE_NAME|clearCacheForProvider/);
 });
 
+test("retired site locales are removed once from provider cache only", () => {
+  assert.match(runtimeSource,
+    /const RETIRED_LANGUAGE_CODES = new Set\(Object\.freeze\(\[\s*"bn", "ur", "ta", "te", "my", "mr", "ml", "kn", "uz", "am"\s*\]\)\)/);
+  const migrationBody = runtimeSource.slice(
+    runtimeSource.indexOf("async function pruneRetiredLocaleCaches"),
+    runtimeSource.indexOf("async function clearLegacyGoogleSegmentCache")
+  );
+  assert.match(migrationBody, /localStorage\.getItem\(RETIRED_LOCALE_CACHE_MIGRATION_KEY\) === "1"/);
+  assert.match(migrationBody, /db\.transaction\(STORE_NAME, "readwrite"\)/);
+  assert.match(migrationBody, /const cacheGame = core\.cacheKeyGame\(cursor\.key\)/);
+  assert.match(migrationBody, /\(!cacheGame \|\| cacheGame === game\.id\)/);
+  assert.match(migrationBody, /RETIRED_LANGUAGE_CODES\.has\(core\.cacheKeyLanguage\(cursor\.key\)\)/);
+  assert.match(migrationBody, /await rebuildCacheMetadata\(\)/);
+  assert.ok(migrationBody.indexOf("await rebuildCacheMetadata()")
+    < migrationBody.indexOf('localStorage.setItem(RETIRED_LOCALE_CACHE_MIGRATION_KEY, "1")'));
+  assert.doesNotMatch(migrationBody, /TRANSLATION_PACK_STORE_NAME|"zh-CN"|"pt"/);
+  assert.match(runtimeSource, /pruneRetiredLocaleCaches\(\)[\s\S]{0,300}migrateLegacyGoogleSegmentCache\(\)/);
+});
+
 test("translator panel keeps cache application automatic and offers opt-in completed-dialogue Screen translation", () => {
   assert.match(runtimeSource, /const AUTO_APPLY_TRANSLATIONS = true/);
   assert.doesNotMatch(runtimeSource, /Sync Translation/);

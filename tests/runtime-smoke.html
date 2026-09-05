@@ -35,6 +35,12 @@
         return value;
       }
       const cache = new Map();
+      const retiredLocaleCacheKey = "v1\nbn\nretired-smoke-fingerprint\nRetired Bengali line";
+      const renamedLocaleCacheKey = "v1\nzh-CN\nlegacy-smoke-fingerprint\nCompatible Simplified Chinese line";
+      window.smokeRetiredLocaleCacheKey = retiredLocaleCacheKey;
+      window.smokeRenamedLocaleCacheKey = renamedLocaleCacheKey;
+      cache.set(retiredLocaleCacheKey, "অবসরপ্রাপ্ত অনুবাদ");
+      cache.set(renamedLocaleCacheKey, "兼容翻译");
       cache.set("v1\nar\n811c9dc5\nLegacy line", "سطر قديم");
       cache.set(
         "v4\nomori\ngoogle\nar\nd875c351\nYou see VRCTXSEP1X a beautiful woman VRCTXSEP2X near the door.",
@@ -49,6 +55,7 @@
         `Smoke bulk line ${String(index).padStart(3, "0")}.`
       );
       for (const [index, source] of window.smokeBulkStrings.entries()) {
+        if (index < 12) continue;
         cache.set(`v4\nomori\ngoogle\nar\nd875c351\n${source}`, `ترجمة ${index}`);
       }
       window.smokeInitialCacheSize = cache.size;
@@ -77,6 +84,7 @@
           const advance = () => {
             cursorRequest.result = index < entries.length ? {
               key: entries[index][0], value: entries[index][1],
+              delete() { cache.delete(entries[index][0]); },
               continue() { index += 1; setTimeout(advance, 0); }
             } : null;
             if (success) success();
@@ -218,6 +226,12 @@
       await new Promise((resolve) => requestAnimationFrame(() => resolve()));
       const host = document.getElementById("vnrevival-translator-omori");
       const shadow = host.shadowRoot;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        if (localStorage.getItem("omori-translator.retired-locale-cache-pruned.v1") === "1"
+          && localStorage.getItem("omori-translator.google-context-cache-cleared.v1.ru") === "1"
+          && localStorage.getItem("omori-translator.cache-meta-dirty.v3") === null) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
       const geminiOptionAvailable = Array.from(shadow.querySelector(".provider").options)
         .some((option) => option.value === "gemini" && option.textContent === "Gemini AI");
       const geminiKeyIsPasswordOnly = shadow.querySelector(".geminiKey").type === "password"
@@ -346,6 +360,7 @@
         && translationLogEmpty.textContent.includes("Saved history remains on disk");
       const firstPauseReady = await waitForNewestBulkLine(8);
       translationLogHoldButton.click();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
       const translationLogPaused = translationLogHoldButton.getAttribute("aria-pressed") === "true"
         && translationLogHoldButton.textContent === "Resume scroll";
       const firstPauseAnchor = firstVisibleLogEntry();
@@ -359,6 +374,7 @@
         && translationLogHoldButton.textContent === "Stop scroll";
       const secondPauseReady = await waitForNewestBulkLine(75);
       translationLogHoldButton.click();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
       const secondPauseAnchor = firstVisibleLogEntry();
       const secondPauseOffset = logEntryViewportOffset(secondPauseAnchor);
       const secondPauseFilled = await waitForNewestBulkLine(135);
@@ -479,8 +495,12 @@
         if (repairedMetadata?.records === window.smokeCache.size && metadataDirty === null) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
+      const repairedCacheSize = window.smokeCache.size;
 
-      const legacyMigrated = true;
+      const legacyMigrated = localStorage.getItem("omori-translator.google-context-cache-cleared.v1.ru") === "1";
+      const retiredLocaleCachesPruned = localStorage.getItem("omori-translator.retired-locale-cache-pruned.v1") === "1"
+        && !window.smokeCache.has(window.smokeRetiredLocaleCacheKey)
+        && window.smokeCache.has(window.smokeRenamedLocaleCacheKey);
       const legacyGlobalsScopedToCoC2 = Boolean(window.__vnRevivalTranslator);
 
       window.__vnRevivalTranslator.showOriginal();
@@ -554,9 +574,10 @@
         && translated.buttonHeight === "auto"
         && translated.buttonWrap === "normal"
         && scrolledTranslation === "ترجمة"
-        && repairedMetadata.records === window.smokeCache.size
+        && repairedMetadata.records === repairedCacheSize
         && metadataDirty === null
         && legacyMigrated
+        && retiredLocaleCachesPruned
         && legacyGlobalsScopedToCoC2
         && geminiOptionAvailable
         && geminiKeyIsPasswordOnly
@@ -607,8 +628,10 @@
         fetchCalls: window.fetchCalls,
         scrolledTranslation,
         repairedMetadata,
+        repairedCacheSize,
         metadataDirty,
         legacyMigrated,
+        retiredLocaleCachesPruned,
         legacyGlobalsScopedToCoC2,
         geminiOptionAvailable,
         geminiKeyIsPasswordOnly,

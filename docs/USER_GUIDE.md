@@ -113,6 +113,8 @@ This is a prebuilt-cache translation, not live per-line machine translation. A c
 
 Translations are cached automatically. The settings show the number of saved translations and their size. `Export cache backup` saves the complete provider cache. To use a translation made by someone else, press `Load translation file` and choose its JSONL or legacy JSON cache. The app validates the entire file before writing, verifies that it belongs to OMORI, detects its language and translation provider/model variant, and shows a confirmation dialog. Mixed files let you select one language and one source. Press `Import <language>` to install it or `Cancel` to leave all data unchanged.
 
+On the first startup after the site locale catalog update, the translator removes provider-cache entries for retired locale codes (`bn`, `ur`, `ta`, `te`, `my`, `mr`, `ml`, `kn`, `uz`, `am`). Legacy `zh-CN` and `pt` cache entries remain usable for `zh` and `pt-BR`. Imported translation packs and saved history are not changed.
+
 An imported translation is a reversible overlay: it is displayed before your own provider cache but never overwrites it. The panel shows the active imported language, entry count, source and filename. `Remove imported` removes only that overlay and immediately reveals your own cached translations again. Importing another file for the same language replaces the previous imported overlay only after the new file has been fully validated and stored.
 
 `Reset all data` returns the translator to a freshly downloaded state. It deletes provider and in-memory caches, imported packs, saved history and logs, leftover files from providers available in older releases, provider API keys, settings, cooldowns, the remembered game path, and internal metadata. It does not modify OMORI files or game saves; the launcher will rediscover the game or ask for it on the next start. After confirmation, the button shows a spinner and `Resetting…` until deletion finishes, then asks you to restart the translator; the button cannot be pressed again while reset is running.
@@ -251,6 +253,8 @@ Full также может переиспользовать слитное datab
 ### Кэш и контакты
 
 Переводы кэшируются автоматически. В настройках показываются количество сохранённых переводов и их размер. `Export cache backup` сохраняет полную резервную копию provider-кэша. Чтобы использовать перевод другого человека, нажмите `Load translation file` и выберите его JSONL- или прежний JSON-кэш. Приложение проверит весь файл до записи, подтвердит принадлежность OMORI, определит язык и provider/model variant и покажет отдельную модалку. Если файл смешанный, в ней можно выбрать один язык и один источник. Нажмите `Import <язык>` для установки либо `Cancel`, чтобы ничего не менять.
+
+При первом запуске после обновления каталога локалей переводчик удаляет из provider-кэша записи выведенных кодов (`bn`, `ur`, `ta`, `te`, `my`, `mr`, `ml`, `kn`, `uz`, `am`). Прежние записи `zh-CN` и `pt` продолжают использоваться для `zh` и `pt-BR`. Импортированные паки и сохранённая история не изменяются.
 
 Импортированный перевод работает как обратимый слой: показывается раньше собственного provider-кэша, но никогда его не перезаписывает. Панель показывает активный язык, число записей, источник и имя файла. `Remove imported` удаляет только этот слой и сразу возвращает собственные сохранённые переводы. Новый файл того же языка заменяет прежний импортированный слой лишь после полной проверки и успешной записи.
 

@@ -92,6 +92,10 @@
   const LEGACY_GOOGLE_RATE_LIMIT_UNTIL_KEY = `${game.storageNamespace}.google-rate-limit-until.v1`;
   const LANGUAGES = window.VNRevivalTranslatorLanguages;
   const LEGACY_LANGUAGE_ALIASES = Object.freeze({ "zh-CN": "zh", pt: "pt-BR" });
+  const RETIRED_LANGUAGE_CODES = new Set(Object.freeze([
+    "bn", "ur", "ta", "te", "my", "mr", "ml", "kn", "uz", "am"
+  ]));
+  const RETIRED_LOCALE_CACHE_MIGRATION_KEY = `${game.storageNamespace}.retired-locale-cache-pruned.v1`;
   const OFFICIAL_LOCALIZATIONS = new Set(game.officialLocalizations || []);
   const PROVIDER_LIST = providerRegistry.list;
   const PROVIDERS = providerRegistry.byId;
@@ -888,6 +892,41 @@
       delete metadata.languages[language];
     }
     saveCacheMetadata(metadata);
+  }
+
+  async function pruneRetiredLocaleCaches() {
+    if (localStorage.getItem(RETIRED_LOCALE_CACHE_MIGRATION_KEY) === "1") return 0;
+    const db = await openDb();
+    let removed = 0;
+    markCacheMetadataDirty();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readwrite");
+      const request = transaction.objectStore(STORE_NAME).openCursor();
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const cacheGame = core.cacheKeyGame(cursor.key);
+        if ((!cacheGame || cacheGame === game.id)
+          && RETIRED_LANGUAGE_CODES.has(core.cacheKeyLanguage(cursor.key))) {
+          cursor.delete();
+          removed += 1;
+        }
+        cursor.continue();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Retired locale cache deletion failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("Retired locale cache deletion was aborted"));
+    });
+    memoryCache.clear();
+    fuzzyMemoryCache.clear();
+    providerAliasRecords.clear();
+    providerAliasMemoryCache.clear();
+    knownCacheKeys.clear();
+    knownCacheKeysComplete = false;
+    await rebuildCacheMetadata();
+    localStorage.setItem(RETIRED_LOCALE_CACHE_MIGRATION_KEY, "1");
+    return removed;
   }
 
   async function clearLegacyGoogleSegmentCache(language) {
@@ -5262,7 +5301,9 @@
     try { adapter.onTranslationScopeChanged(settings.translationScope); } catch (_) {}
   }
   console.info(`[${PRODUCT_NAME} ${VERSION}] loaded for ${GAME_TITLE}`);
-  migrateLegacyGoogleSegmentCache()
+  pruneRetiredLocaleCaches()
+    .catch((error) => console.error("Could not prune retired locale caches:", error))
+    .then(() => migrateLegacyGoogleSegmentCache())
     .catch((error) => console.error("Could not clear the legacy Google segment cache:", error))
     .then(() => reloadSelectedLanguageCache(false));
 })();
