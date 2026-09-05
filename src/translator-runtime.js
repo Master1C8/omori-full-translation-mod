@@ -77,6 +77,7 @@
   const LEGACY_CACHE_FORMATS = Array.isArray(legacyCompatibility.cacheFormats)
     ? legacyCompatibility.cacheFormats.filter((value) => typeof value === "string" && value)
     : [];
+  const RECOVER_HISTORICAL_CACHE_VARIANTS = game.recoverHistoricalCacheVariants === true;
   const MEMORY_CACHE_LIMIT = 50000;
   const CACHE_IO_BATCH_SIZE = 250;
   const CACHE_IMPORT_ENTRY_LIMIT = 500000;
@@ -678,6 +679,46 @@
     }
   }
 
+  async function recoverHistoricalCacheVariants(db, language, provider, activeVariantFingerprint) {
+    if (!RECOVER_HISTORICAL_CACHE_VARIANTS || !activeVariantFingerprint) return 0;
+    const prefix = ["v4", game.id, provider, language, ""].join("\n");
+    const groups = new Map();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, "readonly");
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.openCursor(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) { resolve(); return; }
+        const storedKey = cursor.key;
+        if (typeof storedKey === "string" && typeof cursor.value === "string") {
+          const variant = core.cacheKeyVariant(storedKey);
+          if (variant && variant !== activeVariantFingerprint) {
+            if (!groups.has(variant)) groups.set(variant, []);
+            groups.get(variant).push({ source: core.cacheKeySource(storedKey), value: cursor.value });
+          }
+        }
+        cursor.continue();
+      };
+    });
+    const rankedGroups = Array.from(groups.entries()).sort((left, right) =>
+      right[1].length - left[1].length || left[0].localeCompare(right[0]));
+    const recovered = new Map();
+    for (const [, entries] of rankedGroups) {
+      for (const entry of entries) {
+        const key = makeTranslationCacheKey(entry.source, language, provider);
+        if (!knownCacheKeys.has(key) && !recovered.has(key)) recovered.set(key, entry.value);
+      }
+    }
+    const entries = Array.from(recovered, ([key, value]) => ({ key, value }));
+    let stored = 0;
+    for (let index = 0; index < entries.length; index += CACHE_IO_BATCH_SIZE) {
+      stored += await cachePutBatch(entries.slice(index, index + CACHE_IO_BATCH_SIZE));
+    }
+    return stored;
+  }
+
   async function preloadMemoryCache(language = settings.language, provider = settings.provider) {
     let loaded = 0;
     knownCacheKeys.clear();
@@ -725,6 +766,7 @@
       await loadLanguageScope(language, false);
       const legacyLanguage = provider === "google" ? legacyLanguageCode(language) : "";
       if (legacyLanguage) await loadLanguageScope(legacyLanguage, true);
+      loaded += await recoverHistoricalCacheVariants(db, language, provider, variantFingerprint);
       rebuildProviderAliasMemoryCache();
       knownCacheKeysComplete = true;
     } catch (_) {}

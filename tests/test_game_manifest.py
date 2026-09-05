@@ -31,6 +31,7 @@ class GameManifestTests(unittest.TestCase):
         self.assertEqual(manifest["id"], "omori")
         self.assertEqual(manifest["officialLocalizations"], ["en", "ja", "ko", "zh"])
         self.assertEqual(manifest["translationStrategy"], "asset-cache")
+        self.assertTrue(manifest["recoverHistoricalCacheVariants"])
 
     def test_realtime_prototype_manifest_is_valid_without_asset_profile(self):
         manifest = MODULE.load_manifest(ROOT / "src/games/coc2/game.json")
@@ -38,6 +39,14 @@ class GameManifestTests(unittest.TestCase):
         self.assertEqual(manifest["releaseStatus"], "prototype")
         self.assertNotIn("localizationProfileFile", manifest)
         self.assertNotIn("testPhraseSource", manifest)
+        self.assertNotIn("recoverHistoricalCacheVariants", manifest)
+
+    def test_historical_cache_recovery_flag_must_be_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value = copy.deepcopy(self.valid)
+            value["recoverHistoricalCacheVariants"] = "yes"
+            with self.assertRaises(ValueError):
+                MODULE.load_manifest(self.write_manifest(directory, value))
 
     def test_launcher_catalog_contains_both_games_in_ui_order(self):
         games = CATALOG_MODULE.load_catalog(ROOT / "src/games/catalog.json")

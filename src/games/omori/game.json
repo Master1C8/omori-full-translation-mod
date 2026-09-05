@@ -25,6 +25,7 @@
   "archivePrefix": "OMORI-Translator",
   "windowsDistributionName": "OMORI Translator Windows",
   "localizationProfileFile": "omori-localization-profile.json",
+  "recoverHistoricalCacheVariants": true,
   "testPhraseSource": "<WordWrap>\\marHi, OMORI! Cliff-faced as usual, I see.\\!<br>You should totally smile more! I've always liked your smile.",
   "updateManifestUrl": "https://vnrevival.fun/downloads/omori/latest.json",
   "updateProduct": "omori-translator"

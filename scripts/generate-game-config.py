@@ -33,7 +33,7 @@ def main() -> int:
             "storageNamespace", "cacheDatabase", "updateManifestUrl", "updateProduct",
         )
     }
-    for key in ("localizationProfileFile", "testPhraseSource"):
+    for key in ("localizationProfileFile", "testPhraseSource", "recoverHistoricalCacheVariants"):
         if key in manifest:
             runtime_fields[key] = manifest[key]
     if "legacyCompatibility" in manifest:

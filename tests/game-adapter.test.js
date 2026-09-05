@@ -138,6 +138,18 @@ test("cache mutations wait for IndexedDB commit before updating in-memory state"
   assert.match(runtimeSource, /!cacheKeyIsKnownMissing\(key, language, provider\)/);
 });
 
+test("historical provider cache variants are recovered without deleting their originals", () => {
+  assert.match(runtimeSource, /async function recoverHistoricalCacheVariants/);
+  assert.match(runtimeSource, /variant !== activeVariantFingerprint/);
+  assert.match(runtimeSource, /right\[1\]\.length - left\[1\]\.length/);
+  assert.match(runtimeSource, /cachePutBatch\(entries\.slice/);
+  const recoveryBody = runtimeSource.slice(
+    runtimeSource.indexOf("async function recoverHistoricalCacheVariants"),
+    runtimeSource.indexOf("async function preloadMemoryCache")
+  );
+  assert.doesNotMatch(recoveryBody, /\.delete\(|\.clear\(/);
+});
+
 test("cache-only gameplay does not write per-frame activity logs", () => {
   const cachedBranch = runtimeSource.slice(
     runtimeSource.indexOf("if (cached) {", runtimeSource.indexOf("async function translateText")),

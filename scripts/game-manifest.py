@@ -96,6 +96,9 @@ def load_manifest(path: Path) -> dict:
         raise ValueError("invalid testPhraseSource")
     if value["translationStrategy"] == "asset-cache" and not test_phrase:
         raise ValueError("asset-cache games require testPhraseSource")
+    recover_historical_variants = value.get("recoverHistoricalCacheVariants")
+    if recover_historical_variants is not None and not isinstance(recover_historical_variants, bool):
+        raise ValueError("recoverHistoricalCacheVariants must be boolean")
     if value["steamAppId"] <= 0:
         raise ValueError("steamAppId must be positive")
     if not all(isinstance(item, str) and item for item in value["supportedVersions"]):
