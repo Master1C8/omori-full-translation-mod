@@ -3,29 +3,17 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>__PRODUCT_NAME_XML__</string>
-  <key>CFBundleExecutable</key><string>__PRODUCT_NAME_XML__</string>
-  <key>CFBundleIdentifier</key><string>__BUNDLE_IDENTIFIER_XML__</string>
+  <key>CFBundleDisplayName</key><string>VN Revival Localization Workbench</string>
+  <key>CFBundleExecutable</key><string>VN Revival Localization Workbench</string>
+  <key>CFBundleIdentifier</key><string>fun.vnrevival.localization-workbench</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleName</key><string>__PRODUCT_NAME_XML__</string>
+  <key>CFBundleName</key><string>Localization Workbench</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleGetInfoString</key><string>__PRODUCT_NAME_XML__ by VN Revival — https://vnrevival.fun/</string>
-  <key>NSHumanReadableCopyright</key><string>VN Revival — https://vnrevival.fun/</string>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__BUILD__</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>VNRevivalGameID</key><string>__GAME_ID_XML__</string>
-  <key>VNRevivalGameTitle</key><string>__GAME_TITLE_XML__</string>
-  <key>VNRevivalShortTitle</key><string>__SHORT_TITLE_XML__</string>
-  <key>VNRevivalSteamAppID</key><integer>__STEAM_APP_ID__</integer>
-  <key>VNRevivalWindowsExecutable</key><string>__WINDOWS_EXECUTABLE_XML__</string>
-  <key>VNRevivalCrossOverBottle</key><string>__CROSSOVER_BOTTLE_XML__</string>
-  <key>VNRevivalCrossOverGamePath</key><string>__CROSSOVER_GAME_PATH_XML__</string>
-  <key>VNRevivalDataDirectory</key><string>__DATA_DIRECTORY_XML__</string>
-  <key>VNRevivalLaunchStrategy</key><string>__LAUNCH_STRATEGY_XML__</string>
-  <key>VNRevivalDebugTargetTitle</key><string>__DEBUG_TARGET_TITLE_XML__</string>
-  <key>VNRevivalDebugTargetURL</key><string>__DEBUG_TARGET_URL_XML__</string>
+  <key>NSHumanReadableCopyright</key><string>VN Revival — https://vnrevival.fun/</string>
 </dict>
 </plist>

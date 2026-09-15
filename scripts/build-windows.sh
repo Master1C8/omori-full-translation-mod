@@ -1,29 +1,12 @@
 #!/bin/zsh
 set -euo pipefail
-
 ROOT="${0:A:h:h}"
-: "${VNREVIVAL_GAME:?Set VNREVIVAL_GAME or invoke this script through a game-specific build script}"
-GAME_ID="$VNREVIVAL_GAME"
-GAME_MANIFEST="$ROOT/src/games/$GAME_ID/game.json"
-manifest_value() { python3 "$ROOT/scripts/game-manifest.py" "$GAME_MANIFEST" "$1"; }
-python3 "$ROOT/scripts/game-manifest.py" "$GAME_MANIFEST" >/dev/null
 VERSION=$(tr -d '[:space:]' < "$ROOT/VERSION")
-PRODUCT_NAME=$(manifest_value translatorName)
-GAME_TITLE=$(manifest_value title)
-STEAM_APP_ID=$(manifest_value steamAppId)
-WINDOWS_EXECUTABLE=$(manifest_value windowsExecutable)
-DATA_DIRECTORY=$(manifest_value dataDirectory)
-LOCALIZATION_PROFILE_FILE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("localizationProfileFile", ""))' "$GAME_MANIFEST")
-ICON_PNG=$(manifest_value iconPng)
-DATA_DIRECTORY_WINDOWS=$(python3 -c 'import sys; print(sys.argv[1].replace("/", "\\"))' "$DATA_DIRECTORY")
-ARCHIVE_PREFIX=$(manifest_value archivePrefix)
-LAUNCH_STRATEGY=$(manifest_value launchStrategy)
-DEBUG_TARGET_TITLE=$(manifest_value debugTargetTitleContains)
-DEBUG_TARGET_URL=$(manifest_value debugTargetUrlContains)
-[[ "$LAUNCH_STRATEGY" == "electron-cdp" ]] || { echo "Unsupported launch strategy: $LAUNCH_STRATEGY" >&2; exit 1; }
+PRODUCT_NAME="VN Revival Localization Workbench"
+ARCHIVE_PREFIX="VN-Revival-Localization-Workbench"
+DIST_NAME="VN Revival Localization Workbench"
 PYTHON_VERSION="3.11.9"
 BUILD_ROOT="$ROOT/.build/windows"
-DIST_NAME=$(manifest_value windowsDistributionName)
 DIST_DIR="$BUILD_ROOT/$DIST_NAME"
 RESOURCE_DIR="$DIST_DIR/resources"
 PYTHON_DIR="$RESOURCE_DIR/python"
@@ -35,111 +18,51 @@ PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VER
 PYTHON_ZIP_SHA256="009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
 CC="${VNREVIVAL_WINDOWS_CC:-$(command -v x86_64-w64-mingw32-gcc)}"
 WINDRES="${VNREVIVAL_WINDOWS_WINDRES:-$(command -v x86_64-w64-mingw32-windres)}"
-PROJECT_PYTHON="$ROOT/.venv/bin/python"
-HOST_PYTHON="${VNREVIVAL_HOST_PYTHON:-$PROJECT_PYTHON}"
-ICON_PYTHON="${VNREVIVAL_ICON_PYTHON:-$HOST_PYTHON}"
-BUNDLE="${1:-$ROOT/.build/translator.bundle.js}"
-WINDOWS_SIGN_CERT="${VNREVIVAL_WINDOWS_SIGN_CERT:-}"
-WINDOWS_SIGN_PASSWORD="${VNREVIVAL_WINDOWS_SIGN_PASSWORD:-}"
-WINDOWS_SIGN_TIMESTAMP="${VNREVIVAL_WINDOWS_SIGN_TIMESTAMP:-http://timestamp.digicert.com}"
-WINDOWS_SIGN_TOOL="${VNREVIVAL_WINDOWS_SIGN_TOOL:-$(command -v osslsigncode || true)}"
+ICON_PYTHON="${VNREVIVAL_ICON_PYTHON:-$ROOT/.venv/bin/python}"
 
-if [[ ! -x "$HOST_PYTHON" || ! -x "$ICON_PYTHON" ]]; then
-  echo "Python build environment is missing. Run 'uv sync' in $ROOT or set VNREVIVAL_HOST_PYTHON and VNREVIVAL_ICON_PYTHON." >&2
-  exit 1
-fi
-[[ -x "$CC" && -x "$WINDRES" && -s "$BUNDLE" && -s "$ROOT/$ICON_PNG" ]]
+[[ -x "$CC" && -x "$WINDRES" && -x "$ICON_PYTHON" ]]
 mkdir -p "$ROOT/.build/cache" "$ROOT/.build/checksums" "$READY_DIR"
 verify_sha256() {
-  local expected="$1"
-  local artifact="$2"
-  local actual
-  actual=$(shasum -a 256 "$artifact") || { echo "Could not hash $artifact" >&2; exit 1; }
+  local expected="$1" artifact="$2" actual
+  actual=$(shasum -a 256 "$artifact")
   actual=${actual%% *}
-  [[ "$actual" == "$expected" ]] || { echo "SHA-256 mismatch for $artifact" >&2; exit 1; }
+  [[ "$actual" == "$expected" ]]
 }
-if [[ -e "$PYTHON_ZIP" ]]; then
-  [[ -f "$PYTHON_ZIP" && -s "$PYTHON_ZIP" ]] || { echo "Invalid cached Python runtime: $PYTHON_ZIP" >&2; exit 1; }
+if [[ -s "$PYTHON_ZIP" ]]; then
   verify_sha256 "$PYTHON_ZIP_SHA256" "$PYTHON_ZIP"
 else
-  PYTHON_ZIP_DOWNLOAD="$PYTHON_ZIP.download.$$"
-  trap 'rm -f "$PYTHON_ZIP_DOWNLOAD"' EXIT
-  curl -fL --retry 3 --output "$PYTHON_ZIP_DOWNLOAD" "$PYTHON_URL"
-  verify_sha256 "$PYTHON_ZIP_SHA256" "$PYTHON_ZIP_DOWNLOAD"
-  mv "$PYTHON_ZIP_DOWNLOAD" "$PYTHON_ZIP"
+  DOWNLOAD="$PYTHON_ZIP.download.$$"
+  trap '/bin/rm -f -- "$DOWNLOAD"' EXIT
+  curl -fL --retry 3 --output "$DOWNLOAD" "$PYTHON_URL"
+  verify_sha256 "$PYTHON_ZIP_SHA256" "$DOWNLOAD"
+  mv "$DOWNLOAD" "$PYTHON_ZIP"
   trap - EXIT
 fi
 
-rm -rf "$BUILD_ROOT"
+/bin/rm -rf -- "$BUILD_ROOT"
 mkdir -p "$PYTHON_DIR"
 unzip -q "$PYTHON_ZIP" -d "$PYTHON_DIR"
-
-cp "$BUNDLE" "$RESOURCE_DIR/translator.bundle.js"
-cp -R "$ROOT/.build/game-resources" "$RESOURCE_DIR/games"
-cp "$ROOT/src/local_service.py" "$RESOURCE_DIR/local_service.py"
-cp "$ROOT/src/local_router.py" "$RESOURCE_DIR/local_router.py"
-if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
-  cp "$ROOT/src/$LOCALIZATION_PROFILE_FILE" "$RESOURCE_DIR/$LOCALIZATION_PROFILE_FILE"
-fi
-cp "$GAME_MANIFEST" "$RESOURCE_DIR/game.json"
-python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" \
-  PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS"
-python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/THIRD_PARTY_NOTICES.txt" "$DIST_DIR/THIRD_PARTY_NOTICES.txt" \
-  PRODUCT_NAME "$PRODUCT_NAME"
+print -r -- '..' >> "$PYTHON_DIR/python311._pth"
+cp "$ROOT/src/workbench_service.py" "$RESOURCE_DIR/"
+cp -R "$ROOT/src/workbench" "$ROOT/src/workbench_ui" "$RESOURCE_DIR/"
 cp "$ROOT/LICENSE" "$DIST_DIR/LICENSE"
-
-"$ICON_PYTHON" -c 'from PIL import Image; import sys; image=Image.open(sys.argv[1]).convert("RGBA"); image.save(sys.argv[2], format="ICO", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])' \
-  "$ROOT/$ICON_PNG" "$BUILD_ROOT/AppIcon.ico"
+python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/README-Windows.txt" "$DIST_DIR/README.txt" PRODUCT_NAME "$PRODUCT_NAME"
+python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/THIRD_PARTY_NOTICES.txt" "$DIST_DIR/THIRD_PARTY_NOTICES.txt" PRODUCT_NAME "$PRODUCT_NAME"
+"$ICON_PYTHON" -c 'from PIL import Image; import sys; Image.open(sys.argv[1]).convert("RGBA").save(sys.argv[2], format="ICO", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])' \
+  "$ROOT/assets/icon-1024.png" "$BUILD_ROOT/AppIcon.ico"
 
 VERSION_COMMAS=${VERSION//./,}
-python3 "$ROOT/scripts/generate-windows-game-catalog.py" \
-  "$ROOT/src/games/catalog.json" "$BUILD_ROOT/game-catalog.generated.h"
-python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/launcher.c" "$BUILD_ROOT/launcher.c" \
-  VERSION "$VERSION" PRODUCT_NAME "$PRODUCT_NAME" GAME_TITLE "$GAME_TITLE" \
-  WINDOWS_EXECUTABLE "$WINDOWS_EXECUTABLE" DATA_DIRECTORY_WINDOWS "$DATA_DIRECTORY_WINDOWS" \
-  GAME_ID "$GAME_ID" STEAM_APP_ID "$STEAM_APP_ID" DEBUG_TARGET_TITLE "$DEBUG_TARGET_TITLE" DEBUG_TARGET_URL "$DEBUG_TARGET_URL"
-python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/app.manifest" "$BUILD_ROOT/app.manifest" \
-  GAME_ID "$GAME_ID" PRODUCT_NAME "$PRODUCT_NAME"
+python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/launcher.c" "$BUILD_ROOT/launcher.c" PRODUCT_NAME "$PRODUCT_NAME"
+python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/app.manifest" "$BUILD_ROOT/app.manifest" PRODUCT_NAME "$PRODUCT_NAME"
 python3 "$ROOT/scripts/render-template.py" "$ROOT/launcher/windows/app.rc.in" "$BUILD_ROOT/app.rc" \
   ICON_PATH "$BUILD_ROOT/AppIcon.ico" MANIFEST_PATH "$BUILD_ROOT/app.manifest" \
   VERSION_COMMAS "$VERSION_COMMAS" VERSION "$VERSION" PRODUCT_NAME "$PRODUCT_NAME"
-
 "$WINDRES" "$BUILD_ROOT/app.rc" -O coff -o "$BUILD_ROOT/app-res.o"
 "$CC" -std=c11 -O2 -s -Wall -Wextra -Werror -municode -mwindows \
-  "$BUILD_ROOT/launcher.c" "$BUILD_ROOT/app-res.o" \
-  -o "$DIST_DIR/$PRODUCT_NAME.exe" \
-  -Wl,--major-subsystem-version,6,--minor-subsystem-version,2 \
-  -lwinhttp -lws2_32 -lshell32 -lole32 -ladvapi32 -lcomdlg32 -lcomctl32
+  "$BUILD_ROOT/launcher.c" "$BUILD_ROOT/app-res.o" -o "$DIST_DIR/$PRODUCT_NAME.exe" \
+  -Wl,--major-subsystem-version,6,--minor-subsystem-version,2 -lshell32
 
-if [[ -n "$WINDOWS_SIGN_CERT" ]]; then
-  [[ -x "$WINDOWS_SIGN_TOOL" && -s "$WINDOWS_SIGN_CERT" ]]
-  SIGNED_EXE="$BUILD_ROOT/$PRODUCT_NAME-signed.exe"
-  "$WINDOWS_SIGN_TOOL" sign \
-    -pkcs12 "$WINDOWS_SIGN_CERT" \
-    -pass "$WINDOWS_SIGN_PASSWORD" \
-    -n "$PRODUCT_NAME by VN Revival" \
-    -i "https://vnrevival.fun/" \
-    -ts "$WINDOWS_SIGN_TIMESTAMP" \
-    -in "$DIST_DIR/$PRODUCT_NAME.exe" \
-    -out "$SIGNED_EXE"
-  mv "$SIGNED_EXE" "$DIST_DIR/$PRODUCT_NAME.exe"
-fi
-
-rm -f "$ZIP_PATH" "$CHECKSUM_PATH"
+/bin/rm -f -- "$ZIP_PATH" "$CHECKSUM_PATH"
 (cd "$BUILD_ROOT" && zip -qry "$ZIP_PATH" "$DIST_NAME")
 (cd "$READY_DIR" && shasum -a 256 "${ZIP_PATH:t}") > "$CHECKSUM_PATH"
-
-file "$DIST_DIR/$PRODUCT_NAME.exe" > "$BUILD_ROOT/executable-type.txt"
-grep -Eq 'PE32\+ executable.*x86-64' "$BUILD_ROOT/executable-type.txt"
-unzip -Z1 "$ZIP_PATH" > "$BUILD_ROOT/archive-contents.txt"
-if grep -qi 'bergamot' "$BUILD_ROOT/archive-contents.txt"; then
-  echo "Removed Bergamot files are still present in the Windows archive" >&2
-  exit 1
-fi
-grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" "$BUILD_ROOT/archive-contents.txt"
-grep -Fqx "$DIST_NAME/resources/python/python.exe" "$BUILD_ROOT/archive-contents.txt"
-grep -Fqx "$DIST_NAME/resources/local_service.py" "$BUILD_ROOT/archive-contents.txt"
-grep -Fqx "$DIST_NAME/resources/translator.bundle.js" "$BUILD_ROOT/archive-contents.txt"
-grep -Fqx "$DIST_NAME/resources/game.json" "$BUILD_ROOT/archive-contents.txt"
-
-echo "Built $ZIP_PATH"
+print -r -- "Built $ZIP_PATH"

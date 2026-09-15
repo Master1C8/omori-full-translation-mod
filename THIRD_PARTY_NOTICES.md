@@ -1,15 +1,7 @@
 # Third-party notices
 
-## OMORI identification icon
+The Windows distribution bundles the Python embeddable runtime.
 
-The launcher uses the pixel-art icon referenced by OMORI's own
-`app.nw/package.json` solely to identify the compatible game integration.
-OMORI and its artwork are property of OMOCAT. The icon is not covered by the
-open-source licenses listed below.
+- Python — Python Software Foundation License: https://www.python.org/psf/license/
 
-CTranslate2 models are downloaded separately from the OPUS-MT project and
-converted locally. OPUS-MT model documentation states
-that the published model collection is licensed under CC BY 4.0.
-
-- CTranslate2 (MIT): https://github.com/OpenNMT/CTranslate2
-- OPUS-MT model collection (CC BY 4.0): https://github.com/Helsinki-NLP/OPUS-MT-train
+Game files, names, and artwork are not bundled with Localization Workbench. Game-specific adapters operate on files supplied by the user. OMORI is property of OMOCAT.

@@ -1,58 +1,38 @@
-# OMORI Translator development guide
+# Localization Workbench development guide
 
-Keep task context local. Start from `docs/DEV_MAP.md` and read only the source,
-tests, and contract documents named for the current task. The implementation is
-authoritative when documentation and code disagree.
+Start with `docs/DEV_MAP.md` and read only the modules named for the task.
 
 ## Product invariants
 
-- Story Translation is the stable default and changes only dialogue, speaker
-  names, and choices.
-- Full Translation is experimental and applies only translations already present
-  in an imported pack or the selected provider cache. Gameplay cache misses must
-  never start a provider request.
-- Do not restore Bergamot or hidden character-name dictionaries.
-- Character names use the same cache and selected provider as other text.
-- Google Bulk, Super Bulk, and Test Phrase allow at most one fresh request per second.
-- In Super Bulk, repeated late Google failures stop only the current language;
-  preserve its completed cache and continue with the next target language.
-- HTTP 429 must retain the current operation, show `Rate limited`, persist the
-  cooldown, and continue after it expires.
-- ETA measures only fresh translations in the current pass. Cache hits, startup,
-  model preparation, and rate-limit waiting do not contribute to throughput.
-- Changing language, provider, endpoint, or model clears the live view.
-- Interrupting translation preserves completed cache entries.
-- Imported packs remain isolated in IndexedDB schema 4 and take precedence over
-  provider cache without overwriting it.
-- Never delete user caches, models, saves, translation history, or credentials
-  unless the user explicitly requests that exact operation.
+- This application has one purpose: produce static text-localization artifacts for games.
+- Images, textures, video, and all other visual assets are outside the extraction, editorial, completeness, and packaging scope, including text baked into graphics.
+- It never launches, attaches to, instruments, or translates a running game.
+- Runtime translation products, including Corruption of Champions II, live in separate repositories and applications.
+- OpenAI-compatible endpoints may create drafts only. Provider output is never editor-approved automatically.
+- Every project glossary is synchronized from the published VN Revival game glossary. Local or provider-generated glossary sources are forbidden.
+- Drafting and builds fail until the complete target-language glossary layer has been synchronized and fingerprinted.
+- `draft` and `final` are separate durable fields. Changing a source string or regenerating a draft invalidates prior approval.
+- A build must fail unless every current source entry has a non-empty `final` value with state `reviewed`.
+- Editorial review may happen in the UI or through an exported review bundle. Imports must verify project, entry, and source identity.
+- Game-specific extraction and packaging belong in adapters. Project storage, AI drafting, and review must remain game-agnostic.
+- Never modify source game files. Build artifacts are written only under the workbench data directory.
+- Never store API keys in project files, exports, logs, or command-line arguments. Use the operating-system credential vault.
+- Remote OpenAI-compatible endpoints require HTTPS. Plain HTTP is allowed only for loopback endpoints.
+- Never delete project data, reviews, artifacts, or credentials without an explicit request for that exact deletion.
 
 ## Module boundaries
 
-- `src/translation-core.js`: source classification and protected-markup integrity.
-- `src/providers.js`: browser provider registry and request policies.
-- `src/runtime-ui.js`: generic control busy/disabled state.
-- `src/runtime-progress.js`: word counting, ETA, and cooldown presentation.
-- `src/runtime-panel.js`: Shadow DOM panel markup and CSS only.
-- `src/translator-runtime.js`: orchestration, IndexedDB, Bulk, DOM/canvas hooks,
-  panel controller, and provider state.
-- `src/local_router.py`: declarative local-helper POST routing.
-- `src/local_service.py`: remote-provider bridge, asset extraction,
-  credentials, logs, updates, and loopback HTTP server.
-- `src/games/omori/adapter.js`: OMORI-specific DOM/canvas integration.
-- `launcher/` and `src/controller/`: platform startup and injection.
-
-Preserve the public browser globals and HTTP paths when extracting a module.
-Prefer cohesive modules over generic utility buckets. Avoid files smaller than a
-single responsibility merely to reduce line count.
+- `src/workbench/core.py`: durable project lifecycle and editorial gate.
+- `src/workbench/openai_provider.py`: OpenAI-compatible connection and draft generation only.
+- `src/workbench/site_glossary.py`: validated read-only synchronization from the public VN Revival glossary API.
+- `src/workbench/adapters.py`: adapter registry and format-specific extract/build implementations.
+- `src/workbench_service.py`: authenticated loopback HTTP API and static UI hosting.
+- `src/workbench_ui/`: the standalone workbench interface.
+- `launcher/`: platform entry points; launch the workbench, never a game.
 
 ## Verification
 
-- Browser/runtime-only change: `./scripts/test-runtime.sh`.
-- Python helper/provider change: `./scripts/test-service.sh`.
-- Cross-layer, launcher, manifest, or release change: `./scripts/test-omori.sh`.
-- Release assembly: `./scripts/build-omori.sh`, then verify both archives.
-
-Keep successful command output concise. Inspect detailed output only on failure.
-Do not commit, push, tag, publish, or replace release archives without an explicit
-request.
+- Run `./scripts/test-workbench.sh` for every change.
+- For adapter changes, test extraction against representative fixtures and verify the built artifact's structure.
+- Release assembly is `./scripts/build.sh`, followed by `./scripts/verify.sh`.
+- Do not commit, push, tag, publish, replace release archives, or modify an installed application without an explicit request.

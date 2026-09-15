@@ -1,8 +1,6 @@
-__PRODUCT_NAME__ bundles the Python embeddable runtime for its authenticated
-local helper.
-
-The launcher uses OMORI's pixel-art identification icon. OMORI and its artwork
-are property of OMOCAT; the icon is not covered by the licenses below.
+__PRODUCT_NAME__ bundles the Python embeddable runtime.
 
 Python — Python Software Foundation License
 https://www.python.org/psf/license/
+
+Game files, names, and artwork are not bundled with this application. Game-specific adapters operate on files supplied by the user.

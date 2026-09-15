@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VN Revival Localization Workbench</title>
+  <link rel="stylesheet" href="styles.css?v=20260906-layout2">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">VN REVIVAL</p>
+      <h1>Localization Workbench</h1>
+    </div>
+    <div class="pipeline" aria-label="Localization pipeline">
+      <span>Extract</span><b>→</b><span>AI draft</span><b>→</b><span>Editorial final</span><b>→</b><span>Build</span>
+    </div>
+  </header>
+
+  <main>
+    <aside>
+      <button id="new-project" class="primary wide">New localization project</button>
+      <div class="section-title">Projects</div>
+      <nav id="projects" aria-label="Projects"></nav>
+      <section class="provider-card">
+        <div class="section-title">OpenAI-compatible draft engine</div>
+          <label>Base URL<input id="base-url" value="https://opencode.ai/zen/go/v1" spellcheck="false"></label>
+        <label>API key<input id="api-key" type="password" placeholder="Stored in the OS credential vault"></label>
+        <button id="save-key">Save key</button>
+        <div class="model-row">
+          <label>Model<input id="model" list="models" value="glm-5.3" placeholder="Model ID" spellcheck="false"></label>
+          <button id="connect">Load models</button>
+        </div>
+        <datalist id="models"><option value="glm-5.3"></option></datalist>
+        <p id="provider-status" class="muted">OpenCode Go · GLM-5.3 · enter and save your Go API key.</p>
+      </section>
+    </aside>
+
+    <section id="empty" class="empty-state">
+      <div class="empty-mark">文</div>
+      <h2>Build localizations, not runtime translators.</h2>
+      <p>Import a game's source catalog, create OpenAI-compatible drafts, finish them with Anton and Codex, then export a static localization package.</p>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="workspace-head">
+        <div>
+          <p id="project-adapter" class="eyebrow"></p>
+          <h2 id="project-title"></h2>
+          <p id="project-path" class="muted path"></p>
+        </div>
+        <div class="actions">
+          <button id="extract">Extract / refresh source</button>
+          <button id="sync-glossary">Refresh site glossary</button>
+          <button id="draft" class="accent">Draft next 40</button>
+          <button id="export-review">Export for Codex review</button>
+          <label class="button file-button">Import reviewed file<input id="import-review" type="file" accept="application/json,.json"></label>
+          <button id="build" class="primary">Build localization</button>
+        </div>
+      </div>
+
+      <div id="stats" class="stats"></div>
+      <div id="glossary-status" class="glossary-status"></div>
+      <div class="notice"><strong>Editorial gate:</strong> machine drafts cannot enter a release. Every source entry needs a separately approved final value.</div>
+      <div class="filters">
+        <input id="search" type="search" placeholder="Search source, draft, or final">
+        <select id="state-filter">
+          <option value="">All states</option>
+          <option value="new">New</option>
+          <option value="draft">AI draft</option>
+          <option value="needs-review">Needs review</option>
+          <option value="reviewed">Reviewed</option>
+        </select>
+        <span id="result-count" class="muted"></span>
+      </div>
+      <div id="entries" class="entries"></div>
+    </section>
+  </main>
+
+  <dialog id="project-dialog">
+    <form id="project-form" method="dialog">
+      <div class="dialog-head"><h2>New localization project</h2><button value="cancel" class="icon" aria-label="Close">×</button></div>
+      <label>Project title<input name="title" required maxlength="160" placeholder="Game title — target language"></label>
+      <label>VN Revival game slug<input name="gameSlug" required maxlength="80" placeholder="omori"></label>
+      <label>Source adapter<select name="adapter" id="adapter-select"></select></label>
+      <p id="adapter-help" class="muted"></p>
+      <label>Source file or game directory<input name="sourcePath" required placeholder="Absolute path"></label>
+      <div class="form-grid">
+        <label>Source language<input name="sourceLanguage" value="en" required></label>
+        <label>Target code<input name="targetLanguage" value="ru" required></label>
+        <label>Target language name<input name="targetLanguageName" value="Russian" required></label>
+      </div>
+      <label>Style rules <span class="muted">one per line</span><textarea name="style" rows="4" placeholder="Preserve character voice&#10;Keep UI labels compact"></textarea></label>
+      <div class="dialog-actions"><button value="cancel">Cancel</button><button id="create-project" value="default" class="primary">Create project</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js?v=20260906-layout2"></script>
+</body>
+</html>

@@ -1,23 +1,5 @@
-# Промт для нового чата по OMORI Translator
+# New chat context
 
-Скопируйте короткий текст ниже и замените последнюю строку своей задачей.
-Актуальные ограничения, карта файлов и команды проверки находятся в самом
-репозитории, поэтому их не нужно дублировать в каждом чате.
+This repository is transitioning from an OMORI runtime translator to VN Revival Localization Workbench. The product has one purpose: produce static text-localization artifacts for games. Images, textures, video, and text baked into visual assets are outside extraction, review, completeness, and packaging. Every project is bound to a VN Revival game slug and must synchronize the complete published glossary for its target locale from `https://vnrevival.fun`; local or provider-generated glossaries are forbidden. OpenAI-compatible endpoints create drafts only; Anton and Codex own final editorial review. Draft generation is blocked until the site glossary is available, and builds are blocked until that glossary is available and every current source entry has an approved final value. Realtime translation, game launching/injection, and Corruption of Champions II are separate products and must not return.
 
-```text
-Продолжи разработку OMORI Translator в существующем проекте:
-/Users/antonkrutov/Desktop/omori full translation mod
-
-Сначала выполни git status --short и git log --oneline --decorate -10.
-Затем полностью прочитай корневой AGENTS.md и используй docs/DEV_MAP.md, чтобы
-открыть только относящиеся к задаче исходники, тесты и контрактную документацию.
-Если описание расходится с кодом, доверяй текущему коду.
-
-Сохрани посторонние изменения и пользовательские данные. Не делай commit, push,
-tag, публикацию или пересборку релизных архивов без прямой просьбы. Сначала
-диагностируй проблему, затем внеси минимальное изменение и запусти указанную в
-DEV_MAP адресную проверку; полный test-omori.sh нужен для межслойных и релизных
-изменений.
-
-Новая задача: [ВСТАВЬТЕ ЗАДАЧУ ЗДЕСЬ]
-```
+Start with `docs/DEV_MAP.md` and `AGENTS.md`.

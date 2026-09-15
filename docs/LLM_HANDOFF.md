@@ -1,128 +1,15 @@
-# Передача контекста: LLM-перевод OMORI
+# Editorial handoff
 
-Дата: 2026-08-31
+OpenAI-compatible models are bulk draft workers, not final editors. Their output belongs only in `draft`.
 
-Этот файл — стартовая выжимка для отдельного чата, посвящённого качественному
-LLM-переводу. Реализация остаётся авторитетнее документации. Перед изменениями
-прочитать `AGENTS.md`, `docs/DEV_MAP.md` и относящиеся к задаче участки кода.
+Editorial review covers extracted text entries only. Localized graphics and text baked into images, textures, or video are outside this application's scope and must not be added to the review bundle or completeness criteria.
 
-## Цель следующего этапа
+The final workflow with Codex is:
 
-Получить литературный русский перевод OMORI заметно лучше Google, не повреждая
-RPG Maker/OMORI-разметку и не создавая скрытых сетевых запросов во время игры.
-Особенно важны единые имена, шутки, игра слов, эмоциональный тон и короткие
-экранные формулировки, которые физически помещаются в окна игры.
+1. Synchronize the glossary from VN Revival, then export the project's editorial review bundle. The bundle carries the exact glossary snapshot and fingerprint used for the drafts.
+2. Review source, context, draft, glossary, voice, terminology, control codes, length, and cross-entry consistency.
+3. Write the selected wording to `final` and mark only genuinely completed entries `reviewed: true`.
+4. Import the bundle. Any project mismatch, changed source identity, or newer glossary fingerprint stops the import.
+5. Perform full-entry editorial audits before building the localization.
 
-Текущий OpenAI-compatible Bulk переводит английский source заново. Он не получает
-Google-перевод как черновик и не «редактирует Google». Если нужен режим
-редактирования существующего перевода, это отдельное осознанное изменение prompt,
-cache identity и интерфейса.
-
-## Неприкосновенные инварианты
-
-- Full Translation во время игры строго cache-only. Cache miss остаётся
-  английским и никогда не запускает LLM.
-- Только явно нажатые пользователем `Bulk Translate All Assets`, `Test Phrase`
-  или Screen-перевод могут обратиться к провайдеру.
-- Не очищать кэш, историю, настройки, ключи и сохранения без точного запроса.
-- Не перезаписывать Google-кэш результатами другой модели. Cache v4 изолирует
-  OpenAI-compatible результат по game/provider/language/preset/Base URL/model и
-  версии prompt.
-- Импортированные translation packs изолированы и имеют приоритет, но не
-  перезаписывают provider cache.
-- Не возвращать скрытые словари имён. Если появится терминологический слой, он
-  должен быть видимым, проверяемым и совместимым с этими ограничениями.
-
-## Как сейчас защищается разметка
-
-`src/translation-core.js` разбирает OMORI-команды, HTML-переносы, placeholders,
-числа, валюты, context markers и прочие жёсткие элементы. Провайдеру передаются
-только видимые текстовые сегменты. Skeleton собирается локально, затем результат
-проходит markup/layout и quality validation. Повреждённый, усечённый, чрезмерно
-раздутый или содержащий существенный английский carryover ответ в кэш не попадает.
-
-Это значит, что дорогую модель безопасно подключать через уже существующий
-protected-segment pipeline. Нельзя упрощать его до отправки исходной строки
-целиком и надежды на prompt «сохрани разметку».
-
-## Текущее состояние OpenCode Go
-
-- Preset: `OpenCode Go`.
-- Base URL: `https://opencode.ai/zen/go/v1`.
-- Проверенная модель: `glm-5.3-flash`.
-- API key хранится в macOS Keychain и сейчас валиден; `/models` возвращал модель.
-- Chat Completions endpoint: `/chat/completions`.
-- Минимальный `max_tokens` повышен до 2048, потому что при 256 токенах
-  GLM-5.3-Flash тратила весь ответ на reasoning и возвращала пустой `content`.
-- Helper принимает строгий JSON, JSON в Markdown fence и обычный plain text,
-  если endpoint проигнорировал JSON Schema. Повреждённый JSON отклоняется.
-- Пустой reasoning-only ответ, неправильный ключ/модель и неподдерживаемый формат
-  останавливают Bulk немедленно, а не повторяются для всего каталога.
-- Фактический usage пишется до разбора ответа в
-  `openai-compatible-usage.jsonl`; source и translation туда не попадают.
-
-После исправлений живой прогон дал последовательные HTTP 200, новые записи в
-`translation-history.jsonl` и отсутствие новых записей в
-`translation-failures.jsonl`. Среди подтверждённых примеров:
-
-- `"GOLD" WATCH` → `«ЗОЛОТЫЕ» ЧАСЫ`;
-- `MR. PLANTEGG ...` был технически принят с сохранённым `<br>`, но переведён
-  семантически плохо как `МИСТЕР РАСТОЯЙЦО`.
-
-Правильный термин, согласованный с пользователем:
-
-- `MR. PLANTEGG` → `МИСТЕР БАКЛАЖАНЧИК`.
-
-Эта пара теперь находится в прозрачном bundled-профиле
-`src/omori-localization-profile.json`. Fingerprint профиля отделяет новый
-AI-кэш от прежнего ошибочного результата, не удаляя пользовательские записи.
-
-## Корпус и масштаб
-
-Asset index schema 5 на установленной Steam-копии охватывает 217 файлов и 14 753
-уникальные строки. Runtime-фильтр формирует 14 587 Bulk jobs. OpenAI-compatible
-сейчас делает по одному Chat Completions запросу на job/защищённый текстовый
-проход, поэтому полный LLM-прогон дорог, медленен и может не уложиться в лимиты
-подписки. До запуска полного прохода нужно оценить реальное число cache misses и
-лимиты выбранной модели.
-
-## Главные вопросы для нового чата
-
-1. Переводить английский source с нуля или давать LLM Google-перевод как
-   редактируемый черновик? Второй путь требует нового prompt/cache fingerprint.
-2. Как синхронизировать прозрачный `omori-localization-profile.json` со страницей
-   `https://vnrevival.fun/ru/games/omori`, не давая сетевому сбою блокировать игру?
-3. Нужен ли безопасный LLM batch-протокол с ID для уменьшения числа запросов?
-   Если да, каждая строка должна независимо восстанавливаться и валидироваться;
-   одна плохая строка не должна портить весь batch.
-4. Как применять ручную редактуру без сетевого запроса и без разрушения Google,
-   LLM и imported-pack scopes?
-5. Какие правила локализации имён, терминов, регистра и длины UI принять до
-   массового прогона?
-
-## Рекомендуемый безопасный план
-
-1. Сначала собрать и утвердить терминологию по персонажам, локациям, предметам,
-   навыкам, эмоциям и повторяющимся шуткам.
-2. Сделать небольшой репрезентативный eval-набор: диалоги, имена, UI, предметы,
-   сложная разметка, игра слов и взрослый контент.
-3. Сравнить несколько моделей на одном eval-наборе, оценивая качество, стоимость,
-   latency, markup rejection и длину экранных строк.
-4. Зафиксировать prompt version и cache identity только после выбора модели и
-   терминологического формата.
-5. Провести ограниченный Bulk, проверить live/history/failures и скриншоты.
-6. Лишь затем разрешать полный пользовательский прогон. Платные запросы всегда
-   запускает пользователь явно.
-
-## Диагностика
-
-- Успешные пары: `translation-history.jsonl`.
-- Отклонённые кандидаты: `translation-failures.jsonl`.
-- Точный обезличенный usage: `openai-compatible-usage.jsonl`.
-- HTTP helper: `local-service.log`.
-- Данные находятся в
-  `~/Library/Application Support/VN Revival/OMORI Translator/Argos/`.
-
-Последняя полная локальная проверка: 117 JavaScript-тестов, browser smoke и 43
-Python-теста. Корневая `OMORI Translator.app` обновлена и ad-hoc подписана; релизные
-ZIP не пересобирались и не публиковались.
+Corrections reset the relevant clean-audit expectation. Structural completeness is not editorial quality.

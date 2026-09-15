@@ -1,102 +1,26 @@
 #!/bin/zsh
 set -euo pipefail
 ROOT="${0:A:h:h}"
-: "${VNREVIVAL_GAME:?Set VNREVIVAL_GAME or invoke verification through a game-specific build script}"
-GAME_ID="$VNREVIVAL_GAME"
-GAME_MANIFEST="$ROOT/src/games/$GAME_ID/game.json"
-manifest_value() { python3 "$ROOT/scripts/game-manifest.py" "$GAME_MANIFEST" "$1"; }
 VERSION=$(tr -d '[:space:]' < "$ROOT/VERSION")
-PRODUCT_NAME=$(manifest_value translatorName)
-ARCHIVE_PREFIX=$(manifest_value archivePrefix)
-DIST_NAME=$(manifest_value windowsDistributionName)
-LOCALIZATION_PROFILE_FILE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("localizationProfileFile", ""))' "$GAME_MANIFEST")
-READY="$ROOT/launcher/READY_TO_SHARE"
-BUILD_DIR="$ROOT/.build"
-APP="$BUILD_DIR/macos/$PRODUCT_NAME.app"
-ZIP="$READY/$ARCHIVE_PREFIX-macOS-$VERSION.zip"
-WINDOWS_ZIP="$READY/$ARCHIVE_PREFIX-Windows-$VERSION.zip"
-MAC_CHECKSUM="$BUILD_DIR/checksums/${ZIP:t}.sha256"
-WINDOWS_CHECKSUM="$BUILD_DIR/checksums/${WINDOWS_ZIP:t}.sha256"
-GAME_IDS=("${(@f)$(python3 "$ROOT/scripts/game-catalog.py" "$ROOT/src/games/catalog.json" list)}")
+PRODUCT_NAME="VN Revival Localization Workbench"
+PREFIX="VN-Revival-Localization-Workbench"
+APP="$ROOT/.build/macos/$PRODUCT_NAME.app"
+MAC_ZIP="$ROOT/launcher/READY_TO_SHARE/$PREFIX-macOS-$VERSION.zip"
+WINDOWS_ZIP="$ROOT/launcher/READY_TO_SHARE/$PREFIX-Windows-$VERSION.zip"
 
 [[ -x "$APP/Contents/MacOS/$PRODUCT_NAME" ]]
-[[ -x "$APP/Contents/Resources/VNRevivalTranslatorController" ]]
-[[ -x "$APP/Contents/Resources/local_service.py" ]]
-[[ -s "$APP/Contents/Resources/local_router.py" ]]
-if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
-  [[ -s "$APP/Contents/Resources/$LOCALIZATION_PROFILE_FILE" ]]
-fi
-[[ -s "$APP/Contents/Resources/translator.bundle.js" ]]
-[[ -s "$APP/Contents/Resources/game.json" ]]
-[[ -s "$APP/Contents/Resources/games/catalog.json" ]]
-[[ -s "$APP/Contents/Resources/games/catalog.txt" ]]
-for CATALOG_GAME_ID in "${GAME_IDS[@]}"; do
-  [[ -s "$APP/Contents/Resources/games/$CATALOG_GAME_ID/translator.bundle.js" ]]
-  [[ -s "$APP/Contents/Resources/games/$CATALOG_GAME_ID/game.json" ]]
+for path in workbench_service.py workbench/core.py workbench/adapters.py workbench/integrity.py workbench/openai_provider.py workbench/site_glossary.py workbench/omori_assets.py workbench_ui/index.html workbench_ui/app.js workbench_ui/styles.css; do
+  [[ -s "$APP/Contents/Resources/$path" ]]
 done
-[[ -s "$APP/Contents/Resources/steam-compat.js" ]]
-[[ -s "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md" ]]
-[[ -s "$APP/Contents/Resources/AppIcon.icns" ]]
-[[ -x "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs" ]]
-[[ -s "$ZIP" ]]
-[[ -s "$WINDOWS_ZIP" ]]
 /usr/bin/codesign --verify --deep --strict "$APP"
-CONTROLLER_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/Resources/VNRevivalTranslatorController")
-grep -Eq '(^| )arm64( |$)' <<< "$CONTROLLER_ARCHS"
-grep -Eq '(^| )x86_64( |$)' <<< "$CONTROLLER_ARCHS"
-(cd "$READY" && shasum -a 256 -c "$MAC_CHECKSUM")
-(cd "$READY" && shasum -a 256 -c "$WINDOWS_CHECKSUM")
-
-CONTENTS=$(unzip -Z1 "$ZIP")
-if grep -qi 'bergamot' <<< "$CONTENTS"; then
-  echo "Removed Bergamot files are still present in the macOS archive" >&2
-  exit 1
-fi
-UNEXPECTED_CONTENTS=$(grep -Fv '/Contents/Resources/NWJS Runtime.app/' <<< "$CONTENTS" || true)
-if grep -Eqi '\.(exe|dll|pak|sav)$|/resources/app/|/steamapps/' <<< "$UNEXPECTED_CONTENTS"; then
-  echo "Archive contains game or user files" >&2
-  exit 1
-fi
-grep -Fq '/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs' <<< "$CONTENTS"
-grep -Fq '/Contents/Resources/steam-compat.js' <<< "$CONTENTS"
-RUNTIME_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/Resources/NWJS Runtime.app/Contents/MacOS/nwjs")
-grep -Eq '(^| )arm64( |$)' <<< "$RUNTIME_ARCHS"
-
+[[ -s "$MAC_ZIP" && -s "$WINDOWS_ZIP" ]]
+MAC_CONTENTS=$(unzip -Z1 "$MAC_ZIP")
 WINDOWS_CONTENTS=$(unzip -Z1 "$WINDOWS_ZIP")
-if grep -qi 'bergamot' <<< "$WINDOWS_CONTENTS"; then
-  echo "Removed Bergamot files are still present in the Windows archive" >&2
+grep -Fq '/Contents/Resources/workbench_service.py' <<< "$MAC_CONTENTS"
+grep -Fq "$PRODUCT_NAME/resources/workbench_service.py" <<< "$WINDOWS_CONTENTS"
+grep -Fq "$PRODUCT_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
+if grep -Eqi 'translator\.bundle|steam-compat|games/coc2|VNRevivalTranslatorController' <<< "$MAC_CONTENTS$WINDOWS_CONTENTS"; then
+  print -u2 -- "A legacy runtime translator component entered the release"
   exit 1
 fi
-grep -Fqx "$DIST_NAME/$PRODUCT_NAME.exe" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/python/python.exe" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/local_service.py" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/local_router.py" <<< "$WINDOWS_CONTENTS"
-if [[ -n "$LOCALIZATION_PROFILE_FILE" ]]; then
-  grep -Fqx "$DIST_NAME/resources/$LOCALIZATION_PROFILE_FILE" <<< "$WINDOWS_CONTENTS"
-fi
-grep -Fqx "$DIST_NAME/resources/game.json" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/games/catalog.json" <<< "$WINDOWS_CONTENTS"
-grep -Fqx "$DIST_NAME/resources/games/catalog.txt" <<< "$WINDOWS_CONTENTS"
-for CATALOG_GAME_ID in "${GAME_IDS[@]}"; do
-  grep -Fqx "$DIST_NAME/resources/games/$CATALOG_GAME_ID/translator.bundle.js" <<< "$WINDOWS_CONTENTS"
-  grep -Fqx "$DIST_NAME/resources/games/$CATALOG_GAME_ID/game.json" <<< "$WINDOWS_CONTENTS"
-done
-WINDOWS_NOTICES=$(unzip -p "$WINDOWS_ZIP" "$DIST_NAME/THIRD_PARTY_NOTICES.txt")
-grep -Fq "$PRODUCT_NAME bundles the Python embeddable runtime" <<< "$WINDOWS_NOTICES"
-if grep -Fq '__PRODUCT_NAME__' <<< "$WINDOWS_NOTICES"; then
-  echo "Windows notices were not rendered" >&2
-  exit 1
-fi
-if grep -Ei '/steamapps/|/resources/app/|\.pak$|\.sav$' <<< "$WINDOWS_CONTENTS"; then
-  echo "Windows archive contains game or user files" >&2
-  exit 1
-fi
-
-WINDOWS_EXE="$ROOT/.build/verify-windows-launcher.exe"
-unzip -p "$WINDOWS_ZIP" "$DIST_NAME/$PRODUCT_NAME.exe" > "$WINDOWS_EXE"
-grep -Eq 'PE32\+ executable.*GUI.*x86-64' <<< "$(file "$WINDOWS_EXE")"
-
-USAGE_OUTPUT=$("$APP/Contents/Resources/VNRevivalTranslatorController" 2>&1 || true)
-grep -Eq "Usage:" <<< "$USAGE_OUTPUT"
-PYTHONPYCACHEPREFIX="$ROOT/.build/python-cache" python3 -m py_compile "$APP/Contents/Resources/local_service.py"
-echo "Product verification passed"
+print -r -- "Localization Workbench release verification passed"
